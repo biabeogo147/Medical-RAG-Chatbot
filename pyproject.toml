@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "medical_rag_chatbot"
+version = "0.1.0"
+authors = [
+  { name="biabeogo147", email="biabeogo147@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dynamic = ["dependencies"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
