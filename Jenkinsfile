@@ -2,63 +2,67 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION = 'us-east-1'
-        ECR_REPO = 'my-repo'
-        IMAGE_TAG = 'latest'
-        SERVICE_NAME = 'llmops-medical-service'
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub')
+        IMAGE_NAME = "biabeogo147/medical-rag-chatbot-app"
+        VERSION = "v1.0.${env.BUILD_NUMBER}"
+        K8S_NAMESPACE = "medical-rag-chatbot"
+        DEPLOY_FILE = "k8s.yaml"
     }
 
     stages {
-        stage('Clone GitHub Repo') {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', credentialsId: 'github', url: 'https://github.com/biabeogo147/Medical-RAG-Chatbot.git'
+            }
+        }
+
+        stage('Build Docker image') {
+            steps {
+                sh '''
+                echo "🧱 Building Docker image $IMAGE_NAME:$VERSION ..."
+                docker build -t $IMAGE_NAME:$VERSION .
+                docker tag $IMAGE_NAME:$VERSION $IMAGE_NAME:latest
+                '''
+            }
+        }
+
+        stage('Push to DockerHub') {
             steps {
                 script {
-                    echo 'Cloning GitHub repo to Jenkins...'
-                    checkout scmGit(branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[credentialsId: 'github-token', url: 'https://github.com/data-guru0/RAG-MEDICAL-CHATBOT.git']])
-                }
-            }
-        }
-
-        stage('Build, Scan, and Push Docker Image to ECR') {
-            steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-token']]) {
-                    script {
-                        def accountId = sh(script: "aws sts get-caller-identity --query Account --output text", returnStdout: true).trim()
-                        def ecrUrl = "${accountId}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/${env.ECR_REPO}"
-                        def imageFullTag = "${ecrUrl}:${IMAGE_TAG}"
-
-                        sh """
-                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ecrUrl}
-                        docker build -t ${env.ECR_REPO}:${IMAGE_TAG} .
-                        trivy image --severity HIGH,CRITICAL --format json -o trivy-report.json ${env.ECR_REPO}:${IMAGE_TAG} || true
-                        docker tag ${env.ECR_REPO}:${IMAGE_TAG} ${imageFullTag}
-                        docker push ${imageFullTag}
-                        """
-
-                        archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+                    echo "🚀 Pushing $IMAGE_NAME:$VERSION to Docker Hub..."
+                    docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+                        sh '''
+                        docker push $IMAGE_NAME:$VERSION
+                        docker push $IMAGE_NAME:latest
+                        '''
                     }
                 }
             }
         }
 
-         stage('Deploy to AWS App Runner') {
+        stage('Deploy to Kubernetes') {
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-token']]) {
-                    script {
-                        def accountId = sh(script: "aws sts get-caller-identity --query Account --output text", returnStdout: true).trim()
-                        def ecrUrl = "${accountId}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/${env.ECR_REPO}"
-                        def imageFullTag = "${ecrUrl}:${IMAGE_TAG}"
+                sh '''
+                echo "📦 Deploying to Kubernetes cluster..."
+                # Create a temp file instead of editing in-place
+                sed "s|biabeogo147/medical-rag-chatbot-app:.*|$IMAGE_NAME:$VERSION|g" $DEPLOY_FILE > deploy-temp.yaml
 
-                        echo "Triggering deployment to AWS App Runner..."
+                # Debug check
+                kubectl config current-context || true
+                kubectl get ns | grep $K8S_NAMESPACE || kubectl create ns $K8S_NAMESPACE
 
-                        sh """
-                        SERVICE_ARN=\$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${SERVICE_NAME}'].ServiceArn" --output text --region ${AWS_REGION})
-                        echo "Found App Runner Service ARN: \$SERVICE_ARN"
-
-                        aws apprunner start-deployment --service-arn \$SERVICE_ARN --region ${AWS_REGION}
-                        """
-                    }
-                }
+                kubectl apply -f deploy-temp.yaml -n $K8S_NAMESPACE
+                '''
             }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Successfully deployed version $VERSION to $K8S_NAMESPACE!"
+        }
+        failure {
+            echo "❌ Deployment failed at some stage. Check logs for details."
         }
     }
 }
