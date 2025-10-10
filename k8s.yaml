@@ -110,7 +110,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: streamlit.local
+    - host: app.local
       http:
         paths:
           - path: /
