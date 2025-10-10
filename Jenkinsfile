@@ -48,9 +48,6 @@ pipeline {
                     echo "🚀 Pushing $IMAGE_NAME:$VERSION to Docker Hub..."
                     withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                         sh '''
-                        #!/bin/bash
-                        set -euxo pipefail
-
                         echo "🚀 Pushing $IMAGE_NAME:$VERSION..."
                         docker push $IMAGE_NAME:$VERSION
 
