@@ -16,6 +16,22 @@ pipeline {
             }
         }
 
+        stage('Docker Login') {
+            steps {
+                script {
+                    echo "🔐 Logging into Docker Hub..."
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh '''
+                        #!/bin/bash
+                        set -eux
+
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        '''
+                    }
+                }
+            }
+        }
+
         stage('Build Docker image') {
             steps {
                 sh '''
@@ -32,20 +48,14 @@ pipeline {
                     echo "🚀 Pushing $IMAGE_NAME:$VERSION to Docker Hub..."
                     withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                         sh '''
+                        #!/bin/bash
                         set -euxo pipefail
-
-                        echo "🔐 Logging into Docker Hub..."
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
 
                         echo "🚀 Pushing $IMAGE_NAME:$VERSION..."
                         docker push $IMAGE_NAME:$VERSION
 
                         echo "🚀 Pushing $IMAGE_NAME:latest..."
                         docker push $IMAGE_NAME:latest
-
-                        echo "🧹 Cleaning up local Docker images..."
-                        docker rmi -f $IMAGE_NAME:$VERSION || true
-                        docker rmi -f $IMAGE_NAME:latest || true
 
                         echo "🔒 Logging out..."
                         docker logout
@@ -58,7 +68,11 @@ pipeline {
         stage('Cleanup') {
             steps {
                 sh '''
-                echo "🧹 Cleaning up all dangling Docker data..."
+                echo "🧹 Cleaning up local Docker images..."
+                docker rmi -f $IMAGE_NAME:$VERSION || true
+                docker rmi -f $IMAGE_NAME:latest || true
+
+                echo "🧹 Cleaning up dangling data..."
                 docker system prune -af || true
                 '''
             }
