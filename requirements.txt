@@ -1,8 +1,8 @@
-langchain-google-genai~=2.1.9
-langchain-community~=0.3.27
-langchain-core~=0.3.78
+langchain-google-genai==2.1.9
+langchain-community==0.3.27
+langchain-core==0.3.78
 langchain_huggingface
-langchain~=0.3.27
+langchain==0.3.27
 
 python-dotenv~=1.0.1
 faiss-cpu~=1.12.0
