@@ -30,13 +30,37 @@ pipeline {
             steps {
                 script {
                     echo "🚀 Pushing $IMAGE_NAME:$VERSION to Docker Hub..."
-                    docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                         sh '''
+                        set -euxo pipefail
+
+                        echo "🔐 Logging into Docker Hub..."
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
+                        echo "🚀 Pushing $IMAGE_NAME:$VERSION..."
                         docker push $IMAGE_NAME:$VERSION
+
+                        echo "🚀 Pushing $IMAGE_NAME:latest..."
                         docker push $IMAGE_NAME:latest
+
+                        echo "🧹 Cleaning up local Docker images..."
+                        docker rmi -f $IMAGE_NAME:$VERSION || true
+                        docker rmi -f $IMAGE_NAME:latest || true
+
+                        echo "🔒 Logging out..."
+                        docker logout
                         '''
                     }
                 }
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                sh '''
+                echo "🧹 Cleaning up all dangling Docker data..."
+                docker system prune -af || true
+                '''
             }
         }
 
