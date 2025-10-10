@@ -1,1 +1,1 @@
-https://github.com/data-guru0/RAG-MEDICAL-CHATBOT
+> **Source & Credits**: Based on [https://github.com/data-guru0/RAG-MEDICAL-CHATBOT], customized for this project.
