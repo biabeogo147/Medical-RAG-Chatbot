@@ -8,20 +8,39 @@ A production-ready Retrieval Augmented Generation (RAG) assistant that answers m
 - **Retrieval-Augmented Responses:** Documents are chunked, embedded with Hugging Face Inference API, and indexed in FAISS to ensure medically grounded answers.
 - **Google Generative AI LLM:** Uses `ChatGoogleGenerativeAI` with a custom prompt that constrains output to 2–3 lines per answer.
 - **Production-Grade Guardrails:** Prompt templates, output length controls, and defensive exception handling keep responses safe and auditable.
-- **Automated Data Pipeline:** `data_loader.py` ingests PDFs, generates embeddings, and persists the vector store for fast retrieval.
+- **Versioned index artifact:** `python -m app.index build` embeds the corpus once (batched, with retry on rate limits) and stores it under a content hash; the app pulls a pinned version at startup instead of re-embedding.
 - **Platform Integrations:** Docker, Kubernetes, and Jenkins artifacts make the solution plug-and-play inside enterprise delivery pipelines.
 
 ## 🧠 System Architecture
 ```mermaid
 flowchart LR
-    A[User Browser] -->|Prompt| B[Flask App]
-    B -->|Query| C[LangChain RetrievalQA]
-    C -->|Context| D[FAISS Vector Store]
-    D -->|Embeddings| E[Hugging Face Inference API]
-    D -->|Chunks| F[(Medical PDFs)]
-    C -->|Generate Answer| G[Google Generative AI LLM]
-    G -->|Response| B
+    A[User Browser] -->|Prompt| B[Flask app on gunicorn]
+    B -->|Query| C[RAG chain: retrieve → prompt → LLM]
+    C -->|top-k chunks| D[FAISS index]
+    C -->|Query embedding| E[Hugging Face Inference API]
+    C -->|Generate answer| G[Gemini API]
+    J[index build job] -->|PDF → chunks → embeddings| S[(Index store: local dir or S3)]
+    S -->|pull pinned version| D
 ```
+
+## 🐳 Run locally with Docker
+
+```bash
+cp .env.example .env        # fill GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN, FLASK_SECRET_KEY
+docker compose up --build   # index-build runs once, then the app starts on http://localhost:8000
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `/` | Chat UI |
+| `/healthz` | Liveness (process up) |
+| `/readyz` | Readiness (index loaded, chain built) |
+| `/metrics` | Prometheus metrics (aggregated across gunicorn workers) |
+
+- Lint + tests in Docker: `docker build --target test .`
+- Re-running `docker compose up` skips embedding when the corpus, chunking and embedding model are unchanged.
+- The bundled PDF is Volume 2 (C–F) of the Gale Encyclopedia of Medicine; questions outside that range get "I don't know".
+- The containers run as non-root (UID 10001) with a read-only root filesystem.
 
 ### Secret creation script (`create-secret.sh`)
 ```bash

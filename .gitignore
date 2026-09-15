@@ -1,5 +1,10 @@
 .idea
-medical_rag_chatbot.egg-info
+.venv
+*.egg-info
+__pycache__/
+.pytest_cache/
+.ruff_cache/
 .env
 logs
 vectorstore
+index-store/

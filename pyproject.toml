@@ -1,20 +1,43 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "medical_rag_chatbot"
-version = "0.1.0"
-authors = [
-  { name="biabeogo147", email="biabeogo147@gmail.com" }
-]
+name = "medical-rag-chatbot"
+version = "0.2.0"
+description = "Medical RAG chatbot (Flask + LangChain + FAISS + Gemini)"
+authors = [{ name = "biabeogo147", email = "biabeogo147@gmail.com" }]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "flask>=3.1,<4",
+    "gunicorn>=23",
+    "prometheus-client>=0.22",
+    "boto3>=1.35",
+    "faiss-cpu>=1.12",
+    "pypdf>=5",
+    "langchain-core>=1.0,<2",
+    "langchain-community>=0.4,<0.5",
+    "langchain-text-splitters>=1.0,<2",
+    "langchain-google-genai>=4,<5",
+    "langchain-huggingface>=1,<2",
+]
 
-dynamic = ["dependencies"]
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "moto[s3]>=5",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.uv]
+package = false
+# Images run on linux/amd64 only; restricting the lock keeps resolution fast and the lockfile small.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

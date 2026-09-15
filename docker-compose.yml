@@ -1,0 +1,42 @@
+name: medical-rag
+
+x-app: &app
+  image: medical-rag:local
+  build:
+    context: .
+    target: runtime
+  env_file: .env
+  read_only: true
+  tmpfs:
+    - /tmp
+
+services:
+  # One-shot job: embeds the corpus only if this exact index version is not in the store yet.
+  index-build:
+    <<: *app
+    command: ["python", "-m", "app.index", "build"]
+    environment:
+      DATA_PATH: /data
+      INDEX_STORE: file:///index-store
+    volumes:
+      - ./data:/data:ro
+      - index-store:/index-store
+    healthcheck:
+      disable: true
+
+  app:
+    <<: *app
+    depends_on:
+      index-build:
+        condition: service_completed_successfully
+    environment:
+      INDEX_STORE: file:///index-store
+      INDEX_VERSION: latest
+    volumes:
+      - index-store:/index-store:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  index-store:

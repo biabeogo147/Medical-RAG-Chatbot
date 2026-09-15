@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>🔍 AI Medical Chatbot</title>
+    <title>AI Medical Chatbot</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 2rem; }
         .chat-container { max-width: 700px; margin: 0 auto; }
@@ -18,7 +18,7 @@
 </head>
 <body>
     <div class="chat-container">
-        <h1>🔍 AI Medical Chatbot New Change</h1>
+        <h1>AI Medical Chatbot</h1>
 
         {% if error %}
             <p class="error">{{ error }}</p>
@@ -28,7 +28,7 @@
             {% for msg in messages %}
                 <div class="message {{ msg.role }}">
                     <strong>{{ msg.role|capitalize }}:</strong><br />
-                    {{ msg.content | safe | nl2br }}
+                    {{ msg.content | nl2br }}
                 </div>
             {% endfor %}
         </div>

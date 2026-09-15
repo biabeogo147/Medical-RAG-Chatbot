@@ -1,21 +1,26 @@
-import os
 import logging
-from pathlib import Path
-from datetime import datetime
+import sys
 
-BASE_DIR = Path(__file__).resolve().parent
-LOGS_DIR = BASE_DIR / "logs"
-os.makedirs(LOGS_DIR, exist_ok=True)
+from app.config.config import LOG_LEVEL
 
-LOG_FILE = os.path.join(LOGS_DIR, f"log_{datetime.now().strftime('%Y-%m-%d')}.log")
+_configured = False
 
-logging.basicConfig(
-    filename=LOG_FILE,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+
+def _configure():
+    global _configured
+    if _configured:
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(LOG_LEVEL)
+    # One INFO line per HTTP call to HF/Gemini drowns out application logs.
+    for noisy in ("httpx", "httpcore", "faiss.loader", "google_genai.models"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    _configured = True
+
 
 def get_logger(name):
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    return logger
+    _configure()
+    return logging.getLogger(name)

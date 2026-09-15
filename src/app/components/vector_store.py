@@ -1,54 +1,30 @@
-import os
+from pathlib import Path
 
 from langchain_community.vectorstores import FAISS
-from app.components.embeddings import get_embedding_model
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 
-from app.common.logger import get_logger
 from app.common.custom_exception import CustomException
-
-from app.config.config import DB_FAISS_PATH
+from app.common.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def load_vector_store():
-    try:
-        embedding_model = get_embedding_model()
-
-        if os.path.exists(DB_FAISS_PATH):
-            logger.info("Loading existing vectorstore...")
-            return FAISS.load_local(
-                DB_FAISS_PATH,
-                embedding_model,
-                allow_dangerous_deserialization=True
-            )
-        else:
-            logger.warning("No vectorstore found..")
-
-    except Exception as e:
-        error_message = CustomException("Failed to load vectorstore", e)
-        logger.error(str(error_message))
+def build_vector_store(chunks: list[Document], embedding_model: Embeddings) -> FAISS:
+    if not chunks:
+        raise CustomException("No chunks to index")
+    logger.info("Embedding %d chunks", len(chunks))
+    return FAISS.from_documents(chunks, embedding_model)
 
 
-def save_vector_store(text_chunks):
-    try:
-        if not text_chunks:
-            raise CustomException("No chunks were found..")
-        
-        logger.info("Generating your new vectorstore")
+def save_vector_store(db: FAISS, index_dir: Path) -> None:
+    index_dir.mkdir(parents=True, exist_ok=True)
+    db.save_local(str(index_dir))
+    logger.info("Saved FAISS index to %s", index_dir)
 
-        embedding_model = get_embedding_model()
 
-        db = FAISS.from_documents(text_chunks, embedding_model)
-
-        logger.info("Saving vectorstore")
-
-        db.save_local(DB_FAISS_PATH)
-
-        logger.info("Vectorstore saved successfully...")
-
-        return db
-    
-    except Exception as e:
-        error_message = CustomException("Failed to create new vectorstore " , e)
-        logger.error(str(error_message))
+def load_vector_store(index_dir: Path, embedding_model: Embeddings) -> FAISS:
+    if not (index_dir / "index.faiss").exists():
+        raise CustomException(f"No FAISS index found in {index_dir}")
+    # The pickle is produced by our own index build job, never by users.
+    return FAISS.load_local(str(index_dir), embedding_model, allow_dangerous_deserialization=True)

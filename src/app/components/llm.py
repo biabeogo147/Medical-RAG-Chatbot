@@ -1,21 +1,14 @@
-from app.config.config import *
-from app.common.logger import get_logger
-from app.common.custom_exception import CustomException
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-logger = get_logger(__name__)
+from app.config.config import GOOGLE_API_KEY, LLM_TIMEOUT_S, MODEL_NAME
 
 
-def load_llm(model_name: str = MODEL_NAME, api_key: str = GOOGLE_API_KEY):
-    try:
-        logger.info("Loading LLM from HuggingFace")
-
-        llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
-
-        logger.info("LLM loaded successfully...")
-
-        return llm
-    
-    except Exception as e:
-        error_message = CustomException("Failed to load a llm" , e)
-        logger.error(str(error_message))
+def load_llm(model_name: str = MODEL_NAME, api_key: str | None = GOOGLE_API_KEY):
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY is not set")
+    return ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=api_key,
+        timeout=LLM_TIMEOUT_S,
+        max_retries=1,
+    )
