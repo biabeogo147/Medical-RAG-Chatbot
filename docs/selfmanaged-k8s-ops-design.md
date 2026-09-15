@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-15
 - **Timebox:** Days 1–3 of a 7-day plan shared with Anime-Recommender (EKS)
-- **Budget:** ~0.32 USD/hour while running; destroyed when idle
+- **Budget:** ~0.46 USD/hour while running in ap-southeast-1 (plus ~0.06 USD/hour for the ops workstation); destroyed when idle
 - **Target role:** DevOps / Platform / SRE (LLMOps as a bonus)
 
 ## 1. Goal
@@ -52,9 +52,8 @@ This project is the **self-managed** counterpart to Anime-Recommender, which run
 6. `embed_documents` sends all chunks in one request, with no batching and no retry.
 
 ### Prerequisites
-- AWS account with admin access for Terraform, and AWS CLI v2 (installed: 2.36).
-- Terraform ≥ 1.10 (installed: 1.15.8), kubectl (installed: 1.36.1), Helm 3 (**to install**).
-- **Ansible is not available natively on Windows.** Run it from WSL2 or the `infra/ansible/Dockerfile` toolbox container. (**Decision: toolbox container**, so the setup is reproducible.)
+- An AWS account and an identity with admin access, used once from **AWS CloudShell** to apply the bootstrap stack.
+- **Nothing is installed on the operator's Windows laptop** beyond an editor and git. Every ops command (Terraform, Ansible, kubectl, Helm, Docker, cosign) runs on the **ops workstation**, an EC2 Ubuntu 24.04 instance created by the bootstrap stack (see §4.0).
 - An HF token **with the "Inference Providers" permission**; the current token returns 403. A Gemini API key.
 
 ## 3. Architecture
@@ -92,8 +91,26 @@ All components except Argo CD are installed **by Argo CD** from `deploy/argocd/`
 
 ## 4. Components
 
+### 4.0 Ops workstation (`infra/terraform/bootstrap/`)
+The bootstrap stack is applied once from AWS CloudShell and creates the two things every other stack depends on:
+- **State bucket:** versioned, encrypted, Block Public Access, TLS-only policy, `prevent_destroy`. After the first apply, the bootstrap stack's own state is migrated into this bucket (key `bootstrap/terraform.tfstate`).
+- **Ops workstation:**
+  - `t3.medium` Ubuntu 24.04 in its own small VPC (`10.20.0.0/24`, one public subnet, no NAT), so it does not depend on the default VPC; 30 GB gp3 encrypted.
+  - No inbound rules, no key pair, IMDSv2 required.
+  - Reached only with SSM Session Manager from the AWS Console.
+  - IAM role with `AdministratorAccess` (lab trade-off, documented) and `AmazonSSMManagedInstanceCore`, so no access keys exist anywhere.
+  - cloud-init (`workstation-init.sh`) installs pinned versions of Terraform, Ansible, kubectl, Helm, Docker, make, AWS CLI v2, the Session Manager plugin, cosign, yq and gh.
+  - Stopped when idle; `make down` never touches it.
+
+**Workflow:** edit on the laptop → push to GitHub → `git pull` on the workstation → run `make`.
+
+
 ### 4.1 Terraform (`infra/terraform/`)
-- **State:** S3 backend with native lockfile (`use_lockfile = true`). A small `infra/terraform/bootstrap/` stack creates the state bucket.
+- **Stacks split by lifetime,** all with state in the bootstrap bucket (native S3 lockfile, `use_lockfile = true`):
+  - `bootstrap/` (§4.0): state bucket and ops workstation. Applied from CloudShell only.
+  - `shared/`: ECR, the index artifacts bucket, the cosign KMS key, Secrets Manager secrets, budgets. Kept, so a daily cluster teardown never loses the index, secret values, the signing key or images.
+  - `cluster/`: everything below except those. Looks up shared resources with data sources by name; destroyed when idle.
+- A step-by-step build guide is in `docs/terraform-guide.md`.
 - **Network:** VPC with 3 public and 3 private subnets and 1 NAT gateway (cost choice, documented as a single point of failure).
 - **Compute:**
   - 3× `t3.large` Ubuntu 24.04 across 3 AZs, gp3 encrypted root volumes.
@@ -117,8 +134,10 @@ All components except Argo CD are installed **by Argo CD** from `deploy/argocd/`
   - ECR `medical-rag` with scan on push and a lifecycle policy keeping the last 20 images.
   - S3 buckets `*-artifacts` (versioned), `*-etcd-backups` (lifecycle 14 days) and `*-ssm-transfer`, all with Block Public Access and TLS-only policies.
   - KMS asymmetric key `ECC_NIST_P256` / `SIGN_VERIFY`, alias `alias/medical-rag-cosign`.
+- **Secrets Manager:** empty secrets `medical-rag/llm` (GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN, FLASK_SECRET_KEY) and `medical-rag/github` (bot token). Values are set with the AWS CLI, never in Terraform.
 - **Budgets:** alarms at 50 and 100 USD.
 - **Tagging:** default tags `project`, `env`, `owner`, `managed-by=terraform`.
+- **Inputs:** `shared/terraform.tfvars` (from the `.example`): budget email. Everything else has defaults.
 - **Outputs:** instance IDs, NLB DNS names, bucket names, ECR URL, and KMS ARN. Ansible and Helm values consume these outputs; nothing is hard-coded.
 
 ### 4.2 Ansible (`infra/ansible/`)
@@ -269,10 +288,10 @@ Each P0 item is done only when its check passes and the evidence is saved under 
 src/app/ ...                 app (gunicorn, /healthz, /readyz, /metrics, index CLI)
 tests/
 Dockerfile  .dockerignore  Jenkinsfile  Makefile
-infra/terraform/{bootstrap/, *.tf}
-infra/ansible/{Dockerfile, ansible.cfg, inventory/aws_ec2.yml, roles/, site.yml, upgrade.yml}
+infra/terraform/{bootstrap/, shared/, cluster/}
+infra/ansible/{requirements.yml, ansible.cfg, inventory/aws_ec2.yml, roles/, site.yml, upgrade.yml}
 deploy/{charts/medical-rag/, envs/{dev,prod}/, argocd/}
-docs/{evidence/, runbooks/, superpowers/specs/}
+docs/{evidence/, runbooks/}
 ```
 
 The `MLops-Common` submodule is kept for the on-prem history; the new Ansible roles supersede it. The README gains an architecture section and an "Evidence" table.
@@ -281,18 +300,20 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 
 | Target | What it does |
 |---|---|
-| `make infra` | `terraform apply` |
-| `make cluster` | Ansible `site.yml` via the toolbox container |
+| `make shared` | `terraform apply` of the shared stack (kept) |
+| `make infra` | `terraform apply` of the cluster stack |
+| `make cluster` | Ansible `site.yml` |
+| `make tunnel` | SSM port-forward to the internal API NLB and write the kubeconfig |
 | `make bootstrap` | Install Argo CD, apply `deploy/argocd/root.yaml` |
 | `make up` | infra + cluster + bootstrap |
-| `make down` | Delete Argo CD apps (releases PVs), then `terraform destroy`. S3 buckets are force-destroyed except the TF state bucket. |
+| `make down` | Delete Argo CD apps (releases PVs), then `terraform destroy` of the cluster stack (`make infra-destroy`). The shared and bootstrap stacks are kept. |
 | `make cost` | Print hours up × hourly estimate |
 
 ## 9. Schedule (days 1–3)
 
 | Day | Work |
 |---|---|
-| 1 | Terraform (incl. bootstrap state, KMS, ECR, budgets) and the Ansible toolbox + roles. **Cluster up with the HA check.** |
+| 1 | Terraform (incl. bootstrap state, KMS, ECR, budgets) the ops workstation, and the Ansible roles. **Cluster up with the HA check.** |
 | 2 | Argo CD bootstrap + addons, Helm chart, app changes (gunicorn, probes, metrics, index CLI + Job), dev env serving. |
 | 3 | Jenkins + full pipeline (scan, SBOM, KMS sign, dev bump, prod PR), prod env. Capture P0 evidence. P1 items only if time remains. |
 
@@ -301,7 +322,8 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Risk | Mitigation |
 |---|---|
 | HF Inference API quota for 7,079 chunks | Batching + backoff; index built once and reused via S3. Fallback: build the index locally and upload with the same CLI. |
-| Ansible via SSM is slow or flaky on Windows | Toolbox container pins the collection versions; fall back to WSL2. |
+| Ansible over SSM is slow or flaky | Run from the ops workstation in the same region; pin collection versions in `requirements.yml`. |
+| Ops workstation holds `AdministratorAccess` | Anyone in the account allowed to `ssm:StartSession` on it gets admin rights. Mitigations: no inbound ports, SSM-only access, IMDSv2, stopped when idle, GitHub access through a fine-grained token limited to this repo, tool downloads verified by checksum. P2: scope the role down. |
 | t3.large memory pressure (Jenkins + Prometheus + builds) | Resource requests on all addons; Prometheus retention 24h; at most 1 concurrent Jenkins build. |
 | No domain for ingress | Path-based routing on the NLB DNS; TLS is out of scope. |
 | **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | IMDSv2 hop limit 2 is required for pods today. NetworkPolicy egress deny to `169.254.169.254/32` for all app namespaces, allowed only for external-secrets, ebs-csi and Jenkins agents. Documented as a known limitation; P2 is self-hosted IRSA (pod-identity-webhook + S3-hosted OIDC discovery). |
@@ -318,5 +340,6 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Builds | BuildKit rootless (not Kaniko) |
 | Signing | Cosign + AWS KMS |
 | Secrets | External Secrets + Secrets Manager |
-| Ansible runtime | Toolbox container |
+| Ops tooling | EC2 Ubuntu ops workstation via SSM (nothing installed locally) |
+| Ansible runtime | Native on the ops workstation |
 | Kubernetes version | Start at 1.35, upgrade drill to 1.36 |

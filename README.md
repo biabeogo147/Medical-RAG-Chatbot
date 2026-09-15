@@ -55,20 +55,29 @@ docker compose up --build   # index-build runs once, then the app starts on http
 
 ## ☁️ Deploy to AWS
 
-**Prerequisites:**
-- **Tools:** AWS CLI v2 with admin credentials and the Session Manager plugin, Terraform ≥ 1.10, kubectl, Helm 3, Docker, cosign. Ansible runs inside a toolbox container, so it does not need to be installed.
-- **Keys:** a Hugging Face token with the *Inference Providers* permission, a Gemini API key, and a GitHub token that can push to this repo and open pull requests.
+Step-by-step Terraform instructions: [`docs/terraform-guide.md`](docs/terraform-guide.md).
 
-1. **Create the Terraform state bucket** (once per account):
+**Prerequisites:** an AWS account with an admin identity, a browser, and git. Nothing else runs on your laptop. You also need a Hugging Face token with the *Inference Providers* permission, a Gemini API key, and a GitHub token that can push to this repo and open pull requests.
+
+1. **Create the state bucket and the ops workstation** (once per account). Open **AWS CloudShell** in the console and run:
    ```bash
+   git clone https://github.com/biabeogo147/Medical-RAG-Chatbot && cd Medical-RAG-Chatbot
+   ./infra/terraform/bootstrap/install-terraform.sh      # into ~/bin
    terraform -chdir=infra/terraform/bootstrap init
    terraform -chdir=infra/terraform/bootstrap apply
    ```
-2. **Set your variables:** region, owner tag and the budget alert email.
+   The workstation is an EC2 Ubuntu instance with every ops tool preinstalled. Connect to it from **EC2 → Instances → Connect → Session Manager**, then run all the following steps there:
    ```bash
-   cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars
+   sudo su - ubuntu
+   git clone https://github.com/biabeogo147/Medical-RAG-Chatbot && cd Medical-RAG-Chatbot
    ```
-3. **Provision the infrastructure:** VPC, 3 EC2 nodes, load balancers, ECR, S3, KMS, Secrets Manager entries and budget alarms.
+   Edit code on your laptop, push, and `git pull` on the workstation. Stop the instance when you are done for the day.
+2. **Create the long-lived services:** ECR, the index artifacts bucket, the cosign KMS key, empty secrets and the budget alarm. They are kept when the cluster is destroyed.
+   ```bash
+   cp infra/terraform/shared/terraform.tfvars.example infra/terraform/shared/terraform.tfvars   # set budget_email
+   make shared
+   ```
+3. **Provision the cluster infrastructure:** VPC, 3 EC2 nodes, load balancers, IAM role and cluster buckets.
    ```bash
    make infra
    ```
@@ -102,17 +111,17 @@ docker compose up --build   # index-build runs once, then the app starts on http
    Merge the pull request to release to `prod`.
 8. **Verify the release:**
    ```bash
-   NLB=$(terraform -chdir=infra/terraform output -raw public_nlb_dns)
+   NLB=$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)
    curl http://$NLB/readyz            # prod
    curl http://$NLB/dev/readyz        # dev
    IMAGE=$(yq .image.ref deploy/envs/prod/values.yaml)     # repo@sha256:...
    cosign verify --key awskms:///alias/medical-rag-cosign "$IMAGE"
    kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
    ```
-9. **Tear down** when idle (about 0.32 USD/hour while running):
+9. **Tear down** when idle (about 0.46 USD/hour while running):
    ```bash
    make cost    # hours up × hourly estimate
-   make down    # removes Argo CD apps first, then terraform destroy
+   make down    # removes Argo CD apps first, then destroys the cluster stack
    ```
 
 ## 🧩 End-to-End MLOps Blueprint
@@ -120,7 +129,7 @@ docker compose up --build   # index-build runs once, then the app starts on http
 | Lifecycle Stage | Capabilities | Tooling & Artifacts |
 | --- | --- | --- |
 | **Data Management** | Content-hashed index versions | `python -m app.index`, S3 artifacts bucket |
-| **Infrastructure** | Reproducible, idempotent cluster build | `infra/terraform`, `infra/ansible` |
+| **Infrastructure** | Reproducible, idempotent cluster build | `infra/terraform/{bootstrap,shared,cluster}`, `infra/ansible` |
 | **CI** | Gated build → signed image | `Jenkinsfile`, BuildKit, Trivy, Syft, Cosign + KMS, ECR |
 | **Continuous Delivery** | Git as source of truth, digest-pinned images | `deploy/charts/medical-rag`, `deploy/envs/{dev,prod}`, Argo CD |
 | **Security** | Hardened pods, secrets outside Git | Kyverno, NetworkPolicies, External Secrets, Secrets Manager |
@@ -130,7 +139,7 @@ docker compose up --build   # index-build runs once, then the app starts on http
 - **Index refresh:** changing the PDF, chunk settings or embedding model produces a new index version. An Argo CD PreSync Job builds it before the pods roll, and skips the build if that version already exists.
 - **Index rollback:** revert `index.version` in `deploy/envs/<env>/values.yaml`. Argo CD syncs the previous index back.
 - **Retrieval & model tuning:** set `RETRIEVER_K` or `MODEL_NAME` in the env values and promote through `dev` → `prod`. Changing `EMBEDDING_MODEL_NAME` also produces a new `index.version`, so promote both together.
-- **Cluster day-2:** etcd is snapshotted to S3 every 6 hours, and Kubernetes is upgraded one node at a time with the Ansible `upgrade.yml` playbook (run through the toolbox container). Step-by-step procedures live in [`docs/runbooks/`](docs/runbooks/).
+- **Cluster day-2:** etcd is snapshotted to S3 every 6 hours, and Kubernetes is upgraded one node at a time with the Ansible `upgrade.yml` playbook. Step-by-step procedures live in [`docs/runbooks/`](docs/runbooks/).
 
 ## 📚 Docs
 - Design: [`docs/selfmanaged-k8s-ops-design.md`](docs/selfmanaged-k8s-ops-design.md)
