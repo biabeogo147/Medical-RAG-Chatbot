@@ -1,2 +1,6 @@
 *.sh text eol=lf
 Dockerfile text eol=lf
+
+*.tf text eol=lf
+*.hcl text eol=lf
+Makefile text eol=lf

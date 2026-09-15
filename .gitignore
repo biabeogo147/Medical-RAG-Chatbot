@@ -8,3 +8,11 @@ __pycache__/
 logs
 vectorstore
 index-store/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+tfplan
