@@ -93,17 +93,18 @@ needs nothing else on the laptop.
    cp infra/terraform/shared/terraform.tfvars.example infra/terraform/shared/terraform.tfvars   # set budget_email
    make shared
    ```
-3. **Prepare DNS, TLS and WireGuard.** Before changing nameservers, copy every existing DNS record to
+3. **Prepare DNS and TLS.** Before changing nameservers, copy every existing DNS record to
    Route 53. Then delegate the zone, create the Sectigo CSR outside the repo, and store the Rancher
-   password, TLS chain and WireGuard keys in Secrets Manager. Exact commands and checks are in
+   password and TLS chain in Secrets Manager. Exact commands and checks are in
    [Terraform guide step 17](docs/terraform/guide.md#step-17--migrate-dns-and-store-the-keys).
-4. **Provision the cluster infrastructure:** VPC, 3 Kubernetes nodes, the WireGuard gateway, load
-   balancers, IAM roles and cluster buckets.
+4. **Create the WireGuard keys, then provision the cluster infrastructure:** VPC, 3 Kubernetes
+   nodes, the WireGuard gateway, load balancers, IAM roles and cluster buckets. The keys must be in
+   Secrets Manager before `make infra`, because the gateway reads them when it first boots.
+   [Terraform guide step 18](docs/terraform/guide.md#step-18--wireguard-and-the-private-rancher-entry-point)
+   has the key commands and the laptop's tunnel profile.
    ```bash
    make infra
    ```
-   Then finish the WireGuard client profile on the laptop, as in
-   [Terraform guide step 18](docs/terraform/guide.md#step-18--wireguard-and-the-private-rancher-entry-point).
 5. **Store the application keys.** External Secrets syncs them into the cluster later.
    ```bash
    aws secretsmanager put-secret-value --secret-id medical-rag/llm \

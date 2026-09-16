@@ -49,8 +49,8 @@ All three store their state in the same S3 bucket under different keys: `bootstr
 | 14 | Workstation | 2 Network Load Balancers | both `active`, 3 targets each |
 | 15 | Workstation | Rebuild test and evidence | destroy → apply works (65 resources), `plan` → `No changes` |
 | 16 | Workstation | DNS zone, three private-access secrets, secret inventory output | shared stack has 17 managed resources |
-| 17 | Workstation + laptop | DNS migration, Sectigo certificate and WireGuard keys | DNS records survive delegation; secrets expose names only |
-| 18 | Workstation + laptop | WireGuard gateway and private Rancher entry point | handshake recorded; internal NLB lists 6443 and 443; Rancher name resolves to private addresses |
+| 17 | Workstation + laptop | DNS migration, Sectigo certificate, Rancher password | DNS records survive delegation; secrets expose names only |
+| 18 | Workstation + laptop | WireGuard keys, gateway and private Rancher entry point | handshake recorded; internal NLB lists 6443 and 443; Rancher name resolves to private addresses |
 
 ## Cost
 
@@ -2366,10 +2366,10 @@ The output includes four Route 53 name servers and the empty `rancher`, `rancher
 
 ### Step 17 — Migrate DNS and store the keys
 
-**Goal:** the domain answers from Route 53 without losing any existing record, and the certificate,
-the Rancher password and the WireGuard keys are stored before the cluster is built.
+**Goal:** the domain answers from Route 53 without losing any existing record, and the certificate
+and the Rancher password are stored before the cluster is built.
 
-This step changes DNS and secret values, not code, so there is nothing to commit. It has four parts.
+This step changes DNS and secret values, not code, so there is nothing to commit. It has three parts.
 Do them in order; two of them end with a wait.
 
 | Part | Where you work | Then wait |
@@ -2377,7 +2377,6 @@ Do them in order; two of them end with a wait.
 | 17.1 Point the domain at Route 53 | Registrar website, AWS console, workstation | Minutes to hours |
 | 17.2 Get the certificate from Sectigo | Workstation, Sectigo website, registrar website | Minutes to hours |
 | 17.3 Put the certificate on the workstation and store it | Laptop, workstation | — |
-| 17.4 Create the WireGuard keys | Laptop, workstation | — |
 
 > **Coming back in a new Session Manager window?** Run `sudo su - ubuntu`, then `tmux new -As tf`.
 > Every block below starts with the `cd` it needs.
@@ -2504,42 +2503,40 @@ You are done when the order page says *Issued* or the certificate email arrives.
 
 Sectigo sends the certificate to you — usually a `.zip` by email, or a download on the order page — so
 the files land on the laptop. Session Manager has no upload button, but certificates are plain text,
-so you move them by pasting. You do not need to know which file is which: the workstation sorts them.
+so you move them by pasting into two files.
 
-**1. Laptop — open the files.** Extract the `.zip`. Open every file ending in `.crt`, `.ca-bundle`,
-`.cer` or `.pem` in Notepad (right-click → Open with → Notepad). Each holds one or more blocks from
-`-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----`. A file that shows unreadable characters
-instead is in binary form: download the *Nginx* or *PEM* format from the order page.
+**1. Laptop — find the two files.** Extract the `.zip`. It contains:
 
-**2. Workstation — paste all of them into one file.** Run:
+- **your certificate**, issued to `rancher.recruitai.io.vn`. Double-click a `.crt` file to check: the
+  window shows *Issued to: rancher.recruitai.io.vn*.
+- **the CA bundle**, usually a file ending in `.ca-bundle`, with Sectigo's certificates that link
+  yours to a trusted root.
+
+Open both in Notepad (right-click → Open with → Notepad). Each shows text between
+`-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----`; the bundle has several such blocks.
+
+**2. Workstation — paste your certificate.**
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-cat > sectigo.pem <<'EOF'
+cat > rancher.crt <<'EOF'
 ```
-The prompt changes to `>`. The shell is not stuck: it is writing everything you paste into
-`sectigo.pem`. For each file from 1, press Ctrl+A and Ctrl+C in Notepad, paste into Session Manager
-(Ctrl+V, or right-click → Paste), and press Enter. After the last file, type `EOF` and press Enter;
-the normal prompt comes back. If something went wrong, press Ctrl+C and start this part again: the
-file is written from scratch.
+The prompt changes to `>`. The shell is not stuck: it is writing what you paste into `rancher.crt`.
+In Notepad, open **your certificate** and press Ctrl+A, Ctrl+C. Paste into Session Manager (Ctrl+V, or
+right-click → Paste), press Enter, type `EOF` and press Enter. The normal prompt comes back. If
+something went wrong, press Ctrl+C and run the block again: the file is written from scratch.
 
-**3. Workstation — sort the certificates and check them.**
+**3. Workstation — paste the CA bundle,** the same way:
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
-sed 's/-----END CERTIFICATE-----/&\n/' sectigo.pem \
-  | awk '/-----BEGIN CERTIFICATE-----/ {n++} n {print > ("part-" n ".pem")}'
-: > rancher.crt
-: > ca-bundle.crt
-for f in part-*.pem; do
-  if openssl x509 -in "$f" -noout -checkhost rancher.recruitai.io.vn | grep -q "does match"; then
-    cat "$f" >> rancher.crt
-  else
-    cat "$f" >> ca-bundle.crt
-  fi
-done
-rm -f part-*.pem
+umask 077
+cat > ca-bundle.crt <<'EOF'
+```
+Paste **all** of the `.ca-bundle` file, press Enter, type `EOF` and press Enter.
 
-grep -c "BEGIN CERTIFICATE" rancher.crt ca-bundle.crt
+**4. Workstation — check the two files.**
+```bash
+cd ~/tls/rancher.recruitai.io.vn
 openssl x509 -in rancher.crt -noout -subject -issuer -enddate
 openssl verify -untrusted ca-bundle.crt rancher.crt
 if [ "$(openssl x509 -in rancher.crt -pubkey -noout | openssl sha256)" = \
@@ -2549,114 +2546,80 @@ else
   echo "MISMATCH: this certificate was not issued for rancher.csr"
 fi
 ```
-The first half splits `sectigo.pem` into one file per certificate. It puts the one issued for
-`rancher.recruitai.io.vn` into `rancher.crt`, and all the others — Sectigo's intermediate certificates,
-which link yours to a root that browsers trust — into `ca-bundle.crt`. Expect:
+Expect a subject naming `rancher.recruitai.io.vn` and a Sectigo issuer, then `rancher.crt: OK` (the
+chain is complete), then `OK: the certificate matches rancher.key`. If the subject names a Sectigo CA
+instead, the two files were swapped: repeat 2 and 3. For other errors, see Troubleshooting.
 
-- `rancher.crt:1`, and `ca-bundle.crt:` followed by 1 or more,
-- a subject naming `rancher.recruitai.io.vn` and a Sectigo issuer,
-- `rancher.crt: OK`, meaning the chain is complete,
-- `OK: the certificate matches rancher.key`.
+**5. Workstation — store the certificate.** Run the commands one at a time. All of them are safe to
+run again, for example after a renewal.
 
-For `rancher.crt:0` or `MISMATCH`, see Troubleshooting.
-
-**4. Workstation — store the certificate.** Safe to run again, for example after a renewal:
+Join your certificate and the CA bundle into one file, in the order a web server sends them:
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-awk 1 rancher.crt ca-bundle.crt > fullchain.crt
-jq -n --rawfile crt fullchain.crt --rawfile key rancher.key \
-  '{"tls.crt": $crt, "tls.key": $key}' > rancher-tls.json &&
-  aws secretsmanager put-secret-value --secret-id medical-rag/rancher-tls \
-    --secret-string file://rancher-tls.json
+cat rancher.crt ca-bundle.crt > fullchain.crt
+```
+
+Put the chain and the private key into one JSON file, the format the secret uses:
+```bash
+jq -n --rawfile crt fullchain.crt --rawfile key rancher.key '{"tls.crt": $crt, "tls.key": $key}' > rancher-tls.json
+```
+
+Upload it to Secrets Manager:
+```bash
+aws secretsmanager put-secret-value --secret-id medical-rag/rancher-tls --secret-string file://rancher-tls.json
+```
+Expect a few lines ending with a `VersionId`. If it prints an error instead, fix the cause and run the
+`jq` command again before retrying, because the next command deletes the file.
+
+Delete the JSON file, which holds a copy of the private key:
+```bash
 shred -u rancher-tls.json
-aws secretsmanager get-secret-value --secret-id medical-rag/rancher-tls \
-  --query SecretString --output text | jq -c 'keys'
 ```
-Expect `["tls.crt","tls.key"]`. `fullchain.crt` is your certificate followed by the intermediates,
-the order a web server sends them in. `awk 1` joins the files instead of `cat`, which glues
-`-----END CERTIFICATE-----` to the next `-----BEGIN CERTIFICATE-----` whenever a file lacks a final
-newline.
 
-**5. Workstation — create the Rancher password.** The `if` makes this safe to run again: it never
-replaces a password that already exists.
+Check that the secret now holds both parts, without printing them:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/rancher-tls --query SecretString --output text | jq -c 'keys'
+```
+Expect `["tls.crt","tls.key"]`.
+
+**6. Workstation — create the Rancher password.** Run the commands one at a time. Do this only once:
+creating it again would replace the password.
+
+First check whether a password already exists:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/rancher --query VersionId --output text
+```
+- **It prints an ID:** the password already exists. Skip the rest of this part.
+- **It prints an error mentioning `can't find the specified secret value`:** there is no password yet.
+  Continue.
+
+Generate a random password and put it into a JSON file:
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-if aws secretsmanager get-secret-value --secret-id medical-rag/rancher >/dev/null 2>&1; then
-  echo "The Rancher password already exists; nothing changed."
-else
-  openssl rand -base64 24 | jq -Rn '{bootstrapPassword: input}' > rancher-password.json &&
-    aws secretsmanager put-secret-value --secret-id medical-rag/rancher \
-      --secret-string file://rancher-password.json
-  shred -u rancher-password.json
-fi
+openssl rand -base64 24 | jq -Rn '{bootstrapPassword: input}' > rancher-password.json
 ```
+
+Upload it to Secrets Manager:
+```bash
+aws secretsmanager put-secret-value --secret-id medical-rag/rancher --secret-string file://rancher-password.json
+```
+Expect a few lines ending with a `VersionId`.
+
+Delete the JSON file:
+```bash
+shred -u rancher-password.json
+```
+
 You need the password at the first Rancher login, in the GitOps phase. This prints it on screen:
 ```bash
-aws secretsmanager get-secret-value --secret-id medical-rag/rancher \
-  --query SecretString --output text | jq -r '.bootstrapPassword'
+aws secretsmanager get-secret-value --secret-id medical-rag/rancher --query SecretString --output text | jq -r '.bootstrapPassword'
 ```
 
 The certificate's private key now exists in two places: `rancher.key` in this directory, which only
 `ubuntu` can open, and Secrets Manager. The GitOps phase adds a third, the `tls-rancher-ingress`
 Secret.
-
-#### 17.4 Create the WireGuard keys
-
-WireGuard uses two key pairs, one for the laptop and one for the gateway. Each private key stays where
-it was made; only the public keys are exchanged.
-
-**1. Laptop — install WireGuard and create the laptop's key pair.** Install WireGuard for Windows from
-<https://www.wireguard.com/install/> and open it. Click the arrow next to **Add Tunnel**, choose
-**Add empty tunnel…**, name it `medical-rag`, copy the text after **Public key:**, and click
-**Save**. The private key stays inside this tunnel. Step 18 edits this same tunnel. Do not create a
-second one: it would get a new key that the gateway does not know.
-
-**2. Workstation — install the WireGuard tools.**
-```bash
-sudo apt-get -o DPkg::Lock::Timeout=600 update
-sudo apt-get -o DPkg::Lock::Timeout=600 install -y wireguard-tools
-```
-
-**3. Workstation — enter the laptop's public key.** Paste **only this line**, press Enter, paste the
-public key from 1 at the prompt, and press Enter:
-```bash
-read -r -p "Laptop public key: " OPERATOR_PUBLIC_KEY
-```
-
-**4. Workstation — create the gateway's key pair and store it.**
-```bash
-cd ~/tls/rancher.recruitai.io.vn
-umask 077
-if [[ ! $OPERATOR_PUBLIC_KEY =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]]; then
-  echo "STOP: that is not a WireGuard public key. Copy it again from the app, then repeat part 3."
-elif [ -e wireguard-server.pub ]; then
-  echo "STOP: the gateway key already exists. To change the laptop key, see step 18."
-else
-  wg genkey | tee wireguard-server.key | wg pubkey > wireguard-server.pub
-  if jq -n --rawfile serverPrivateKey wireguard-server.key --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" \
-       '{serverPrivateKey: ($serverPrivateKey | rtrimstr("\n")), operatorPublicKey: $operatorPublicKey}' \
-       > wireguard.json &&
-     aws secretsmanager put-secret-value --secret-id medical-rag/wireguard \
-       --secret-string file://wireguard.json; then
-    echo "OK: the gateway key is stored"
-  else
-    echo "FAILED: nothing was stored. Run this block again."
-    rm -f wireguard-server.pub
-  fi
-  shred -u wireguard.json wireguard-server.key
-fi
-aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
-  --query SecretString --output text | jq -c 'keys'
-cat wireguard-server.pub
-```
-Expect `OK: the gateway key is stored`, then `["operatorPublicKey","serverPrivateKey"]`, then one line:
-the gateway's public key, which step 18 puts into the laptop's tunnel.
-
-The gateway's private key is now only in Secrets Manager; the gateway copies it into
-`/etc/wireguard/wg0.conf` when it first boots. Its public key stays in `wireguard-server.pub`, and
-`cat ~/tls/rancher.recruitai.io.vn/wireguard-server.pub` shows it again at any time.
 
 ---
 
@@ -3033,6 +2996,76 @@ Argo CD installs Rancher later; its chart pin, values, secret wiring and upgrade
 **Commit and push** (laptop):
 `git add infra/terraform/cluster && git commit -m "Add private Rancher access through WireGuard" && git push`
 
+**Create the WireGuard keys** before `make infra`: the gateway reads them from Secrets Manager once,
+when it first boots. WireGuard uses two key pairs, one for the laptop and one for the gateway. Each
+private key stays where it was made; only the public keys are exchanged. Run the commands one at a
+time.
+
+**Laptop — install WireGuard and create the laptop's key pair.** Install WireGuard for Windows from
+<https://www.wireguard.com/install/> and open it. Click the arrow next to **Add Tunnel**, choose
+**Add empty tunnel…**, name it `medical-rag`, copy the text after **Public key:**, and click
+**Save**. The private key stays inside this tunnel. Later in this step you edit this same tunnel. Do
+not create a second one: it would get a new key that the gateway does not know.
+
+**Workstation** — install the WireGuard tools:
+```bash
+sudo apt-get -o DPkg::Lock::Timeout=600 update
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y wireguard-tools
+```
+
+Check that the keys have not been stored already:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/wireguard --query VersionId --output text
+```
+- **It prints an ID:** the keys already exist. Skip to **Run**. To replace the laptop's key, see
+  *Only if the laptop's WireGuard key is lost* at the end of this step.
+- **It prints an error mentioning `can't find the specified secret value`:** continue.
+
+Paste **only this line**, press Enter, paste the laptop's public key at the prompt, and press Enter:
+```bash
+read -r -p "Laptop public key: " OPERATOR_PUBLIC_KEY
+```
+
+Check what you pasted:
+```bash
+echo "${#OPERATOR_PUBLIC_KEY} $OPERATOR_PUBLIC_KEY"
+```
+Expect `44`, a space, then the key, ending in `=`. Anything else: run the `read` line again.
+
+Create the gateway's key pair:
+```bash
+cd ~/tls/rancher.recruitai.io.vn
+umask 077
+wg genkey | tee wireguard-server.key | wg pubkey > wireguard-server.pub
+```
+
+Put the gateway's private key and the laptop's public key into one JSON file:
+```bash
+jq -n --rawfile serverPrivateKey wireguard-server.key --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" '{serverPrivateKey: ($serverPrivateKey | rtrimstr("\n")), operatorPublicKey: $operatorPublicKey}' > wireguard.json
+```
+
+Upload it to Secrets Manager:
+```bash
+aws secretsmanager put-secret-value --secret-id medical-rag/wireguard --secret-string file://wireguard.json
+```
+Expect a few lines ending with a `VersionId`. If it prints an error, fix the cause, then run the `jq`
+command and this one again. **Do not run the next command until the upload succeeds:** it deletes the
+only copy of the gateway's private key.
+
+Delete the private key file and the JSON file:
+```bash
+shred -u wireguard.json wireguard-server.key
+```
+
+Check the stored keys without printing them, and show the gateway's public key:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/wireguard --query SecretString --output text | jq -c 'keys'
+cat ~/tls/rancher.recruitai.io.vn/wireguard-server.pub
+```
+Expect `["operatorPublicKey","serverPrivateKey"]`, then one line: the gateway's public key, which goes
+into the laptop's tunnel after `make infra`. The gateway's private key is now only in Secrets Manager;
+the gateway copies it into `/etc/wireguard/wg0.conf` when it first boots.
+
 **Run** (workstation):
 ```bash
 cd ~/Medical-RAG-Chatbot && git pull
@@ -3217,9 +3250,9 @@ longer connects, and the new one does.
 | `InvalidChangeBatch … is not permitted in zone` | The CNAME name was entered without `.recruitai.io.vn`. Run the two `read` lines of 17.2 again with the full name |
 | Sectigo stays *pending validation* | `dig +short CNAME <full name> @1.1.1.1` must print Sectigo's value. If it is empty, the name is missing in Route 53, or doubled at the registrar (`….recruitai.io.vn.recruitai.io.vn`). Check the validation method is DNS (CNAME) |
 | A `CAA` lookup names another certificate authority | Delete that `CAA` record in Route 53 and at the registrar, or add one that allows `sectigo.com` |
-| `rancher.crt:0` in 17.3 | None of the pasted certificates was issued for `rancher.recruitai.io.vn`. Check the order's domain, paste every file Sectigo sent, and repeat 17.3 |
-| `unable to get local issuer certificate` in 17.3 | `ca-bundle.crt` is empty or incomplete: an intermediate file was not pasted. Repeat 17.3 with every file |
-| `Could not read certificate` or `unable to load certificate` | A paste lost a `BEGIN` or `END` line. Repeat 17.3 |
+| In 17.3, the subject of `rancher.crt` names a Sectigo CA, not `rancher.recruitai.io.vn` | The bundle was pasted into `rancher.crt`. Paste the file issued to `rancher.recruitai.io.vn` into `rancher.crt` and the `.ca-bundle` into `ca-bundle.crt` (17.3, parts 2 and 3) |
+| `unable to get local issuer certificate` in 17.3 | `ca-bundle.crt` is empty or incomplete. Paste the whole `.ca-bundle` file again (17.3, part 3) |
+| `Could not read certificate` or `unable to load certificate` in 17.3 | The file is empty, or a paste lost its `BEGIN` or `END` line. Paste it again (17.3, part 2 or 3) |
 | `MISMATCH` in 17.3 | The certificate was issued for a different request, usually because a new key was made after ordering. Reissue it on the Sectigo website with the current `rancher.csr` |
 | `make infra` in step 18: `Tried to create resource record set … but it already exists` | A `rancher` or `vpn` record was copied into Route 53 in 17.1. Delete it in the console and run `make infra` again |
 | `no matching Route 53 Hosted Zone found` in step 18 | Step 16 was not applied, or the two stacks use different domains |
@@ -3228,6 +3261,6 @@ longer connects, and the new one does.
 | VPN connects but `rancher.recruitai.io.vn` does not resolve | The profile is missing `DNS = 10.10.0.2`, so the home router answered and dropped the private address. Add the line and reconnect; in PowerShell, `Resolve-DnsName rancher.recruitai.io.vn -Server 10.10.0.2` must return `10.10.x.x` addresses |
 | VPN connects but Rancher is unreachable | Confirm the client routes `10.10.0.0/16`, `iptables -S WG_FWD` on the gateway lists the 443 rule, and the internal NLB has a healthy 30443 target |
 | Anything other than Rancher times out through the VPN | By design: the gateway forwards only DNS and TCP 443. Reach the Kubernetes API with `make tunnel` on the workstation |
-| The gateway never prints `READY` | cloud-init failed after its retries. From the workstation, `aws ssm start-session --target "$WG_ID"`, then `sudo tail -50 /var/log/cloud-init-output.log`. A failure at `get-secret-value` usually means `medical-rag/wireguard` has no value yet (17.4) |
+| The gateway never prints `READY` | cloud-init failed after its retries. From the workstation, `aws ssm start-session --target "$WG_ID"`, then `sudo tail -50 /var/log/cloud-init-output.log`. A failure at `get-secret-value` usually means `medical-rag/wireguard` has no value yet (step 18, *Create the WireGuard keys*) |
 | `wg-quick` fails with `Chain already exists` | An earlier start stopped half-way. In a session on the gateway: `sudo iptables -D FORWARD -i wg0 -j WG_FWD; sudo iptables -F WG_FWD; sudo iptables -X WG_FWD; sudo systemctl restart wg-quick@wg0` |
 | A node shows `ConnectionLost` in SSM | NAT gateway or route problem: check step 10, then reboot the instance |

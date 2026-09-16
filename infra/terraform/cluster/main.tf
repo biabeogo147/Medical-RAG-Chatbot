@@ -46,3 +46,8 @@ data "aws_secretsmanager_secret" "app" {
 
   name = "${var.project}/${each.key}"
 }
+
+data "aws_secretsmanager_secret" "app" {
+  for_each = toset(["llm", "github", "rancher", "rancher-tls"])
+  name     = "${var.project}/${each.key}"
+}
