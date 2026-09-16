@@ -2366,106 +2366,181 @@ The output includes four Route 53 name servers and the empty `rancher`, `rancher
 
 ### Step 17 — Migrate DNS and store the keys
 
-**Goal:** delegation changes without breaking existing names, and all private values exist before
-the cluster is built.
+**Goal:** the domain answers from Route 53 without losing any existing record, and the certificate,
+the Rancher password and the WireGuard keys are stored before the cluster is built.
 
-**Run — migrate DNS safely.** Before the cutover:
+This step changes DNS and secret values, not code, so there is nothing to commit. It has four parts.
+Do them in order; two of them end with a wait.
 
-- Lower the TTLs at the current DNS provider, and wait for the old TTL to pass.
-- Export every record except the apex SOA and NS, keeping type, name, value, TTL and routing policy.
-  Do not assume only the common types exist.
-- Recreate them in Route 53 and compare the answers from each new name server. A missing mail or
-  verification record breaks a service silently, even while the website still works.
+| Part | Where you work | Then wait |
+|---|---|---|
+| 17.1 Point the domain at Route 53 | Registrar website, AWS console, workstation | Minutes to hours |
+| 17.2 Get the certificate from Sectigo | Workstation, Sectigo website, registrar website | Minutes to hours |
+| 17.3 Put the certificate on the workstation and store it | Laptop, workstation | — |
+| 17.4 Create the WireGuard keys | Laptop, workstation | — |
 
-Print the new name servers:
+> **Coming back in a new Session Manager window?** Run `sudo su - ubuntu`, then `tmux new -As tf`.
+> Every block below starts with the `cd` it needs.
+
+#### 17.1 Point the domain at Route 53
+
+**1. Registrar website — note the records you already have.** Open the DNS record list of
+`recruitai.io.vn`. If you never added a record there (no website, no email, no verification record),
+skip to 3. Otherwise write down each record's type, host, value and TTL. Leave out `rancher` and
+`vpn`: Terraform creates those in step 18, and a copy would make it fail.
+
+**2. AWS console — copy them into Route 53.** Open **Route 53 → Hosted zones → recruitai.io.vn →
+Create record**, and enter each record from 1 with the same type, host, value and TTL.
+
+**3. Workstation — check that DNSSEC is off.**
 ```bash
+dig +short DS recruitai.io.vn @1.1.1.1
+```
+Empty output is the usual case: continue. If it prints something, DNSSEC is switched on at the
+registrar. Switch it off in the registrar's DNSSEC settings, wait a day, and run the command again
+until it prints nothing; otherwise every lookup for the domain fails once Route 53 starts answering.
+
+**4. Change the name servers.** Workstation — print the four names:
+```bash
+cd ~/Medical-RAG-Chatbot
 terraform -chdir=infra/terraform/shared output route53_name_servers
 ```
+Registrar website — open the domain's **name server** setting. It is separate from the record list
+and is usually called *Name servers* or *DNS servers*. Choose custom name servers, enter the four
+names without quotes (and without a final dot, if the form rejects it), and save. Leave the old
+records at the registrar untouched for 48 hours; you do not have to wait that long to continue.
 
-If the parent/registrar has a DS record, remove it first, confirm it has disappeared through public
-resolvers, and wait at least its previous TTL. A stale DS paired with unsigned Route 53 answers makes
-the whole zone return `SERVFAIL`. Then change the name servers at the registrar. Keep the old DNS
-provider serving the unchanged zone for at least 48 hours. After the Route 53 delegation is stable, optionally enable Route 53 DNSSEC signing,
-wait for the KSK to become active, and publish the new DS at the registrar.
-
-**Verify — DNS** (run from the ops workstation and also check an independent public resolver):
+**5. Workstation — verify**, a few minutes to a few hours later:
 ```bash
-dig +short NS recruitai.io.vn
-dig +short DS recruitai.io.vn @1.1.1.1
-for ns in $(terraform -chdir=infra/terraform/shared output -json route53_name_servers | jq -r '.[]'); do
-  dig +short @"$ns" recruitai.io.vn SOA
-done
+dig +short NS recruitai.io.vn @1.1.1.1
 ```
-Expect four `awsdns` names after delegation. During an unsigned migration, the DS query must be empty.
-Re-check every inventoried record, the existing website, and mail flow before continuing.
+Expect the four `awsdns` names. `@1.1.1.1` asks Cloudflare's public DNS, so this is what the rest of
+the internet sees. If you copied records in 2, check each one the same way: `dig +short <type>
+<host>.recruitai.io.vn @1.1.1.1` must print the value you wrote down.
 
-**Run — create the private key and the certificate request** on the ops workstation, outside the repo:
+#### 17.2 Get the certificate from Sectigo
+
+**1. Workstation — create the private key and the certificate request.** The `if` stops this from
+replacing a key once a request exists for it: a new key would make the certificate Sectigo issues for
+the old request useless. (A key left without a request, by a run that failed half-way, is simply
+replaced.)
 ```bash
 install -d -m 700 ~/tls/rancher.recruitai.io.vn
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-openssl req -new -newkey rsa:2048 -nodes \
-  -keyout rancher.key -out rancher.csr \
-  -subj "/CN=rancher.recruitai.io.vn" \
-  -addext "subjectAltName=DNS:rancher.recruitai.io.vn"
+if [ -e rancher.csr ]; then
+  echo "STOP: rancher.csr already exists. Keep it and rancher.key; do not create new ones."
+else
+  openssl req -new -newkey rsa:2048 -nodes \
+    -keyout rancher.key -out rancher.csr \
+    -subj "/CN=rancher.recruitai.io.vn" \
+    -addext "subjectAltName=DNS:rancher.recruitai.io.vn"
+fi
 openssl req -in rancher.csr -noout -subject
 openssl req -in rancher.csr -noout -text | grep -A1 "Subject Alternative Name"
 ls
 ```
-Expect a subject naming `rancher.recruitai.io.vn`, the line `DNS:rancher.recruitai.io.vn`, and exactly
-two files: `rancher.csr` and `rancher.key`. There is no certificate yet: Sectigo creates it from the
-request.
+Expect a subject naming `rancher.recruitai.io.vn`, the line `DNS:rancher.recruitai.io.vn`, and two
+files: `rancher.csr`, the request you send to Sectigo, and `rancher.key`, the private key, which never
+leaves this directory. There is no certificate yet: Sectigo creates it from the request.
 
-Print the request with `cat rancher.csr` and paste all of it, including the `BEGIN` and `END` lines,
-into the Sectigo order. `rancher.key` stays in this mode-700 directory: never commit it and never copy
-it to the laptop.
+**2. Order the certificate.** Workstation — print the request:
+```bash
+cat ~/tls/rancher.recruitai.io.vn/rancher.csr
+```
+Select everything from `-----BEGIN CERTIFICATE REQUEST-----` to `-----END CERTIFICATE REQUEST-----`
+with the mouse, and copy it.
 
-**Run — prove you control the name.** Sectigo gives you a validation `CNAME` (a name and a value).
-During the 48-hour DNS overlap some resolvers still ask the old name servers, so add the record at
-**both** the old DNS provider and Route 53:
+Sectigo website (or your reseller's) — start the certificate order and paste the request when asked.
+For the server type choose *Other* or *Nginx*. For the validation method choose **DNS (CNAME)**, not
+email or HTTP file.
+
+**3. Add the validation record.** Sectigo shows a name such as `_1A2B3C4D.rancher.recruitai.io.vn` and
+a value such as `5E6F7A8B.c3d4e5.sectigo.com`. Add the record in both places below, because some
+resolvers may still ask the old name servers.
+
+Registrar website — add a `CNAME` record. Most panels append the domain themselves, so enter the name
+**without** `.recruitai.io.vn` (for example `_1A2B3C4D.rancher`), and the value as shown.
+
+Workstation — first confirm that the domain has exactly one hosted zone:
+```bash
+aws route53 list-hosted-zones-by-name --dns-name recruitai.io.vn \
+  --query "HostedZones[?Name=='recruitai.io.vn.'].Id" --output text
+```
+Expect one `/hostedzone/Z…`. Two IDs mean a second zone was created by hand; see Troubleshooting.
+
+Paste **only this line** and press Enter. At the prompt, paste the **full** name from Sectigo, ending
+in `.recruitai.io.vn`, and press Enter:
+```bash
+read -r -p "CNAME name: " DCV_NAME
+```
+Then **only this line**, the same way, for the value:
+```bash
+read -r -p "CNAME value: " DCV_VALUE
+```
+`read` waits for what you type next, so pasting a whole block would feed it the following command
+instead. Now paste the rest:
 ```bash
 ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name recruitai.io.vn \
   --query "HostedZones[?Name=='recruitai.io.vn.'].Id | [0]" --output text)
-echo "$ZONE_ID"                      # /hostedzone/Z...; "None" means step 16 has not been applied
-
-read -r -p "CNAME name from Sectigo: " DCV_NAME
-read -r -p "CNAME value from Sectigo: " DCV_VALUE
-aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" --change-batch "$(jq -n \
-  --arg name "$DCV_NAME" --arg value "$DCV_VALUE" \
-  '{Changes: [{Action: "UPSERT", ResourceRecordSet: {Name: $name, Type: "CNAME", TTL: 300,
-    ResourceRecords: [{Value: $value}]}}]}')"
-
+CHANGE_ID=$(aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+  --query ChangeInfo.Id --output text --change-batch "$(jq -n \
+    --arg name "$DCV_NAME" --arg value "$DCV_VALUE" \
+    '{Changes: [{Action: "UPSERT", ResourceRecordSet: {Name: $name, Type: "CNAME", TTL: 300,
+      ResourceRecords: [{Value: $value}]}}]}')")
+aws route53 wait resource-record-sets-changed --id "$CHANGE_ID"
 dig +short CNAME "$DCV_NAME" @1.1.1.1
 dig +short CAA recruitai.io.vn @1.1.1.1
+dig +short CAA rancher.recruitai.io.vn @1.1.1.1
 ```
-The `CNAME` must return the value. The `CAA` answer must be empty or include `sectigo.com`; a migrated
-`CAA` record that names another CA blocks issuance. Then wait for Sectigo to issue the certificate.
+Expect Sectigo's value from the first `dig`, and nothing from the two `CAA` lookups (or answers that
+include `sectigo.com`). A `CAA` record that names another certificate authority blocks the order; see
+Troubleshooting.
 
-**Run — bring the certificate onto the workstation.** Sectigo sends the certificate to you, by email
-or on the order page, so the files land on the laptop, not here. Open them in Notepad: each is text
-between `-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----`. One is issued to
-`rancher.recruitai.io.vn` — the leaf. The others are Sectigo's intermediate certificates. Whatever
-Sectigo called its files, create exactly these two here.
+**4. Wait for Sectigo.** It checks the record every few minutes, and issuing can take a few hours.
+You are done when the order page says *Issued* or the certificate email arrives.
 
-Validation can take hours, so this is often a new Session Manager window. Start with
-`sudo su - ubuntu`, then:
+#### 17.3 Put the certificate on the workstation and store it
+
+Sectigo sends the certificate to you — usually a `.zip` by email, or a download on the order page — so
+the files land on the laptop. Session Manager has no upload button, but certificates are plain text,
+so you move them by pasting. You do not need to know which file is which: the workstation sorts them.
+
+**1. Laptop — open the files.** Extract the `.zip`. Open every file ending in `.crt`, `.ca-bundle`,
+`.cer` or `.pem` in Notepad (right-click → Open with → Notepad). Each holds one or more blocks from
+`-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----`. A file that shows unreadable characters
+instead is in binary form: download the *Nginx* or *PEM* format from the order page.
+
+**2. Workstation — paste all of them into one file.** Run:
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-cat > rancher.crt <<'EOF'
+cat > sectigo.pem <<'EOF'
 ```
-Paste the **leaf** certificate, press Enter, type `EOF` and press Enter again. Do the same for the
-intermediates, pasting every one of them, in the order Sectigo gives them:
-```bash
-cat > ca-bundle.crt <<'EOF'
-```
+The prompt changes to `>`. The shell is not stuck: it is writing everything you paste into
+`sectigo.pem`. For each file from 1, press Ctrl+A and Ctrl+C in Notepad, paste into Session Manager
+(Ctrl+V, or right-click → Paste), and press Enter. After the last file, type `EOF` and press Enter;
+the normal prompt comes back. If something went wrong, press Ctrl+C and start this part again: the
+file is written from scratch.
 
-Check that the right certificate went into the right file, that the chain is complete, and that the
-certificate belongs to this private key:
+**3. Workstation — sort the certificates and check them.**
 ```bash
-ls
+cd ~/tls/rancher.recruitai.io.vn
+sed 's/-----END CERTIFICATE-----/&\n/' sectigo.pem \
+  | awk '/-----BEGIN CERTIFICATE-----/ {n++} n {print > ("part-" n ".pem")}'
+: > rancher.crt
+: > ca-bundle.crt
+for f in part-*.pem; do
+  if openssl x509 -in "$f" -noout -checkhost rancher.recruitai.io.vn | grep -q "does match"; then
+    cat "$f" >> rancher.crt
+  else
+    cat "$f" >> ca-bundle.crt
+  fi
+done
+rm -f part-*.pem
+
+grep -c "BEGIN CERTIFICATE" rancher.crt ca-bundle.crt
 openssl x509 -in rancher.crt -noout -subject -issuer -enddate
-openssl x509 -in rancher.crt -noout -ext subjectAltName
 openssl verify -untrusted ca-bundle.crt rancher.crt
 if [ "$(openssl x509 -in rancher.crt -pubkey -noout | openssl sha256)" = \
      "$(openssl pkey -in rancher.key -pubout | openssl sha256)" ]; then
@@ -2474,87 +2549,123 @@ else
   echo "MISMATCH: this certificate was not issued for rancher.csr"
 fi
 ```
-Expect four files (`ca-bundle.crt`, `rancher.crt`, `rancher.csr`, `rancher.key`); a subject and a
-`DNS:` line naming `rancher.recruitai.io.vn`; a Sectigo issuer; `rancher.crt: OK`; and `OK: the
-certificate matches rancher.key`. If the subject shows a Sectigo CA instead, the leaf and an
-intermediate were swapped. A mismatch means the order used a different request: reissue the
-certificate with this `rancher.csr`.
+The first half splits `sectigo.pem` into one file per certificate. It puts the one issued for
+`rancher.recruitai.io.vn` into `rancher.crt`, and all the others — Sectigo's intermediate certificates,
+which link yours to a root that browsers trust — into `ca-bundle.crt`. Expect:
 
-**Run — store the certificate and the Rancher password:**
-```bash
-awk 1 rancher.crt ca-bundle.crt > fullchain.crt
-openssl x509 -in fullchain.crt -noout -subject
+- `rancher.crt:1`, and `ca-bundle.crt:` followed by 1 or more,
+- a subject naming `rancher.recruitai.io.vn` and a Sectigo issuer,
+- `rancher.crt: OK`, meaning the chain is complete,
+- `OK: the certificate matches rancher.key`.
 
-jq -n --rawfile crt fullchain.crt --rawfile key rancher.key \
-  '{"tls.crt": $crt, "tls.key": $key}' > rancher-tls.json
-jq -n --arg p "$(openssl rand -base64 24)" \
-  '{bootstrapPassword: $p}' > rancher-password.json
+For `rancher.crt:0` or `MISMATCH`, see Troubleshooting.
 
-aws secretsmanager put-secret-value --secret-id medical-rag/rancher-tls \
-  --secret-string file://rancher-tls.json
-aws secretsmanager put-secret-value --secret-id medical-rag/rancher \
-  --secret-string file://rancher-password.json
-shred -u rancher-tls.json rancher-password.json
-```
-The leaf comes first in `fullchain.crt`, so the `subject` names `rancher.recruitai.io.vn` again.
-`awk 1` rather than `cat`: if a pasted file lacks a final newline, `cat` glues
-`-----END CERTIFICATE----------BEGIN CERTIFICATE-----` onto one line, and ingress-nginx rejects the
-chain. Run the password line only once, before the first Rancher login; running it again replaces the
-password.
-
-**Verify** the values are there, without printing them:
-```bash
-aws secretsmanager get-secret-value --secret-id medical-rag/rancher-tls \
-  --query 'SecretString' --output text | jq -c 'keys'
-```
-`["tls.crt","tls.key"]`. Read the password back when you first log in to Rancher:
-```bash
-aws secretsmanager get-secret-value --secret-id medical-rag/rancher \
-  --query 'SecretString' --output text | jq -r '.bootstrapPassword'
-```
-
-**Run — create WireGuard keys.** The client key pair is made on the laptop, and its private key never
-leaves it. The server key pair is made on the ops workstation.
-
-On the laptop, in the WireGuard app, choose **Add Tunnel → Add empty tunnel…**, name it
-`medical-rag`, copy the **Public key** it shows, and click **Save**. The app generated the private key
-inside that tunnel, and it stays there: step 18 edits this same tunnel rather than creating a new one,
-because a new tunnel would get a new key that the gateway does not know.
-
-On the ops workstation:
+**4. Workstation — store the certificate.** Safe to run again, for example after a renewal:
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-sudo apt-get -o DPkg::Lock::Timeout=600 update
-sudo apt-get -o DPkg::Lock::Timeout=600 install -y wireguard-tools
-wg genkey | tee wireguard-server.key | wg pubkey > wireguard-server.pub
-read -r -p "Operator public key: " OPERATOR_PUBLIC_KEY
-jq -n --rawfile serverPrivateKey wireguard-server.key --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" \
-  '{serverPrivateKey: ($serverPrivateKey | rtrimstr("\n")), operatorPublicKey: $operatorPublicKey}' \
-  > wireguard.json
-aws secretsmanager put-secret-value --secret-id medical-rag/wireguard \
-  --secret-string file://wireguard.json
-shred -u wireguard.json wireguard-server.key
-cat wireguard-server.pub
-```
-
-The server private key now lives only in Secrets Manager; the gateway reads it from there at boot.
-Keep `wireguard-server.pub`: it is public and goes into the client profile in step 18. Verify the
-secret without printing either key:
-```bash
-aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
+awk 1 rancher.crt ca-bundle.crt > fullchain.crt
+jq -n --rawfile crt fullchain.crt --rawfile key rancher.key \
+  '{"tls.crt": $crt, "tls.key": $key}' > rancher-tls.json &&
+  aws secretsmanager put-secret-value --secret-id medical-rag/rancher-tls \
+    --secret-string file://rancher-tls.json
+shred -u rancher-tls.json
+aws secretsmanager get-secret-value --secret-id medical-rag/rancher-tls \
   --query SecretString --output text | jq -c 'keys'
 ```
-Expect `["operatorPublicKey","serverPrivateKey"]`.
+Expect `["tls.crt","tls.key"]`. `fullchain.crt` is your certificate followed by the intermediates,
+the order a web server sends them in. `awk 1` joins the files instead of `cat`, which glues
+`-----END CERTIFICATE-----` to the next `-----BEGIN CERTIFICATE-----` whenever a file lacks a final
+newline.
 
-Nothing to commit: this step changes DNS and secret values, not code.
+**5. Workstation — create the Rancher password.** The `if` makes this safe to run again: it never
+replaces a password that already exists.
+```bash
+cd ~/tls/rancher.recruitai.io.vn
+umask 077
+if aws secretsmanager get-secret-value --secret-id medical-rag/rancher >/dev/null 2>&1; then
+  echo "The Rancher password already exists; nothing changed."
+else
+  openssl rand -base64 24 | jq -Rn '{bootstrapPassword: input}' > rancher-password.json &&
+    aws secretsmanager put-secret-value --secret-id medical-rag/rancher \
+      --secret-string file://rancher-password.json
+  shred -u rancher-password.json
+fi
+```
+You need the password at the first Rancher login, in the GitOps phase. This prints it on screen:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/rancher \
+  --query SecretString --output text | jq -r '.bootstrapPassword'
+```
+
+The certificate's private key now exists in two places: `rancher.key` in this directory, which only
+`ubuntu` can open, and Secrets Manager. The GitOps phase adds a third, the `tls-rancher-ingress`
+Secret.
+
+#### 17.4 Create the WireGuard keys
+
+WireGuard uses two key pairs, one for the laptop and one for the gateway. Each private key stays where
+it was made; only the public keys are exchanged.
+
+**1. Laptop — install WireGuard and create the laptop's key pair.** Install WireGuard for Windows from
+<https://www.wireguard.com/install/> and open it. Click the arrow next to **Add Tunnel**, choose
+**Add empty tunnel…**, name it `medical-rag`, copy the text after **Public key:**, and click
+**Save**. The private key stays inside this tunnel. Step 18 edits this same tunnel. Do not create a
+second one: it would get a new key that the gateway does not know.
+
+**2. Workstation — install the WireGuard tools.**
+```bash
+sudo apt-get -o DPkg::Lock::Timeout=600 update
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y wireguard-tools
+```
+
+**3. Workstation — enter the laptop's public key.** Paste **only this line**, press Enter, paste the
+public key from 1 at the prompt, and press Enter:
+```bash
+read -r -p "Laptop public key: " OPERATOR_PUBLIC_KEY
+```
+
+**4. Workstation — create the gateway's key pair and store it.**
+```bash
+cd ~/tls/rancher.recruitai.io.vn
+umask 077
+if [[ ! $OPERATOR_PUBLIC_KEY =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]]; then
+  echo "STOP: that is not a WireGuard public key. Copy it again from the app, then repeat part 3."
+elif [ -e wireguard-server.pub ]; then
+  echo "STOP: the gateway key already exists. To change the laptop key, see step 18."
+else
+  wg genkey | tee wireguard-server.key | wg pubkey > wireguard-server.pub
+  if jq -n --rawfile serverPrivateKey wireguard-server.key --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" \
+       '{serverPrivateKey: ($serverPrivateKey | rtrimstr("\n")), operatorPublicKey: $operatorPublicKey}' \
+       > wireguard.json &&
+     aws secretsmanager put-secret-value --secret-id medical-rag/wireguard \
+       --secret-string file://wireguard.json; then
+    echo "OK: the gateway key is stored"
+  else
+    echo "FAILED: nothing was stored. Run this block again."
+    rm -f wireguard-server.pub
+  fi
+  shred -u wireguard.json wireguard-server.key
+fi
+aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
+  --query SecretString --output text | jq -c 'keys'
+cat wireguard-server.pub
+```
+Expect `OK: the gateway key is stored`, then `["operatorPublicKey","serverPrivateKey"]`, then one line:
+the gateway's public key, which step 18 puts into the laptop's tunnel.
+
+The gateway's private key is now only in Secrets Manager; the gateway copies it into
+`/etc/wireguard/wg0.conf` when it first boots. Its public key stays in `wireguard-server.pub`, and
+`cat ~/tls/rancher.recruitai.io.vn/wireguard-server.pub` shows it again at any time.
 
 ---
 
 ### Step 18 — WireGuard and the private Rancher entry point
 
-**Goal:** the WireGuard tunnel is up, and the private Rancher name and TCP 443 listener exist. Rancher
-itself answers only after `make bootstrap` in the GitOps phase.
+**Goal:** the laptop's WireGuard tunnel connects, and the private Rancher name and TCP 443 listener
+exist. Rancher itself answers only after `make bootstrap` in the GitOps phase.
+
+**Laptop** — create the three files below, and change one line in `main.tf`.
 
 Create `infra/terraform/cluster/wireguard.tf`:
 ```hcl
@@ -2646,6 +2757,9 @@ resource "aws_instance" "wireguard" {
     vpc_cidr       = var.vpc_cidr
     vpc_resolver   = cidrhost(var.vpc_cidr, 2) # the Route 53 Resolver sits at the VPC range plus two
   })
+  # A changed script or address must reach the gateway. Without this, AWS would stop the instance, swap
+  # the user data and start it again, but cloud-init runs the script only on the first boot.
+  user_data_replace_on_change = true
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -2730,7 +2844,7 @@ PEER_KEY=$(jq -r .operatorPublicKey /run/wireguard-secret.json)
 rm -f /run/wireguard-secret.json
 INTERFACE=$(ip route show default | awk '{print $5; exit}')
 
-# The tunnel reaches Rancher and nothing else. From wg0 the gateway forwards only DNS to the VPC
+# The tunnel is for Rancher. From wg0 the gateway forwards only DNS to the VPC
 # resolver and TCP 443 into the VPC; everything else is dropped, including the Kubernetes API on 6443.
 # Replies are let back in, but nothing in the VPC can open a connection towards the laptop, and
 # nothing from the tunnel reaches the gateway itself. The rules live in their own chain, so PostDown
@@ -2787,8 +2901,7 @@ variable "domain" {
   default     = "recruitai.io.vn"
 }
 
-# TLS passes through the NLB unchanged; the load balancer never terminates it or sees the key. The key is
-# stored only in Secrets Manager and in the tls-rancher-ingress Secret.
+# TLS passes through the NLB unchanged; the load balancer never terminates it and never sees the key.
 resource "aws_lb_target_group" "ingress_https" {
   name        = "${local.name}-ingress-https"
   port        = var.ingress_https_nodeport
@@ -2890,9 +3003,9 @@ output "rancher_url" {
 }
 ```
 
-Expand the workload secret lookup in `infra/terraform/cluster/main.tf`. Nodes read the Rancher
-values. Of the roles in the cluster stack, only the gateway role can read `medical-rag/wireguard`;
-admin identities, including the workstation role, can still read every secret:
+Expand the workload secret lookup in `infra/terraform/cluster/main.tf`, so the nodes can read the two
+Rancher secrets. The WireGuard secret is deliberately not in this list: of the roles in this stack,
+only the gateway's can read it.
 ```hcl
 data "aws_secretsmanager_secret" "app" {
   for_each = toset(["llm", "github", "rancher", "rancher-tls"])
@@ -2905,90 +3018,117 @@ Argo CD installs Rancher later; its chart pin, values, secret wiring and upgrade
 
 **Why:**
 
-- The dedicated gateway isolates internet-facing UDP from the administrator workstation and its
+- **A dedicated gateway** keeps internet-facing UDP away from the administrator workstation and its
   `AdministratorAccess` role.
-- **The tunnel reaches Rancher and nothing else.** Security groups open the internal NLB to the whole
-  VPC, because Rancher's own agents need it, so the VPN peer would otherwise reach the Kubernetes API
-  on 6443 as well. The gateway's firewall allows only DNS and TCP 443; the laptop has no `kubectl`
-  anyway, and the API stays reachable through `make tunnel` on the workstation.
-- The internal NLB DNS name resolves publicly to private addresses, so normal DNS and a public CA
-  work while the network path still requires WireGuard.
-- TLS passes through unchanged. ingress-nginx holds the key, and Rancher agents avoid NLB hairpin
-  failures because the HTTPS target group disables client-IP preservation.
+- **The tunnel is for Rancher only.** Security groups open the internal NLB to the whole VPC, because
+  Rancher's own agents need it, so without a filter the VPN would also reach the Kubernetes API on
+  6443. The gateway forwards only DNS and TCP 443, and the internal NLB is the only 443 listener in
+  the VPC. The laptop has no `kubectl` anyway; the API stays reachable through `make tunnel` on the
+  workstation.
+- **Public DNS, private addresses.** The internal NLB's name resolves publicly to private addresses,
+  so normal DNS and a public certificate work, while the network path still requires WireGuard.
+- **TLS passes through unchanged.** ingress-nginx holds the key, and Rancher's agents avoid NLB
+  hairpin failures because the HTTPS target group disables client-IP preservation.
 
-**Run:**
+**Commit and push** (laptop):
+`git add infra/terraform/cluster && git commit -m "Add private Rancher access through WireGuard" && git push`
+
+**Run** (workstation):
 ```bash
-make infra           # expect 19 to add, 1 to change, 0 to destroy
+cd ~/Medical-RAG-Chatbot && git pull
+make infra
 ```
-The one change is the node inline policy expanding from two workload secrets to four. Final
-baselines are 17 managed resources in `shared` and 84 in `cluster`.
+Expect **84 to add, 0 to change**: the cluster was destroyed at the end of step 15, so Terraform builds
+the 65 resources of steps 9–14 plus the 19 new ones. If the cluster is still running from an earlier
+session, expect 19 to add and 1 to change instead; the change is the node policy growing from two
+secrets to four. Final baselines: 17 managed resources in `shared`, 84 in `cluster`.
 
-**Finish the client profile on the laptop.** Edit the `medical-rag` tunnel created in step 17: keep
-its existing `PrivateKey` line and add the other lines below. Use the server public key recorded in
-step 17 and the address from
-`terraform -chdir=infra/terraform/cluster output -raw wireguard_client_address`:
+**Finish the laptop's tunnel.** Workstation — print the two values the tunnel needs:
+```bash
+cat ~/tls/rancher.recruitai.io.vn/wireguard-server.pub
+cd ~/Medical-RAG-Chatbot
+terraform -chdir=infra/terraform/cluster output -raw wireguard_client_address; echo
+```
+The first line is the gateway's public key. The second is the laptop's VPN address, `10.99.0.2/32`
+unless you changed `wireguard_cidr`.
+
+Laptop, WireGuard app — select `medical-rag` and click **Edit**. Keep the `[Interface]` line and the
+`PrivateKey = …` line exactly as they are, and add the rest, so that the tunnel reads:
 ```ini
 [Interface]
-PrivateKey = <operator-private-key>
-Address = <output wireguard_client_address, e.g. 10.99.0.2/32>
+PrivateKey = (already there — do not change this line)
+Address = 10.99.0.2/32
 DNS = 10.10.0.2
 
 [Peer]
-PublicKey = <wireguard-server-public-key>
+PublicKey = (the gateway's public key, from wireguard-server.pub)
 Endpoint = vpn.recruitai.io.vn:51820
 AllowedIPs = 10.10.0.0/16
 PersistentKeepalive = 25
 ```
-`DNS = 10.10.0.2` sends lookups through the tunnel to the VPC resolver. Without it, many home routers
-drop public answers that point to private `10.10.x.x` addresses, so the Rancher name would not
-resolve. Windows asks the tunnel's resolver first; if browsing stalls while the gateway is down,
-deactivate the tunnel.
+Click **Save**. Do not store this configuration in the repo.
 
-Every cluster rebuild gives the gateway a new public address behind `vpn.recruitai.io.vn`. The
-profile does not change, but deactivate and reactivate the tunnel so the new address is resolved.
+- `AllowedIPs` sends only traffic for the cluster VPC through the tunnel; everything else uses your
+  normal connection.
+- `DNS = 10.10.0.2` is the VPC's own resolver. Without it the laptop keeps asking its home router, and
+  many routers drop answers that point at private `10.10.x.x` addresses, so the Rancher name would not
+  resolve. If browsing stalls while the gateway is down, deactivate the tunnel.
+- Every cluster rebuild gives the gateway a new public address behind `vpn.recruitai.io.vn`. The
+  profile stays the same, but deactivate and activate the tunnel so the new address is used.
 
-Do not save this profile in the repo. Activate it, then verify.
+**Verify.**
 
-**Verify** from the workstation. The gateway needs a few minutes after `make infra` to register
-with SSM and finish cloud-init, so wait for `Online` first:
+1. **Laptop:** in the WireGuard app, click **Activate** on `medical-rag`.
+2. **Workstation:** check the gateway. After `make infra` it needs a few minutes to register with SSM
+   and finish its setup, so the first command waits for that:
 ```bash
+cd ~/Medical-RAG-Chatbot
 WG_ID=$(terraform -chdir=infra/terraform/cluster output -raw wireguard_instance_id)
-aws ssm describe-instance-information --filters Key=InstanceIds,Values="$WG_ID" \
-  --query 'InstanceInformationList[0].PingStatus' --output text      # repeat until: Online
-
+until [ "$(aws ssm describe-instance-information --filters Key=InstanceIds,Values="$WG_ID" \
+    --query 'InstanceInformationList[0].PingStatus' --output text)" = Online ]; do
+  echo "waiting for the gateway to register with SSM..."; sleep 15
+done
 COMMAND_ID=$(aws ssm send-command --instance-ids "$WG_ID" \
   --document-name AWS-RunShellScript \
   --parameters 'commands=["cloud-init status --wait || true","test -f /var/log/wireguard-ready && echo READY","wg show","iptables -S WG_FWD"]' \
   --query 'Command.CommandId' --output text)
-aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"   # rerun if it times out
+aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"
 aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WG_ID" \
-  --query StandardOutputContent --output text
+  --query '[Status,StandardOutputContent,StandardErrorContent]' --output text
+```
+Expect `Success`, `READY`, a `wg show` block with a recent `latest handshake`, and the firewall: the
+`-N WG_FWD` line plus four rules (DNS over UDP and TCP, TCP 443, then `DROP`). If `wait` prints
+`Max attempts exceeded`, run the `wait` line again. If it prints `terminal failure state`, run the last
+command anyway: its output says what failed. No `latest handshake` means the laptop's tunnel was not
+active yet: activate it and run the block again from `COMMAND_ID=`.
 
+3. **Workstation:** check the listener and the names:
+```bash
 aws elbv2 describe-listeners \
   --load-balancer-arn $(aws elbv2 describe-load-balancers --names medical-rag-api \
     --query 'LoadBalancers[0].LoadBalancerArn' --output text) \
   --query 'Listeners[].[Port,Protocol]' --output table
-
 dig +short rancher.recruitai.io.vn
 dig +short vpn.recruitai.io.vn
 ```
-Expect `READY`, the four `WG_FWD` rules (DNS over UDP and TCP, TCP 443, then `DROP`), and after the
-laptop connects, a recent `latest handshake` in `wg show`. The internal
-NLB has TCP 6443 and 443 listeners, the Rancher name resolves to private `10.10.x.x` addresses, and
-the VPN name resolves to the gateway EIP.
+Expect two listeners, 6443 and 443, both `TCP`; `10.10.x.x` addresses for the Rancher name; and one
+public address for the VPN name.
 
-On the laptop, with the tunnel active, the WireGuard app shows a recent handshake, and
-`nslookup rancher.recruitai.io.vn` answers from `10.10.0.2` with `10.10.x.x` addresses. TCP 443 has no
-healthy target yet, so there is nothing to open in the browser until the GitOps phase.
+4. **Laptop, PowerShell** (tunnel active):
+```powershell
+Resolve-DnsName rancher.recruitai.io.vn
+```
+Expect `10.10.x.x` addresses. Nothing answers in the browser yet: TCP 443 has no service behind it
+until the GitOps phase.
 
-#### After `make bootstrap`
+#### Later, after `make bootstrap` — skip this now
 
-Once ingress-nginx and Rancher are installed, check three things.
+These checks need ingress-nginx and Rancher, which the GitOps phase installs.
 
-**The certificate**, from the WireGuard gateway. The workstation lives in its own VPC
-(`10.20.0.0/24`) with no route to the cluster VPC, so it cannot reach the private Rancher addresses;
-the gateway can. From the workstation:
+**The certificate**, checked from the WireGuard gateway: the workstation has no route into the cluster
+VPC, but the gateway has. Workstation:
 ```bash
+cd ~/Medical-RAG-Chatbot
 WG_ID=$(terraform -chdir=infra/terraform/cluster output -raw wireguard_instance_id)
 PARAMS=$(jq -n --arg c 'openssl s_client -connect rancher.recruitai.io.vn:443 -servername rancher.recruitai.io.vn -verify_return_error </dev/null 2>&1 | grep -E "subject=|issuer=|Verify return code|verify error|errno|refused|timed out"; true' \
   '{commands: [$c]}')
@@ -2998,44 +3138,63 @@ aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"
 aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WG_ID" \
   --query StandardOutputContent --output text
 ```
-Expect `subject=CN = rancher.recruitai.io.vn`, a Sectigo issuer and `Verify return code: 0 (ok)`
-(it may appear twice with TLS 1.3). Any `verify error`, `errno` or `timed out` line says what failed.
-`jq` builds the parameter JSON so the quotes inside the command survive.
+Expect a subject naming `rancher.recruitai.io.vn`, a Sectigo issuer and `Verify return code: 0 (ok)`
+(it may appear twice). A `verify error`, `errno` or `timed out` line says what failed.
 
-**The public load balancer does not serve Rancher.** ingress-nginx on port 80 routes by `Host`
-header, so ask for Rancher there:
+**The public load balancer does not serve Rancher.** Workstation:
 ```bash
+cd ~/Medical-RAG-Chatbot
 curl -sI -H 'Host: rancher.recruitai.io.vn' \
   "http://$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)/" | head -1
 ```
-Expect `HTTP/1.1 308 Permanent Redirect`: the only answer is a redirect to an HTTPS address that the
-internet cannot reach.
+Expect `HTTP/1.1 308 Permanent Redirect`: the only answer is a redirect to an address the internet
+cannot reach.
 
-**The browser**, on the laptop: Rancher loads while the tunnel is active and times out after you
-deactivate it. With the tunnel active, PowerShell (built into Windows) confirms the tunnel reaches only
-Rancher. `rancher.recruitai.io.vn` points at the internal NLB, which also carries the Kubernetes API:
+**The browser and the firewall**, on the laptop with the tunnel active: `https://rancher.recruitai.io.vn`
+loads, and times out once you deactivate the tunnel. In PowerShell:
 ```powershell
 Test-NetConnection rancher.recruitai.io.vn -Port 443    # TcpTestSucceeded : True
 Test-NetConnection rancher.recruitai.io.vn -Port 6443   # TcpTestSucceeded : False
 ```
+The Rancher name points at the internal load balancer, which also carries the Kubernetes API on 6443.
+The gateway forwards only DNS and TCP 443, so 6443 stays closed.
 
-#### Revoke a lost client
+#### Only if the laptop's WireGuard key is lost — skip this now
 
-Create a new empty tunnel on the replacement device, copy its public key, then from the workstation:
+1. **Laptop (the new one):** in the WireGuard app, **Add empty tunnel…**, name it `medical-rag`, copy its
+   public key and click **Save**. Complete it later as in *Finish the laptop's tunnel*.
+2. **Workstation:** paste **only this line**, then the new public key at the prompt:
 ```bash
+read -r -p "New laptop public key: " NEW_PUB
+```
+3. **Workstation:** store it in place of the old one:
+```bash
+cd ~/tls/rancher.recruitai.io.vn
 umask 077
-read -r -p "New operator public key: " NEW_PUB
-aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
-  --query SecretString --output text \
-  | jq --arg k "$NEW_PUB" '.operatorPublicKey = $k' > wg.json
-aws secretsmanager put-secret-value --secret-id medical-rag/wireguard --secret-string file://wg.json
-shred -u wg.json
+if [[ ! $NEW_PUB =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]]; then
+  echo "STOP: that is not a WireGuard public key."
+elif aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
+       --query SecretString --output text \
+     | jq -e --arg k "$NEW_PUB" '.operatorPublicKey = $k' > wg.json &&
+     aws secretsmanager put-secret-value --secret-id medical-rag/wireguard \
+       --secret-string file://wg.json; then
+  echo "OK: the new laptop key is stored"
+else
+  echo "FAILED: nothing changed"
+fi
+shred -u wg.json 2>/dev/null
+```
+4. **Apply it.** The gateway reads the key only when it is created. If the cluster is destroyed (the
+   usual state), nothing else is needed: the next `make infra` uses the new key. If it is running,
+   replace only the gateway:
+```bash
+cd ~/Medical-RAG-Chatbot
+make init
 terraform -chdir=infra/terraform/cluster apply -replace=aws_instance.wireguard
 ```
-The replacement gateway reads the new key at boot. The EIP and the `vpn` record stay the same; the old
-key no longer handshakes, and the new one does.
-
-**Commit:** `git add infra/terraform/cluster && git commit -m "Add private Rancher access through WireGuard"`
+The plan must show **1 to add, 1 to change, 1 to destroy**: the gateway is rebuilt, and its EIP moves
+to the new instance, so the address and the `vpn` record stay the same. Afterwards the old key no
+longer connects, and the new one does.
 
 ---
 
@@ -3054,11 +3213,21 @@ key no longer handshakes, and the new one does.
 | `no space left on device` during `terraform init` in CloudShell | `TF_DATA_DIR` is not set: the AWS provider needs about 830 MB and the CloudShell home folder holds 1 GB. Run `rm -rf .terraform`, then the exports in step 4.3 again |
 | Budget stays at 0 USD | The `project` cost allocation tag is not active (step 6) |
 | `dig NS` still shows the registrar's name servers | The change has not propagated, or it was entered in the wrong place: it is the **name server** setting of the domain, not a record inside the zone |
+| The hosted-zone check in 17.2 prints two zone IDs | A second zone for the domain was created by hand. Keep the one whose name servers match `terraform -chdir=infra/terraform/shared output route53_name_servers`; in the Route 53 console, delete the records of the other zone, then the zone |
+| `InvalidChangeBatch … is not permitted in zone` | The CNAME name was entered without `.recruitai.io.vn`. Run the two `read` lines of 17.2 again with the full name |
+| Sectigo stays *pending validation* | `dig +short CNAME <full name> @1.1.1.1` must print Sectigo's value. If it is empty, the name is missing in Route 53, or doubled at the registrar (`….recruitai.io.vn.recruitai.io.vn`). Check the validation method is DNS (CNAME) |
+| A `CAA` lookup names another certificate authority | Delete that `CAA` record in Route 53 and at the registrar, or add one that allows `sectigo.com` |
+| `rancher.crt:0` in 17.3 | None of the pasted certificates was issued for `rancher.recruitai.io.vn`. Check the order's domain, paste every file Sectigo sent, and repeat 17.3 |
+| `unable to get local issuer certificate` in 17.3 | `ca-bundle.crt` is empty or incomplete: an intermediate file was not pasted. Repeat 17.3 with every file |
+| `Could not read certificate` or `unable to load certificate` | A paste lost a `BEGIN` or `END` line. Repeat 17.3 |
+| `MISMATCH` in 17.3 | The certificate was issued for a different request, usually because a new key was made after ordering. Reissue it on the Sectigo website with the current `rancher.csr` |
+| `make infra` in step 18: `Tried to create resource record set … but it already exists` | A `rancher` or `vpn` record was copied into Route 53 in 17.1. Delete it in the console and run `make infra` again |
 | `no matching Route 53 Hosted Zone found` in step 18 | Step 16 was not applied, or the two stacks use different domains |
 | Existing records stopped resolving after step 17 | The DNS inventory was incomplete, or DNSSEC still has a stale DS record. Restore the missing records before continuing |
-| WireGuard has no handshake | Check `vpn.recruitai.io.vn`, UDP 51820 and the server public key. If the tunnel was recreated on the laptop, it has a new key: store its public key again (see *Revoke a lost client*) |
-| VPN connects but `rancher.recruitai.io.vn` does not resolve | The profile is missing `DNS = 10.10.0.2`, so the home router answered and dropped the private address. Add the line and reconnect; `nslookup rancher.recruitai.io.vn 10.10.0.2` must return `10.10.x.x` addresses |
+| WireGuard has no handshake | Check `vpn.recruitai.io.vn`, UDP 51820 and the server public key. If the tunnel was recreated on the laptop, it has a new key: store its public key again (see *Only if the laptop's WireGuard key is lost*) |
+| VPN connects but `rancher.recruitai.io.vn` does not resolve | The profile is missing `DNS = 10.10.0.2`, so the home router answered and dropped the private address. Add the line and reconnect; in PowerShell, `Resolve-DnsName rancher.recruitai.io.vn -Server 10.10.0.2` must return `10.10.x.x` addresses |
 | VPN connects but Rancher is unreachable | Confirm the client routes `10.10.0.0/16`, `iptables -S WG_FWD` on the gateway lists the 443 rule, and the internal NLB has a healthy 30443 target |
 | Anything other than Rancher times out through the VPN | By design: the gateway forwards only DNS and TCP 443. Reach the Kubernetes API with `make tunnel` on the workstation |
-| The gateway never prints `READY` | cloud-init failed after its retries. Read `/var/log/cloud-init-output.log` through SSM; a failure at `get-secret-value` usually means `medical-rag/wireguard` has no value yet (step 17) |
+| The gateway never prints `READY` | cloud-init failed after its retries. From the workstation, `aws ssm start-session --target "$WG_ID"`, then `sudo tail -50 /var/log/cloud-init-output.log`. A failure at `get-secret-value` usually means `medical-rag/wireguard` has no value yet (17.4) |
+| `wg-quick` fails with `Chain already exists` | An earlier start stopped half-way. In a session on the gateway: `sudo iptables -D FORWARD -i wg0 -j WG_FWD; sudo iptables -F WG_FWD; sudo iptables -X WG_FWD; sudo systemctl restart wg-quick@wg0` |
 | A node shows `ConnectionLost` in SSM | NAT gateway or route problem: check step 10, then reboot the instance |

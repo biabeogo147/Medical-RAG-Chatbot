@@ -123,8 +123,8 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   gateway, `vpn.recruitai.io.vn`, and a TCP 443 listener on the existing internal NLB.
   `rancher.recruitai.io.vn` resolves publicly to that internal NLB's private addresses, so it works
   only for a client with a route into the VPC. ingress-nginx terminates TLS; the load balancer
-  passes it through and never sees the key, which is stored only in Secrets Manager and the
-  `tls-rancher-ingress` Secret.
+  passes it through and never sees the key. The key lives in Secrets Manager, the
+  `tls-rancher-ingress` Secret, and a mode-700 directory on the ops workstation.
 - **Compute:**
   - 3× `m7i-flex.large` (2 vCPU, 8 GB) Ubuntu 24.04 across 3 AZs, gp3 encrypted root volumes.
     The account is on the **AWS Free plan**, which refuses to launch instance types that are not
@@ -409,7 +409,7 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | No domain for the app's ingress | Path-based routing on the public NLB DNS; TLS for app traffic is out of scope. Rancher uses its own private hostname and certificate. |
 | The Sectigo certificate is a Domain Validation certificate with a fixed expiry, and nothing renews it automatically | Calendar reminder before expiry, and the replacement goes in with one `put-secret-value`; External Secrets pushes it to the cluster without a redeploy. If manual renewal becomes a nuisance, switch to cert-manager with a Let's Encrypt DNS-01 issuer, which the Route 53 zone already makes possible. |
 | Delegating the whole domain can interrupt existing web or mail records | Lower TTLs early, copy every record except the apex SOA and NS, compare answers from both providers, and remove any parent DS record before changing name servers. Keep the old provider for at least 48 hours; enable Route 53 signing and publish a new DS only after the unsigned delegation is stable. |
-| WireGuard exposes UDP 51820 to the internet | WireGuard silently drops unauthenticated packets; the gateway has no SSH key, no application permissions, and reads only its own secret. If a client is lost, replace its public key in Secrets Manager, reload the gateway configuration through SSM (or replace the instance), and verify only the new peer handshakes. |
+| WireGuard exposes UDP 51820 to the internet | WireGuard silently drops unauthenticated packets; the gateway has no SSH key, no application permissions, and reads only its own secret. If a client is lost, replace its public key in Secrets Manager and replace the gateway instance (or let the next rebuild pick it up), then verify only the new peer handshakes. |
 | Rancher controls the whole cluster | TCP 443 exists only on the internal NLB, open to the whole cluster VPC because Rancher's own agents connect to it from inside. From outside the VPC, access requires a valid WireGuard peer and Rancher credentials. Configure an MFA-enforcing external identity provider before treating MFA as a control. Disconnect the VPN and destroy the cluster when idle. |
 | A Kubernetes minor exceeds Rancher's chart constraint | The §4.2.1 gate: keep 1.36.4 until a candidate chart accepts the target, upgrade Rancher first, and require Argo CD health. |
 | The internal NLB is open to the whole VPC, including the Kubernetes API on 6443, and the VPN peer arrives with a VPC address | The gateway firewall forwards only DNS to the VPC resolver and TCP 443 from the tunnel, drops everything else, and blocks connections from the VPC towards the client. The API stays reachable only through the SSM tunnel from the workstation. |
