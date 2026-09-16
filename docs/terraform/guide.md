@@ -2434,12 +2434,13 @@ After validation, bring the leaf certificate and the intermediate bundle into th
 PEM text, so paste each one into the Session Manager window with `cat > <file name> <<'EOF'`, then a
 line containing only `EOF`.
 
-The filenames depend on the Sectigo download. Put the leaf first, normalize the PEM boundary, verify
-the chain and confirm the certificate matches the private key:
+Sectigo's download contains the leaf certificate `rancher.crt` and the intermediate bundle
+`SectigoDVBundle.ca-bundle`; rename them here if your download differs. Put the leaf first, normalize
+the PEM boundary, verify the chain and confirm the certificate matches the private key:
 ```bash
-awk 1 rancher_recruitai_io_vn.crt SectigoDVBundle.ca-bundle > fullchain.crt
-openssl verify -untrusted SectigoDVBundle.ca-bundle rancher_recruitai_io_vn.crt
-test "$(openssl x509 -in rancher_recruitai_io_vn.crt -pubkey -noout | openssl sha256)" = \
+awk 1 rancher.crt SectigoDVBundle.ca-bundle > fullchain.crt
+openssl verify -untrusted SectigoDVBundle.ca-bundle rancher.crt
+test "$(openssl x509 -in rancher.crt -pubkey -noout | openssl sha256)" = \
      "$(openssl pkey -in rancher.key -pubout | openssl sha256)"
 
 jq -n --rawfile crt fullchain.crt --rawfile key rancher.key \
