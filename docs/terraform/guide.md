@@ -2628,7 +2628,30 @@ Secret.
 **Goal:** the laptop's WireGuard tunnel connects, and the private Rancher name and TCP 443 listener
 exist. Rancher itself answers only after `make bootstrap` in the GitOps phase.
 
-**Laptop** — create the three files below, and change one line in `main.tf`.
+This step has five parts. Do them in order: the gateway reads its keys when it first boots, so the
+keys (18.2) must exist before the cluster is built (18.3).
+
+| Part | Where you work |
+|---|---|
+| 18.1 Write the Terraform files | Laptop |
+| 18.2 Create the WireGuard keys | Laptop, workstation |
+| 18.3 Build the cluster | Workstation |
+| 18.4 Finish the laptop's tunnel | Workstation, laptop |
+| 18.5 Verify | Laptop, workstation |
+
+> **Coming back in a new Session Manager window?** Run `sudo su - ubuntu`, then `tmux new -As tf`.
+> Every block below starts with the `cd` it needs.
+
+#### 18.1 Write the Terraform files
+
+**Laptop.** Create three files in `infra/terraform/cluster/`, then change one block in `main.tf`:
+
+| File | What it creates |
+|---|---|
+| `wireguard.tf` | The WireGuard gateway: a small EC2 machine with an Elastic IP, its firewall, its IAM role, and the name `vpn.recruitai.io.vn` |
+| `wireguard-init.sh` | The script the gateway runs once, on its first boot: it installs WireGuard, reads its keys and sets up its firewall |
+| `rancher.tf` | A TCP 443 listener on the internal load balancer, and the name `rancher.recruitai.io.vn` |
+| `main.tf` (one block changes) | Lets the nodes read the two Rancher secrets |
 
 Create `infra/terraform/cluster/wireguard.tf`:
 ```hcl
@@ -2966,15 +2989,17 @@ output "rancher_url" {
 }
 ```
 
-Expand the workload secret lookup in `infra/terraform/cluster/main.tf`, so the nodes can read the two
-Rancher secrets. The WireGuard secret is deliberately not in this list: of the roles in this stack,
-only the gateway's can read it.
+**Change `infra/terraform/cluster/main.tf`.** Find the block `data "aws_secretsmanager_secret" "app"`
+and replace it with this one. Replace it, do not add a second one: two blocks with the same name make
+every `terraform` command fail.
 ```hcl
 data "aws_secretsmanager_secret" "app" {
   for_each = toset(["llm", "github", "rancher", "rancher-tls"])
   name     = "${var.project}/${each.key}"
 }
 ```
+The nodes can now read the two Rancher secrets. The `wireguard` secret is deliberately not in this
+list: of the roles in this stack, only the gateway's can read it.
 
 Argo CD installs Rancher later; its chart pin, values, secret wiring and upgrade gate are in
 [design §4.2.1](../selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate).
@@ -2993,241 +3018,341 @@ Argo CD installs Rancher later; its chart pin, values, secret wiring and upgrade
 - **TLS passes through unchanged.** ingress-nginx holds the key, and Rancher's agents avoid NLB
   hairpin failures because the HTTPS target group disables client-IP preservation.
 
-**Commit and push** (laptop):
-`git add infra/terraform/cluster && git commit -m "Add private Rancher access through WireGuard" && git push`
+**Commit and push** (laptop, Git Bash):
+```bash
+git add infra/terraform/cluster
+git commit -m "Add private Rancher access through WireGuard"
+git push
+```
 
-**Create the WireGuard keys** before `make infra`: the gateway reads them from Secrets Manager once,
-when it first boots. WireGuard uses two key pairs, one for the laptop and one for the gateway. Each
-private key stays where it was made; only the public keys are exchanged. Run the commands one at a
-time.
+#### 18.2 Create the WireGuard keys
 
-**Laptop — install WireGuard and create the laptop's key pair.** Install WireGuard for Windows from
-<https://www.wireguard.com/install/> and open it. Click the arrow next to **Add Tunnel**, choose
-**Add empty tunnel…**, name it `medical-rag`, copy the text after **Public key:**, and click
-**Save**. The private key stays inside this tunnel. Later in this step you edit this same tunnel. Do
-not create a second one: it would get a new key that the gateway does not know.
+WireGuard uses two key pairs: one for the laptop, one for the gateway. Each private key stays where it
+was made; only the public keys are exchanged. The gateway reads its keys from Secrets Manager when it
+first boots, which is why this part comes before `make infra`.
 
-**Workstation** — install the WireGuard tools:
+**1. Laptop — install WireGuard.** Download WireGuard for Windows from
+<https://www.wireguard.com/install/>, install it, and open it.
+
+**2. Laptop — create the laptop's key pair.**
+
+- Click the small arrow next to **Add Tunnel**, then **Add empty tunnel…**.
+- In **Name**, type `medical-rag`.
+- The window shows a **Public key** line. Select the key after it and copy it (Ctrl+C); you paste it in
+  part 5.
+- Click **Save**.
+
+The private key was generated inside this tunnel and stays there. In 18.4 you edit this same tunnel.
+Do not create a second one: it would have a different key, which the gateway does not know.
+
+**3. Workstation — install the WireGuard tools.**
 ```bash
 sudo apt-get -o DPkg::Lock::Timeout=600 update
 sudo apt-get -o DPkg::Lock::Timeout=600 install -y wireguard-tools
 ```
 
-Check that the keys have not been stored already:
+**4. Workstation — check that the keys are not stored yet.**
 ```bash
 aws secretsmanager get-secret-value --secret-id medical-rag/wireguard --query VersionId --output text
 ```
-- **It prints an ID:** the keys already exist. Skip to **Run**. To replace the laptop's key, see
-  *Only if the laptop's WireGuard key is lost* at the end of this step.
+- **It prints an ID:** the keys already exist. Skip to 18.3. To replace the laptop's key, see *Only if
+  the laptop's WireGuard key is lost* at the end of this step.
 - **It prints an error mentioning `can't find the specified secret value`:** continue.
 
-Paste **only this line**, press Enter, paste the laptop's public key at the prompt, and press Enter:
+**5. Workstation — enter the laptop's public key.** Paste **only this line** and press Enter. At the
+`Laptop public key:` prompt, paste the key from part 2 and press Enter:
 ```bash
 read -r -p "Laptop public key: " OPERATOR_PUBLIC_KEY
 ```
-
-Check what you pasted:
+Check what the variable now holds:
 ```bash
 echo "${#OPERATOR_PUBLIC_KEY} $OPERATOR_PUBLIC_KEY"
 ```
 Expect `44`, a space, then the key, ending in `=`. Anything else: run the `read` line again.
 
-Create the gateway's key pair:
+The variable exists only in this window. Run parts 6 and 7 in the same window; if the window closes,
+run the `read` line again first.
+
+**6. Workstation — create the gateway's key pair.**
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-wg genkey | tee wireguard-server.key | wg pubkey > wireguard-server.pub
+wg genkey > wireguard-server.key
+wg pubkey < wireguard-server.key > wireguard-server.pub
 ```
+`umask 077` makes the files created from now on readable only by you. `wg genkey` writes a new private
+key into `wireguard-server.key`; `wg pubkey` derives its public key into `wireguard-server.pub`.
+
+**7. Workstation — store the keys in Secrets Manager.**
 
 Put the gateway's private key and the laptop's public key into one JSON file:
 ```bash
-jq -n --rawfile serverPrivateKey wireguard-server.key --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" '{serverPrivateKey: ($serverPrivateKey | rtrimstr("\n")), operatorPublicKey: $operatorPublicKey}' > wireguard.json
+jq -n \
+  --rawfile serverPrivateKey wireguard-server.key \
+  --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" \
+  '{serverPrivateKey: ($serverPrivateKey | rtrimstr("\n")), operatorPublicKey: $operatorPublicKey}' \
+  > wireguard.json
 ```
+This reads the private key from the file (dropping its final newline), takes the laptop's key from the
+variable, and writes both into `wireguard.json`. Check that both are there, without printing them:
+```bash
+jq -c 'keys' wireguard.json
+jq -r '.operatorPublicKey | length' wireguard.json
+```
+Expect `["operatorPublicKey","serverPrivateKey"]`, then `44`. A `0` means the variable was empty: go
+back to part 5.
 
-Upload it to Secrets Manager:
+Upload it:
 ```bash
 aws secretsmanager put-secret-value --secret-id medical-rag/wireguard --secret-string file://wireguard.json
 ```
-Expect a few lines ending with a `VersionId`. If it prints an error, fix the cause, then run the `jq`
-command and this one again. **Do not run the next command until the upload succeeds:** it deletes the
-only copy of the gateway's private key.
+Expect a few lines ending with a `VersionId`. If it prints an error, fix the cause and run the upload
+again. **Do not run the next command until the upload succeeds:** it deletes the only copy of the
+gateway's private key.
 
 Delete the private key file and the JSON file:
 ```bash
 shred -u wireguard.json wireguard-server.key
 ```
 
-Check the stored keys without printing them, and show the gateway's public key:
+Check the stored secret, without printing it:
 ```bash
 aws secretsmanager get-secret-value --secret-id medical-rag/wireguard --query SecretString --output text | jq -c 'keys'
-cat ~/tls/rancher.recruitai.io.vn/wireguard-server.pub
 ```
-Expect `["operatorPublicKey","serverPrivateKey"]`, then one line: the gateway's public key, which goes
-into the laptop's tunnel after `make infra`. The gateway's private key is now only in Secrets Manager;
-the gateway copies it into `/etc/wireguard/wg0.conf` when it first boots.
+Expect `["operatorPublicKey","serverPrivateKey"]`. The gateway's private key is now only in Secrets
+Manager; `wireguard-server.pub` keeps its public key for 18.4.
 
-**Run** (workstation):
+#### 18.3 Build the cluster
+
+**Workstation.**
 ```bash
-cd ~/Medical-RAG-Chatbot && git pull
+cd ~/Medical-RAG-Chatbot
+git pull
 make infra
 ```
+Terraform prints the plan, then asks `Enter a value:`. Check the summary line, then type `yes`.
+
 Expect **84 to add, 0 to change**: the cluster was destroyed at the end of step 15, so Terraform builds
 the 65 resources of steps 9–14 plus the 19 new ones. If the cluster is still running from an earlier
 session, expect 19 to add and 1 to change instead; the change is the node policy growing from two
 secrets to four. Final baselines: 17 managed resources in `shared`, 84 in `cluster`.
 
-**Finish the laptop's tunnel.** Workstation — print the two values the tunnel needs:
+#### 18.4 Finish the laptop's tunnel
+
+**1. Workstation — print the two values the tunnel needs.** The gateway's public key:
 ```bash
 cat ~/tls/rancher.recruitai.io.vn/wireguard-server.pub
-cd ~/Medical-RAG-Chatbot
-terraform -chdir=infra/terraform/cluster output -raw wireguard_client_address; echo
 ```
-The first line is the gateway's public key. The second is the laptop's VPN address, `10.99.0.2/32`
-unless you changed `wireguard_cidr`.
+The laptop's address inside the VPN:
+```bash
+cd ~/Medical-RAG-Chatbot
+terraform -chdir=infra/terraform/cluster output wireguard_client_address
+```
+It prints `"10.99.0.2/32"` unless you changed `wireguard_cidr`; use it without the quotes.
 
-Laptop, WireGuard app — select `medical-rag` and click **Edit**. Keep the `[Interface]` line and the
-`PrivateKey = …` line exactly as they are, and add the rest, so that the tunnel reads:
+**2. Laptop — complete the tunnel.** In the WireGuard app, select `medical-rag` and click **Edit**. The
+editor shows two lines, `[Interface]` and `PrivateKey = …`. Leave both exactly as they are. Below them,
+add these lines, and replace `PASTE_THE_GATEWAY_PUBLIC_KEY_HERE` with the key printed in 1:
 ```ini
-[Interface]
-PrivateKey = (already there — do not change this line)
 Address = 10.99.0.2/32
 DNS = 10.10.0.2
 
 [Peer]
-PublicKey = (the gateway's public key, from wireguard-server.pub)
+PublicKey = PASTE_THE_GATEWAY_PUBLIC_KEY_HERE
 Endpoint = vpn.recruitai.io.vn:51820
 AllowedIPs = 10.10.0.0/16
 PersistentKeepalive = 25
 ```
 Click **Save**. Do not store this configuration in the repo.
 
-- `AllowedIPs` sends only traffic for the cluster VPC through the tunnel; everything else uses your
-  normal connection.
+What each line does:
+
+- `Address` is the laptop's address inside the VPN.
 - `DNS = 10.10.0.2` is the VPC's own resolver. Without it the laptop keeps asking its home router, and
   many routers drop answers that point at private `10.10.x.x` addresses, so the Rancher name would not
   resolve. If browsing stalls while the gateway is down, deactivate the tunnel.
-- Every cluster rebuild gives the gateway a new public address behind `vpn.recruitai.io.vn`. The
-  profile stays the same, but deactivate and activate the tunnel so the new address is used.
+- `Endpoint` is where the gateway listens. Every cluster rebuild gives the gateway a new public address
+  behind this name. The profile stays the same, but deactivate and activate the tunnel so the new
+  address is used.
+- `AllowedIPs = 10.10.0.0/16` sends only traffic for the cluster VPC through the tunnel; everything
+  else uses your normal connection.
+- `PersistentKeepalive = 25` stops your home router from dropping the connection while it is idle.
 
-**Verify.**
+#### 18.5 Verify
 
-1. **Laptop:** in the WireGuard app, click **Activate** on `medical-rag`.
-2. **Workstation:** check the gateway. After `make infra` it needs a few minutes to register with SSM
-   and finish its setup, so the first command waits for that:
+Wait about five minutes after `make infra` finishes: on its first boot the gateway installs WireGuard and
+reads its keys. Then do two checks on the laptop. `make infra` finishing without errors already proves
+the load balancer listener and the DNS records exist; the 443 path itself can only be tested after
+`make bootstrap`, below.
+
+**1. The tunnel connects.** In the WireGuard app, click **Activate** on `medical-rag`. Within a few
+seconds, **Latest handshake** shows a time, such as `5 seconds ago`.
+
+A handshake proves the gateway is running with WireGuard started, `vpn.recruitai.io.vn` points at it,
+UDP 51820 gets through, and each side has the other's correct public key. No handshake: see *If there is
+no handshake* below.
+
+**2. Traffic reaches the VPC.** With the tunnel active, open PowerShell (Start menu, type `PowerShell`)
+and run:
+```powershell
+Resolve-DnsName rancher.recruitai.io.vn -Server 10.10.0.2
+```
+Expect three `10.10.x.x` addresses. `10.10.0.2` is the VPC's own DNS server, and it can only be reached
+through the tunnel, so an answer proves the gateway forwards your traffic into the VPC and the Rancher
+name exists. Keep `-Server`: without it, Windows may answer from public DNS, which returns the same
+addresses even with the tunnel off. If it times out, see Troubleshooting.
+
+That is all for this step.
+
+**If there is no handshake.** Look inside the gateway. On the workstation:
 ```bash
 cd ~/Medical-RAG-Chatbot
 WG_ID=$(terraform -chdir=infra/terraform/cluster output -raw wireguard_instance_id)
-until [ "$(aws ssm describe-instance-information --filters Key=InstanceIds,Values="$WG_ID" \
-    --query 'InstanceInformationList[0].PingStatus' --output text)" = Online ]; do
-  echo "waiting for the gateway to register with SSM..."; sleep 15
-done
-COMMAND_ID=$(aws ssm send-command --instance-ids "$WG_ID" \
-  --document-name AWS-RunShellScript \
-  --parameters 'commands=["cloud-init status --wait || true","test -f /var/log/wireguard-ready && echo READY","wg show","iptables -S WG_FWD"]' \
-  --query 'Command.CommandId' --output text)
-aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"
-aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WG_ID" \
-  --query '[Status,StandardOutputContent,StandardErrorContent]' --output text
+aws ssm start-session --target "$WG_ID"
 ```
-Expect `Success`, `READY`, a `wg show` block with a recent `latest handshake`, and the firewall: the
-`-N WG_FWD` line plus four rules (DNS over UDP and TCP, TCP 443, then `DROP`). If `wait` prints
-`Max attempts exceeded`, run the `wait` line again. If it prints `terminal failure state`, run the last
-command anyway: its output says what failed. No `latest handshake` means the laptop's tunnel was not
-active yet: activate it and run the block again from `COMMAND_ID=`.
-
-3. **Workstation:** check the listener and the names:
+If it prints `TargetNotConnected`, the gateway is still starting, or was only just rebuilt: wait two or
+three minutes and run the last command again. When the prompt changes to `$`, you are on the gateway.
+Run:
 ```bash
-aws elbv2 describe-listeners \
-  --load-balancer-arn $(aws elbv2 describe-load-balancers --names medical-rag-api \
-    --query 'LoadBalancers[0].LoadBalancerArn' --output text) \
-  --query 'Listeners[].[Port,Protocol]' --output table
-dig +short rancher.recruitai.io.vn
-dig +short vpn.recruitai.io.vn
+cloud-init status --wait
 ```
-Expect two listeners, 6443 and 443, both `TCP`; `10.10.x.x` addresses for the Rancher name; and one
-public address for the VPN name.
+It prints dots while the gateway is still setting itself up, then one of two answers.
 
-4. **Laptop, PowerShell** (tunnel active):
-```powershell
-Resolve-DnsName rancher.recruitai.io.vn
-```
-Expect `10.10.x.x` addresses. Nothing answers in the browser yet: TCP 443 has no service behind it
-until the GitOps phase.
-
-#### Later, after `make bootstrap` — skip this now
-
-These checks need ingress-nginx and Rancher, which the GitOps phase installs.
-
-**The certificate**, checked from the WireGuard gateway: the workstation has no route into the cluster
-VPC, but the gateway has. Workstation:
+**`status: error`** — the setup script stopped. Show its last lines, then leave the gateway:
 ```bash
-cd ~/Medical-RAG-Chatbot
-WG_ID=$(terraform -chdir=infra/terraform/cluster output -raw wireguard_instance_id)
-PARAMS=$(jq -n --arg c 'openssl s_client -connect rancher.recruitai.io.vn:443 -servername rancher.recruitai.io.vn -verify_return_error </dev/null 2>&1 | grep -E "subject=|issuer=|Verify return code|verify error|errno|refused|timed out"; true' \
-  '{commands: [$c]}')
-COMMAND_ID=$(aws ssm send-command --instance-ids "$WG_ID" --document-name AWS-RunShellScript \
-  --parameters "$PARAMS" --query 'Command.CommandId' --output text)
-aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"
-aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WG_ID" \
-  --query StandardOutputContent --output text
+sudo tail -20 /var/log/cloud-init-output.log
+exit
 ```
-Expect a subject naming `rancher.recruitai.io.vn`, a Sectigo issuer and `Verify return code: 0 (ok)`
-(it may appear twice). A `verify error`, `errno` or `timed out` line says what failed.
+The lines just above `Failed to run module scripts_user` show what went wrong:
 
-**The public load balancer does not serve Rancher.** Workstation:
-```bash
-cd ~/Medical-RAG-Chatbot
-curl -sI -H 'Host: rancher.recruitai.io.vn' \
-  "http://$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)/" | head -1
-```
-Expect `HTTP/1.1 308 Permanent Redirect`: the only answer is a redirect to an address the internet
-cannot reach.
+- `ResourceNotFoundException` or `can't find the specified secret value`: the keys were not stored yet
+  when the gateway booted. Store them (18.2).
+- No error line above it: a key is missing from the secret. Check 18.2, part 7.
+- Anything else: fix the cause it names.
 
-**The browser and the firewall**, on the laptop with the tunnel active: `https://rancher.recruitai.io.vn`
-loads, and times out once you deactivate the tunnel. In PowerShell:
-```powershell
-Test-NetConnection rancher.recruitai.io.vn -Port 443    # TcpTestSucceeded : True
-Test-NetConnection rancher.recruitai.io.vn -Port 6443   # TcpTestSucceeded : False
-```
-The Rancher name points at the internal load balancer, which also carries the Kubernetes API on 6443.
-The gateway forwards only DNS and TCP 443, so 6443 stays closed.
-
-#### Only if the laptop's WireGuard key is lost — skip this now
-
-1. **Laptop (the new one):** in the WireGuard app, **Add empty tunnel…**, name it `medical-rag`, copy its
-   public key and click **Save**. Complete it later as in *Finish the laptop's tunnel*.
-2. **Workstation:** paste **only this line**, then the new public key at the prompt:
-```bash
-read -r -p "New laptop public key: " NEW_PUB
-```
-3. **Workstation:** store it in place of the old one:
-```bash
-cd ~/tls/rancher.recruitai.io.vn
-umask 077
-if [[ ! $NEW_PUB =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]]; then
-  echo "STOP: that is not a WireGuard public key."
-elif aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
-       --query SecretString --output text \
-     | jq -e --arg k "$NEW_PUB" '.operatorPublicKey = $k' > wg.json &&
-     aws secretsmanager put-secret-value --secret-id medical-rag/wireguard \
-       --secret-string file://wg.json; then
-  echo "OK: the new laptop key is stored"
-else
-  echo "FAILED: nothing changed"
-fi
-shred -u wg.json 2>/dev/null
-```
-4. **Apply it.** The gateway reads the key only when it is created. If the cluster is destroyed (the
-   usual state), nothing else is needed: the next `make infra` uses the new key. If it is running,
-   replace only the gateway:
+Then rebuild only the gateway. On the workstation:
 ```bash
 cd ~/Medical-RAG-Chatbot
 make init
 terraform -chdir=infra/terraform/cluster apply -replace=aws_instance.wireguard
 ```
-The plan must show **1 to add, 1 to change, 1 to destroy**: the gateway is rebuilt, and its EIP moves
-to the new instance, so the address and the `vpn` record stay the same. Afterwards the old key no
-longer connects, and the new one does.
+`-replace` rebuilds that one machine. The plan must say **1 to add, 1 to change, 1 to destroy**: the
+gateway is rebuilt and its Elastic IP moves to it, so the `vpn` address stays the same. If it shows
+more, type `no` and check `git status`. Otherwise type `yes`, wait five minutes, and activate the tunnel
+again.
+
+**`status: done`** — the gateway is ready. Compare the keys:
+```bash
+sudo wg show
+exit
+```
+
+- `public key:`, near the top, is the gateway's key. It must match `wireguard-server.pub` and the
+  `PublicKey` under `[Peer]` in the laptop's tunnel.
+- `peer:` must match the laptop's key: in the WireGuard app, the **Public key** under **Interface**.
+
+If `peer:` differs, the laptop's tunnel was recreated: see *Only if the laptop's WireGuard key is lost*.
+If `wg show` prints nothing, WireGuard did not start: see Troubleshooting, *Chain already exists*.
+
+If both keys match, check that the laptop finds the gateway's current address. On the workstation:
+```bash
+cd ~/Medical-RAG-Chatbot
+terraform -chdir=infra/terraform/cluster output wireguard_public_ip
+```
+On the laptop, in PowerShell:
+```powershell
+Resolve-DnsName vpn.recruitai.io.vn
+```
+The two addresses must be the same. If they differ, wait a minute, then deactivate and activate the
+tunnel. If they are the same, your network may block UDP 51820: try again from a phone hotspot.
+
+#### Later, after `make bootstrap` — skip this now
+
+These checks need ingress-nginx and Rancher, which the GitOps phase installs.
+
+**1. The certificate, checked from the gateway.** The workstation has no route into the cluster VPC,
+but the gateway has. Workstation — open a shell on the gateway:
+```bash
+cd ~/Medical-RAG-Chatbot
+WG_ID=$(terraform -chdir=infra/terraform/cluster output -raw wireguard_instance_id)
+aws ssm start-session --target "$WG_ID"
+```
+On the gateway:
+```bash
+openssl s_client -connect rancher.recruitai.io.vn:443 -servername rancher.recruitai.io.vn -brief </dev/null
+exit
+```
+Expect a `Peer certificate:` line naming `rancher.recruitai.io.vn`, and `Verification: OK`. Anything else
+after `Verification:` says what is wrong with the certificate chain.
+
+**2. The public load balancer does not serve Rancher.** Workstation:
+```bash
+cd ~/Medical-RAG-Chatbot
+PUBLIC_NLB=$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)
+curl -sI -H 'Host: rancher.recruitai.io.vn' "http://$PUBLIC_NLB/"
+```
+The first line must be `HTTP/1.1 308 Permanent Redirect`: the only answer is a redirect to an address
+the internet cannot reach.
+
+**3. The browser and the firewall.** Laptop, with the tunnel active: `https://rancher.recruitai.io.vn`
+loads. Deactivate the tunnel and it times out. With the tunnel active again, in PowerShell:
+```powershell
+Test-NetConnection rancher.recruitai.io.vn -Port 443
+Test-NetConnection rancher.recruitai.io.vn -Port 6443
+```
+Expect `TcpTestSucceeded : True` for 443 and `False` for 6443. The Rancher name points at the internal
+load balancer, which also carries the Kubernetes API on 6443; the gateway forwards only DNS and TCP
+443, so 6443 stays closed.
+
+#### Only if the laptop's WireGuard key is lost — skip this now
+
+**1. Laptop (the new one).** Install WireGuard, create an empty tunnel named `medical-rag`, and copy
+its public key, exactly as in 18.2, parts 1 and 2.
+
+**2. Workstation — enter the new public key.** Paste **only this line**, then the key at the prompt:
+```bash
+read -r -p "New laptop public key: " NEW_PUB
+```
+Check it:
+```bash
+echo "${#NEW_PUB} $NEW_PUB"
+```
+Expect `44`, a space, then the key, ending in `=`.
+
+**3. Workstation — put the new key into the stored secret.** Download the current secret:
+```bash
+cd ~/tls/rancher.recruitai.io.vn
+umask 077
+aws secretsmanager get-secret-value --secret-id medical-rag/wireguard --query SecretString --output text > wireguard.json
+```
+Replace the laptop's key in it, and check the result:
+```bash
+jq --arg key "$NEW_PUB" '.operatorPublicKey = $key' wireguard.json > wireguard-new.json
+jq -r '.operatorPublicKey' wireguard-new.json
+```
+The second command must print the new key. Upload it:
+```bash
+aws secretsmanager put-secret-value --secret-id medical-rag/wireguard --secret-string file://wireguard-new.json
+```
+Expect a `VersionId`. Then delete both files, which hold the gateway's private key:
+```bash
+shred -u wireguard.json wireguard-new.json
+```
+
+**4. Apply it.** The gateway reads the key only when it is created.
+
+- **Cluster destroyed** (the usual state): nothing else to do. The next `make infra` uses the new key.
+- **Cluster running:** replace only the gateway, with the commands below.
+
+```bash
+cd ~/Medical-RAG-Chatbot
+make init
+terraform -chdir=infra/terraform/cluster apply -replace=aws_instance.wireguard
+```
+`-replace` rebuilds that one machine. Check that the plan says **1 to add, 1 to change, 1 to destroy**
+(the gateway is rebuilt, and its Elastic IP moves to the new instance, so the address and the `vpn`
+record stay the same), then type `yes`. Afterwards the old key no longer connects and the new one does.
+Finish the new laptop's tunnel as in 18.4.
 
 ---
 
@@ -3257,10 +3382,10 @@ longer connects, and the new one does.
 | `make infra` in step 18: `Tried to create resource record set … but it already exists` | A `rancher` or `vpn` record was copied into Route 53 in 17.1. Delete it in the console and run `make infra` again |
 | `no matching Route 53 Hosted Zone found` in step 18 | Step 16 was not applied, or the two stacks use different domains |
 | Existing records stopped resolving after step 17 | The DNS inventory was incomplete, or DNSSEC still has a stale DS record. Restore the missing records before continuing |
-| WireGuard has no handshake | Check `vpn.recruitai.io.vn`, UDP 51820 and the server public key. If the tunnel was recreated on the laptop, it has a new key: store its public key again (see *Only if the laptop's WireGuard key is lost*) |
+| WireGuard has no handshake | See 18.5, *If there is no handshake* |
 | VPN connects but `rancher.recruitai.io.vn` does not resolve | The profile is missing `DNS = 10.10.0.2`, so the home router answered and dropped the private address. Add the line and reconnect; in PowerShell, `Resolve-DnsName rancher.recruitai.io.vn -Server 10.10.0.2` must return `10.10.x.x` addresses |
-| VPN connects but Rancher is unreachable | Confirm the client routes `10.10.0.0/16`, `iptables -S WG_FWD` on the gateway lists the 443 rule, and the internal NLB has a healthy 30443 target |
+| VPN connects but Rancher is unreachable | Confirm the client routes `10.10.0.0/16`, `sudo iptables -S WG_FWD` on the gateway lists the 443 rule, and the internal NLB has a healthy 30443 target |
 | Anything other than Rancher times out through the VPN | By design: the gateway forwards only DNS and TCP 443. Reach the Kubernetes API with `make tunnel` on the workstation |
-| The gateway never prints `READY` | cloud-init failed after its retries. From the workstation, `aws ssm start-session --target "$WG_ID"`, then `sudo tail -50 /var/log/cloud-init-output.log`. A failure at `get-secret-value` usually means `medical-rag/wireguard` has no value yet (step 18, *Create the WireGuard keys*) |
+| `cloud-init status` on the gateway shows `status: error` | The setup script stopped. See 18.5, *If there is no handshake* |
 | `wg-quick` fails with `Chain already exists` | An earlier start stopped half-way. In a session on the gateway: `sudo iptables -D FORWARD -i wg0 -j WG_FWD; sudo iptables -F WG_FWD; sudo iptables -X WG_FWD; sudo systemctl restart wg-quick@wg0` |
 | A node shows `ConnectionLost` in SSM | NAT gateway or route problem: check step 10, then reboot the instance |
