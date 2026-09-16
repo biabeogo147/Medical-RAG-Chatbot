@@ -2399,7 +2399,7 @@ done
 Expect four `awsdns` names after delegation. During an unsigned migration, the DS query must be empty.
 Re-check every inventoried record, the existing website, and mail flow before continuing.
 
-**Run — create and store the certificate secrets outside the repo:**
+**Run — create the private key and the certificate request** on the ops workstation, outside the repo:
 ```bash
 install -d -m 700 ~/tls/rancher.recruitai.io.vn
 cd ~/tls/rancher.recruitai.io.vn
@@ -2408,40 +2408,82 @@ openssl req -new -newkey rsa:2048 -nodes \
   -keyout rancher.key -out rancher.csr \
   -subj "/CN=rancher.recruitai.io.vn" \
   -addext "subjectAltName=DNS:rancher.recruitai.io.vn"
-openssl req -in rancher.csr -noout -subject -ext subjectAltName
+openssl req -in rancher.csr -noout -subject
+openssl req -in rancher.csr -noout -text | grep -A1 "Subject Alternative Name"
+ls
 ```
+Expect a subject naming `rancher.recruitai.io.vn`, the line `DNS:rancher.recruitai.io.vn`, and exactly
+two files: `rancher.csr` and `rancher.key`. There is no certificate yet: Sectigo creates it from the
+request.
 
-Paste `rancher.csr` into the Sectigo order (print it with `cat rancher.csr` and copy it from the
-Session Manager window). Keep `rancher.key` in this mode-700 directory and never commit or copy it to
-the laptop.
+Print the request with `cat rancher.csr` and paste all of it, including the `BEGIN` and `END` lines,
+into the Sectigo order. `rancher.key` stays in this mode-700 directory: never commit it and never copy
+it to the laptop.
 
-Sectigo gives you a validation `CNAME`. During the 48-hour overlap, some resolvers still follow the
-old name servers, so add the record at **both** the old provider and Route 53:
+**Run — prove you control the name.** Sectigo gives you a validation `CNAME` (a name and a value).
+During the 48-hour DNS overlap some resolvers still ask the old name servers, so add the record at
+**both** the old DNS provider and Route 53:
 ```bash
 ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name recruitai.io.vn \
-  --query 'HostedZones[0].Id' --output text)
-aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" --change-batch '{
-  "Changes": [{"Action": "UPSERT", "ResourceRecordSet": {
-    "Name": "<name from Sectigo>", "Type": "CNAME", "TTL": 300,
-    "ResourceRecords": [{"Value": "<value from Sectigo>"}]}}]}'
-dig +short CNAME <name from Sectigo> @1.1.1.1
+  --query "HostedZones[?Name=='recruitai.io.vn.'].Id | [0]" --output text)
+echo "$ZONE_ID"                      # /hostedzone/Z...; "None" means step 16 has not been applied
+
+read -r -p "CNAME name from Sectigo: " DCV_NAME
+read -r -p "CNAME value from Sectigo: " DCV_VALUE
+aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" --change-batch "$(jq -n \
+  --arg name "$DCV_NAME" --arg value "$DCV_VALUE" \
+  '{Changes: [{Action: "UPSERT", ResourceRecordSet: {Name: $name, Type: "CNAME", TTL: 300,
+    ResourceRecords: [{Value: $value}]}}]}')"
+
+dig +short CNAME "$DCV_NAME" @1.1.1.1
 dig +short CAA recruitai.io.vn @1.1.1.1
 ```
-The `CNAME` must resolve. The `CAA` answer must be empty or include `sectigo.com`; a migrated `CAA`
-record that names another CA blocks issuance.
+The `CNAME` must return the value. The `CAA` answer must be empty or include `sectigo.com`; a migrated
+`CAA` record that names another CA blocks issuance. Then wait for Sectigo to issue the certificate.
 
-After validation, bring the leaf certificate and the intermediate bundle into this directory. Both are
-PEM text, so paste each one into the Session Manager window with `cat > <file name> <<'EOF'`, then a
-line containing only `EOF`.
+**Run — bring the certificate onto the workstation.** Sectigo sends the certificate to you, by email
+or on the order page, so the files land on the laptop, not here. Open them in Notepad: each is text
+between `-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----`. One is issued to
+`rancher.recruitai.io.vn` — the leaf. The others are Sectigo's intermediate certificates. Whatever
+Sectigo called its files, create exactly these two here.
 
-Sectigo's download contains the leaf certificate `rancher.crt` and the intermediate bundle
-`SectigoDVBundle.ca-bundle`; rename them here if your download differs. Put the leaf first, normalize
-the PEM boundary, verify the chain and confirm the certificate matches the private key:
+Validation can take hours, so this is often a new Session Manager window. Start with
+`sudo su - ubuntu`, then:
 ```bash
-awk 1 rancher.crt SectigoDVBundle.ca-bundle > fullchain.crt
-openssl verify -untrusted SectigoDVBundle.ca-bundle rancher.crt
-test "$(openssl x509 -in rancher.crt -pubkey -noout | openssl sha256)" = \
-     "$(openssl pkey -in rancher.key -pubout | openssl sha256)"
+cd ~/tls/rancher.recruitai.io.vn
+umask 077
+cat > rancher.crt <<'EOF'
+```
+Paste the **leaf** certificate, press Enter, type `EOF` and press Enter again. Do the same for the
+intermediates, pasting every one of them, in the order Sectigo gives them:
+```bash
+cat > ca-bundle.crt <<'EOF'
+```
+
+Check that the right certificate went into the right file, that the chain is complete, and that the
+certificate belongs to this private key:
+```bash
+ls
+openssl x509 -in rancher.crt -noout -subject -issuer -enddate
+openssl x509 -in rancher.crt -noout -ext subjectAltName
+openssl verify -untrusted ca-bundle.crt rancher.crt
+if [ "$(openssl x509 -in rancher.crt -pubkey -noout | openssl sha256)" = \
+     "$(openssl pkey -in rancher.key -pubout | openssl sha256)" ]; then
+  echo "OK: the certificate matches rancher.key"
+else
+  echo "MISMATCH: this certificate was not issued for rancher.csr"
+fi
+```
+Expect four files (`ca-bundle.crt`, `rancher.crt`, `rancher.csr`, `rancher.key`); a subject and a
+`DNS:` line naming `rancher.recruitai.io.vn`; a Sectigo issuer; `rancher.crt: OK`; and `OK: the
+certificate matches rancher.key`. If the subject shows a Sectigo CA instead, the leaf and an
+intermediate were swapped. A mismatch means the order used a different request: reissue the
+certificate with this `rancher.csr`.
+
+**Run — store the certificate and the Rancher password:**
+```bash
+awk 1 rancher.crt ca-bundle.crt > fullchain.crt
+openssl x509 -in fullchain.crt -noout -subject
 
 jq -n --rawfile crt fullchain.crt --rawfile key rancher.key \
   '{"tls.crt": $crt, "tls.key": $key}' > rancher-tls.json
@@ -2454,6 +2496,11 @@ aws secretsmanager put-secret-value --secret-id medical-rag/rancher \
   --secret-string file://rancher-password.json
 shred -u rancher-tls.json rancher-password.json
 ```
+The leaf comes first in `fullchain.crt`, so the `subject` names `rancher.recruitai.io.vn` again.
+`awk 1` rather than `cat`: if a pasted file lacks a final newline, `cat` glues
+`-----END CERTIFICATE----------BEGIN CERTIFICATE-----` onto one line, and ingress-nginx rejects the
+chain. Run the password line only once, before the first Rancher login; running it again replaces the
+password.
 
 **Verify** the values are there, without printing them:
 ```bash
@@ -2466,8 +2513,9 @@ aws secretsmanager get-secret-value --secret-id medical-rag/rancher \
   --query 'SecretString' --output text | jq -r '.bootstrapPassword'
 ```
 
-**Run — create WireGuard keys.** Generate the client key on the device that will run the VPN client. Its
-private key never leaves that device. Generate the server key on the ops workstation:
+**Run — create WireGuard keys.** The client key pair is made on the laptop, and its private key never
+leaves it. The server key pair is made on the ops workstation.
+
 On the laptop, in the WireGuard app, choose **Add Tunnel → Add empty tunnel…**, name it
 `medical-rag`, copy the **Public key** it shows, and click **Save**. The app generated the private key
 inside that tunnel, and it stays there: step 18 edits this same tunnel rather than creating a new one,
@@ -2477,7 +2525,8 @@ On the ops workstation:
 ```bash
 cd ~/tls/rancher.recruitai.io.vn
 umask 077
-sudo apt-get update && sudo apt-get install -y wireguard-tools
+sudo apt-get -o DPkg::Lock::Timeout=600 update
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y wireguard-tools
 wg genkey | tee wireguard-server.key | wg pubkey > wireguard-server.pub
 read -r -p "Operator public key: " OPERATOR_PUBLIC_KEY
 jq -n --rawfile serverPrivateKey wireguard-server.key --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" \
