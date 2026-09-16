@@ -27,6 +27,14 @@ $APT install -y git make unzip jq curl ca-certificates bash-completion tmux \
 # Lets you run docker without sudo. It applies at the next login, hence `sudo su - ubuntu`.
 usermod -aG docker ubuntu
 
+# 2 GB of RAM is enough for day-to-day work but tight while Terraform plans the cluster stack,
+# so add swap rather than a bigger instance.
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo "/swapfile none swap sw 0 0" >> /etc/fstab
+
 # Default region for the AWS CLI and Terraform, read from instance metadata.
 # 169.254.169.254 is reachable only from the instance itself. The PUT first, then the token header,
 # is IMDSv2, required by http_tokens = "required".

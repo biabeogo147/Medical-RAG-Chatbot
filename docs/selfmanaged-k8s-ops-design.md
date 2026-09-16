@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-15
 - **Timebox:** Days 1–3 of a 7-day plan shared with Anime-Recommender (EKS)
-- **Budget:** ~0.46 USD/hour while running in ap-southeast-1 (plus ~0.06 USD/hour for the ops workstation); destroyed when idle
+- **Budget:** ~0.50 USD/hour while running in ap-southeast-1 (plus ~0.03 USD/hour for the ops workstation); 128 USD of Free plan credits available until 2027-02-13, about 250 cluster-hours; the NAT gateway and both NLBs are not in the free tier at all; destroyed when idle
 - **Target role:** DevOps / Platform / SRE (LLMOps as a bonus)
 
 ## 1. Goal
@@ -53,7 +53,7 @@ This project is the **self-managed** counterpart to Anime-Recommender, which run
 
 ### Prerequisites
 - An AWS account and an identity with admin access, used once from **AWS CloudShell** to apply the bootstrap stack.
-- **Nothing is installed on the operator's Windows laptop** beyond an editor and git. Every ops command (Terraform, Ansible, kubectl, Helm, Docker, cosign) runs on the **ops workstation**, an EC2 Ubuntu 24.04 instance created by the bootstrap stack (see §4.0).
+- **Nothing is installed on the operator's Windows laptop** beyond an editor and git. Every ops command (Terraform, Ansible, kubectl, Helm, cosign) runs on the **ops workstation**, an EC2 Ubuntu 24.04 instance created by the bootstrap stack (see §4.0).
 - An HF token **with the "Inference Providers" permission**; the current token returns 403. A Gemini API key.
 
 ## 3. Architecture
@@ -65,7 +65,7 @@ This project is the **self-managed** counterpart to Anime-Recommender, which run
  Operator ──► SSM Session Manager (no SSH, no bastion)                                                      │
                          │  private subnets                                                                 │
                          │  ┌─────────── node-1 ───────────┐ ┌── node-2 ──┐ ┌── node-3 ──┐                   │
-                         │  │ control-plane + worker       │ │   same     │ │   same     │  t3.large ×3      │
+                         │  │ control-plane + worker       │ │   same     │ │   same     │  m7i-flex.large ×3│
                          │  │ etcd, containerd, Calico     │ └────────────┘ └────────────┘                   │
                          │  └──────────────────────────────┘                                                  │
                          │  internal NLB :6443 ──► kube-apiserver ×3 (kubeadm controlPlaneEndpoint)          │
@@ -95,7 +95,7 @@ All components except Argo CD are installed **by Argo CD** from `deploy/argocd/`
 The bootstrap stack is applied once from AWS CloudShell and creates the two things every other stack depends on:
 - **State bucket:** versioned, encrypted, Block Public Access, TLS-only policy, `prevent_destroy`. After the first apply, the bootstrap stack's own state is migrated into this bucket (key `bootstrap/terraform.tfstate`).
 - **Ops workstation:**
-  - `t3.medium` Ubuntu 24.04 in its own small VPC (`10.20.0.0/24`, one public subnet, no NAT), so it does not depend on the default VPC; 30 GB gp3 encrypted.
+  - `t3.small` Ubuntu 24.04 in its own small VPC (`10.20.0.0/24`, one public subnet, no NAT), so it does not depend on the default VPC; 30 GB gp3 encrypted.
   - No inbound rules, no key pair, IMDSv2 required.
   - Reached only with SSM Session Manager from the AWS Console.
   - IAM role with `AdministratorAccess` (lab trade-off, documented) and `AmazonSSMManagedInstanceCore`, so no access keys exist anywhere.
@@ -113,7 +113,9 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
 - Architecture and file-by-file notes are in `docs/terraform/README.md`; the step-by-step build guide is `docs/terraform/guide.md`.
 - **Network:** VPC with 3 public and 3 private subnets and 1 NAT gateway (cost choice, documented as a single point of failure).
 - **Compute:**
-  - 3× `t3.large` Ubuntu 24.04 across 3 AZs, gp3 encrypted root volumes.
+  - 3× `m7i-flex.large` (2 vCPU, 8 GB) Ubuntu 24.04 across 3 AZs, gp3 encrypted root volumes.
+    The account is on the **AWS Free plan**, which refuses to launch instance types that are not
+    free-tier eligible, so `t3.large` and `t3.medium` cannot be used.
   - IMDSv2 required, no public IPs, no key pair.
   - The SSM agent is present on the Ubuntu AMI.
 - **Load balancers:**
@@ -324,7 +326,9 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | HF Inference API quota for 7,079 chunks | Batching + backoff; index built once and reused via S3. Fallback: build the index locally and upload with the same CLI. |
 | Ansible over SSM is slow or flaky | Run from the ops workstation in the same region; pin collection versions in `requirements.yml`. |
 | Ops workstation holds `AdministratorAccess` | Anyone in the account allowed to `ssm:StartSession` on it gets admin rights. Mitigations: no inbound ports, SSM-only access, IMDSv2, stopped when idle, GitHub access through a fine-grained token limited to this repo, tool downloads verified by checksum. P2: scope the role down. |
-| t3.large memory pressure (Jenkins + Prometheus + builds) | Resource requests on all addons; Prometheus retention 24h; at most 1 concurrent Jenkins build. |
+| `m7i-flex.large` gives about 40% of 2 vCPU as baseline and bursts above it, and unlike T instances it publishes no CPU credit metric, so exhaustion is silent | Nodes idle far below the baseline and Jenkins builds are short. Alert on `node_cpu_seconds_total` sustained above 80% instead of on credits. |
+| Free plan credits run out or expire (128 USD, 2027-02-13), which may suspend the account | The state bucket has `prevent_destroy` and the cosign KMS key cannot be recreated without invalidating every signature. P1: copy the state bucket and record the key ARN off-account before the expiry date. |
+| Node memory pressure (Jenkins + Prometheus + builds) | Resource requests on all addons; Prometheus retention 24h; at most 1 concurrent Jenkins build. |
 | No domain for ingress | Path-based routing on the NLB DNS; TLS is out of scope. |
 | **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | IMDSv2 hop limit 2 is required for pods today. NetworkPolicy egress deny to `169.254.169.254/32` for all app namespaces, allowed only for external-secrets, ebs-csi and Jenkins agents. Documented as a known limitation; P2 is self-hosted IRSA (pod-identity-webhook + S3-hosted OIDC discovery). |
 | Day 1–3 overrun | Cut order: P1 items → prod PR automation (promote manually) → SBOM attestation. Never cut scan + sign + GitOps. |

@@ -17,7 +17,7 @@ flowchart TB
     CS -->|"applies the bootstrap stack"| WS
 
     subgraph OPS["Ops VPC 10.20.0.0/24"]
-        WS["Ops workstation<br/>EC2 Ubuntu t3.medium<br/>terraform, ansible, kubectl, helm, docker, cosign"]
+        WS["Ops workstation<br/>EC2 Ubuntu t3.small<br/>terraform, ansible, kubectl, helm, docker, cosign"]
     end
 
     You -->|"Session Manager, no SSH"| WS
@@ -26,7 +26,7 @@ flowchart TB
     subgraph CLUSTER["Cluster VPC 10.10.0.0/16, 3 AZs"]
         PUB["Public NLB :80"]
         API["Internal NLB :6443<br/>kubeadm controlPlaneEndpoint"]
-        N1["node-1<br/>t3.large"]
+        N1["node-1<br/>m7i-flex.large"]
         N2["node-2"]
         N3["node-3"]
         NAT["NAT gateway"]
@@ -65,7 +65,7 @@ anything that is slow or expensive to rebuild.
 |---|---|---|---|
 | `bootstrap/` | CloudShell | Kept | It creates the state bucket the other stacks need, and the workstation they run on. Applying it from the workstation could destroy the machine you are sitting on. |
 | `shared/` | Workstation | Kept | The FAISS index costs Hugging Face quota to build, secret values are typed by hand, a new KMS key invalidates every existing signature, and images would have to be rebuilt. |
-| `cluster/` | Workstation | **Destroyed when idle** (end of every session) | 0.46 USD/hour, and everything in it is rebuilt from code in minutes. |
+| `cluster/` | Workstation | **Destroyed when idle** (end of every session) | 0.50 USD/hour, and everything in it is rebuilt from code in minutes. |
 
 All three write their state to the same bucket, under different keys:
 
@@ -146,7 +146,7 @@ creates exists, and it has no `main.tf` — its account lookup sits in `state.tf
 | `security.tf` | 3 security groups (nodes, API NLB, ingress NLB) and 8 rules | The node-to-node and NLB-to-node rules reference security groups, so they survive node replacement. Only three rules use CIDRs: HTTP from the internet, the API from inside the VPC, and node egress |
 | `storage.tf` | Buckets `etcd-backups` (14 days) and `ssm-transfer` (1 day) | Cluster-scoped: useless once the cluster is gone, so `force_destroy` is on |
 | `iam.tf` | The node role, instance profile and its inline policy | Least privilege: ECR for this repo, the 3 project buckets, the 2 project secrets, the cosign key. Plus two AWS managed policies: `AmazonSSMManagedInstanceCore` (Session Manager, Ansible) and `AmazonEBSCSIDriverPolicy` (volumes for the EBS CSI driver) |
-| `compute.tf` | 3 × `t3.large` Ubuntu 24.04, one per AZ, no public IP, no key pair, IMDSv2 required | Tagged `k8s-cluster=medical-rag`, which is how Ansible finds them |
+| `compute.tf` | 3 × `m7i-flex.large` Ubuntu 24.04, one per AZ, no public IP, no key pair, IMDSv2 required | Tagged `k8s-cluster=medical-rag`, which is how Ansible finds them |
 | `loadbalancers.tf` | Internal NLB :6443 and public NLB :80, with their target groups, listeners and 3 attachments each | The internal one is kubeadm's `controlPlaneEndpoint` |
 | `main.tf` | Also holds the `data` lookups of the shared stack | A missing shared stack fails the plan here |
 
@@ -201,9 +201,20 @@ flowchart LR
 
 | Piece | Choice | Why |
 |---|---|---|
-| Node type | `t3.large` (2 vCPU, 8 GB) × 3 | kubeadm needs 2 vCPU minimum; the rest runs Jenkins, Prometheus and the app |
+| Node type | `m7i-flex.large` (2 vCPU, 8 GB) × 3 | kubeadm needs 2 vCPU minimum; the rest runs Jenkins, Prometheus and the app. It is also one of the types an AWS Free plan account may launch |
 | Node disks | 40 GB gp3, encrypted | Images, logs and Prometheus data |
 | NAT gateways | 1, not 3 | Saves about 0.12 USD/hour. If that AZ fails, nodes lose outbound internet but the cluster keeps serving |
-| Workstation | `t3.medium`, 30 GB | Enough to run Terraform, Ansible and Docker builds |
-| Cluster total | **≈ 0.46 USD/hour** | Destroyed with `make infra-destroy` when idle |
+| Workstation | `t3.small`, 30 GB + 2 GB swap | Enough for Terraform, Ansible and kubectl; application images are built by Jenkins in the cluster |
+| Cluster total | **≈ 0.50 USD/hour** | Destroyed with `make infra-destroy` when idle |
 | Kept always | ≈ 2.30 USD/month, plus 2.90 USD/month for the stopped workstation disk | KMS key, 2 secrets, buckets, images |
+
+**AWS Free plan.** This account runs on the Free plan, which refuses to launch any instance type
+that is not free-tier eligible, whatever your credits. `t3.small` and `m7i-flex.large` are on that
+list; `t3.medium` and `t3.large` are not. Check with:
+
+```bash
+aws freetier get-account-plan-state
+aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true \
+  --query 'InstanceTypes[].[InstanceType,VCpuInfo.DefaultVCpus,MemoryInfo.SizeInMiB]' --output table
+```
+

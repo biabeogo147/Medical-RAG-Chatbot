@@ -118,7 +118,7 @@ Step-by-step Terraform instructions: [`docs/terraform/guide.md`](docs/terraform/
    cosign verify --key awskms:///alias/medical-rag-cosign "$IMAGE"
    kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
    ```
-9. **Tear down** when idle (about 0.46 USD/hour while running):
+9. **Tear down** when idle (about 0.50 USD/hour while running):
    ```bash
    make cost    # hours up × hourly estimate
    make down    # removes Argo CD apps first, then destroys the cluster stack

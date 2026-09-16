@@ -54,8 +54,8 @@ All three store their state in the same S3 bucket under different keys: `bootstr
 |---|---|---|
 | State bucket, artifacts bucket, ECR images | Always | < 0.50 USD/month |
 | KMS key + 2 secrets | Always | 1.80 USD/month |
-| Ops workstation (`t3.medium`, 30 GB) | Hourly while running; disk always | 0.06 USD/hour + 2.90 USD/month |
-| Cluster (3 × `t3.large`, NAT gateway, 2 NLBs, public IPs, 120 GB disks) | While it exists | **0.46 USD/hour** |
+| Ops workstation (`t3.small`, 30 GB) | Hourly while running; disk always | 0.03 USD/hour + 2.90 USD/month |
+| Cluster (3 × `m7i-flex.large`, NAT gateway, 2 NLBs, public IPs, 120 GB disks) | While it exists | **0.50 USD/hour** |
 
 **End of every session:** `make infra-destroy`, then stop the workstation (EC2 → Instances → Instance state → Stop).
 
@@ -147,7 +147,7 @@ Create `infra/terraform/bootstrap/variables.tf`:
 ```hcl
 # The inputs of this stack. Everything else refers to them as var.<name>, so no name, size or region
 # is hard-coded further down. Override one without editing the code:
-#   terraform apply -var workstation_instance_type=t3.large
+#   terraform apply -var workstation_instance_type=c7i-flex.large
 #   a terraform.tfvars file, or the environment variable TF_VAR_workstation_instance_type
 #
 # `description` shows up in `terraform plan`; `type` makes Terraform reject a wrong value early;
@@ -180,7 +180,9 @@ variable "ops_vpc_cidr" {
 variable "workstation_instance_type" {
   description = "EC2 instance type of the ops workstation."
   type        = string
-  default     = "t3.medium" # enough for Terraform, Ansible and Docker builds
+  # t3.small (2 vCPU, 2 GB) is enough for Terraform, Ansible and kubectl, and it is one of the
+  # types an AWS Free plan account may launch.
+  default = "t3.small"
 }
 
 variable "workstation_volume_gb" {
@@ -339,8 +341,9 @@ The workstation variables (`ops_vpc_cidr`, `workstation_instance_type`, `worksta
 Create `infra/terraform/bootstrap/workstation.tf`:
 ```hcl
 # The ops workstation: an EC2 Ubuntu machine with every ops tool, reached only through SSM
-# Session Manager. All later Terraform, Ansible, kubectl and Docker commands run there, so nothing
-# has to be installed on the operator's laptop.
+# Session Manager. All later Terraform, Ansible, kubectl and Helm commands run there, so nothing has
+# to be installed on the operator's laptop. Docker is there for checks and image pulls only:
+# application images are built in the cluster by Jenkins with rootless BuildKit.
 
 # Canonical publishes the newest Ubuntu 24.04 image ID in this public SSM parameter, per region.
 # Reading it beats hard-coding an AMI ID, which is region-specific and goes stale.
@@ -547,6 +550,14 @@ $APT install -y git make unzip jq curl ca-certificates bash-completion tmux \
 # Lets you run docker without sudo. It applies at the next login, hence `sudo su - ubuntu`.
 usermod -aG docker ubuntu
 
+# 2 GB of RAM is enough for day-to-day work but tight while Terraform plans the cluster stack,
+# so add swap rather than a bigger instance.
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo "/swapfile none swap sw 0 0" >> /etc/fstab
+
 # Default region for the AWS CLI and Terraform, read from instance metadata.
 # 169.254.169.254 is reachable only from the instance itself. The PUT first, then the token header,
 # is IMDSv2, required by http_tokens = "required".
@@ -681,13 +692,28 @@ git push
 **Goal:** create the state bucket and the workstation.
 
 1. Sign in to the AWS Console as `devops-lab-user` (with MFA). Select region **Asia Pacific (Singapore) ap-southeast-1**.
-2. Open **CloudShell** (the terminal icon in the top bar).
+2. Open **CloudShell** (the terminal icon in the top bar). Check which plan the account is on:
+   ```bash
+   aws freetier get-account-plan-state
+   ```
+   If `accountPlanType` is `FREE`, AWS refuses to launch any instance type that is not free-tier
+   eligible, whatever credits you have. This project therefore uses `t3.small` for the workstation and
+   `m7i-flex.large` for the nodes. To see the full list:
+   ```bash
+   aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true \
+     --query 'InstanceTypes[].[InstanceType,VCpuInfo.DefaultVCpus,MemoryInfo.SizeInMiB]' --output table
+   ```
+   A paid plan removes the restriction; check what happens to your remaining credits in the Billing
+   console before upgrading.
 3. Prepare the shell. The AWS provider is about 830 MB unpacked and the CloudShell home folder holds only 1 GB, so Terraform's working data goes to `/tmp`:
    ```bash
    df -h /tmp            # needs at least 2 GB available
    export TF_DATA_DIR=/tmp/tf-bootstrap
    export PATH="$HOME/bin:$PATH"
    ```
+   **Both exports are lost when the CloudShell session ends.** Run them again in every new session
+   before any `terraform` command, or the provider lands in the 1 GB home folder and the download
+   fails with `no space left on device`.
 4. Get the code and install Terraform:
    ```bash
    git clone https://github.com/biabeogo147/Medical-RAG-Chatbot.git ~/Medical-RAG-Chatbot
@@ -1344,7 +1370,7 @@ provider "aws" {
 Create `infra/terraform/cluster/variables.tf`:
 ```hcl
 # The inputs of the cluster stack. All have defaults, so no terraform.tfvars file is needed here.
-# Override one for a single run with: terraform apply -var node_instance_type=t3a.large
+# Override one for a single run with: terraform apply -var node_instance_type=c7i-flex.large
 
 variable "region" {
   description = "AWS region for every resource in this project."
@@ -1379,7 +1405,9 @@ variable "node_count" {
 variable "node_instance_type" {
   description = "EC2 instance type of the Kubernetes nodes."
   type        = string
-  default     = "t3.large" # kubeadm needs at least 2 vCPU and 2 GB
+  # kubeadm needs at least 2 vCPU and 2 GB. m7i-flex.large gives 2 vCPU and 8 GB and, unlike
+  # t3.large, may be launched by an AWS Free plan account.
+  default = "m7i-flex.large"
 }
 
 variable "node_volume_gb" {
@@ -1950,7 +1978,7 @@ resource "aws_instance" "nodes" {
   count = var.node_count # creates nodes[0], nodes[1], nodes[2]
 
   ami           = data.aws_ssm_parameter.ubuntu_2404.insecure_value
-  instance_type = var.node_instance_type # t3.large: kubeadm needs 2 vCPU, the rest runs the workloads
+  instance_type = var.node_instance_type # 2 vCPU for kubeadm, 8 GB for Jenkins, Prometheus and the app
 
   # node 1 to AZ a, node 2 to AZ b, node 3 to AZ c. Losing one AZ leaves 2 of 3 etcd members, which
   # keeps quorum, so the cluster survives. There are always 3 subnets, so a 4th node would wrap onto
@@ -2001,7 +2029,7 @@ output "node_private_ips" {
 
 **Why:**
 - **`count` + `count.index % length(...)`:** node 1 goes to AZ a, node 2 to AZ b, node 3 to AZ c. Losing one AZ leaves 2 of 3 etcd members, which keeps quorum.
-- **`t3.large` (2 vCPU, 8 GB):** kubeadm needs at least 2 vCPU and 2 GB; the rest is for Jenkins, Prometheus and the app.
+- **`m7i-flex.large` (2 vCPU, 8 GB):** kubeadm needs at least 2 vCPU and 2 GB; the rest is for Jenkins, Prometheus and the app. On an AWS Free plan account it is also one of the few types that may be launched at all (see the note in step 4).
 - **No public IP, no key pair:** access is Session Manager only, through the NAT gateway.
 - **`http_put_response_hop_limit = 2`:** IMDSv2 answers requests from inside pods (one extra network hop), which External Secrets and the EBS CSI driver need.
 - **`k8s-cluster` tag:** Ansible finds the nodes by this tag, so no IP address is written in the inventory.
@@ -2239,6 +2267,8 @@ make plan                                                          # No changes.
 | `no matching ECR Repository found` or a similar lookup error in step 9 | The shared stack is missing or in another region: run step 8 first |
 | `AccessDenied` on the workstation | `aws sts get-caller-identity` must show the workstation role |
 | `Author identity unknown` on `git commit` | Run the `git config --global` lines of step 7 |
-| `InsufficientInstanceCapacity` for `t3.large` | Temporary shortage in one AZ: apply again later, or set `node_instance_type = "t3a.large"` |
+| `InvalidParameterCombination: The specified instance type is not eligible for Free Tier` | The account is on the AWS Free plan: only free-tier-eligible types may be launched. Use `t3.small` or `m7i-flex.large`, or upgrade the account to a paid plan |
+| `InsufficientInstanceCapacity` | Temporary shortage in one AZ: retry later, or fall back to `c7i-flex.large` (4 GB, the only other free-tier type big enough) and cut Prometheus retention |
+| `no space left on device` during `terraform init` in CloudShell | `TF_DATA_DIR` is not set: the AWS provider needs about 830 MB and the CloudShell home folder holds 1 GB. Run `rm -rf .terraform`, then the exports in step 4.3 again |
 | Budget stays at 0 USD | The `project` cost allocation tag is not active (step 6) |
 | A node shows `ConnectionLost` in SSM | NAT gateway or route problem: check step 10, then reboot the instance |

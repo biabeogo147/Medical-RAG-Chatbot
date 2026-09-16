@@ -1,6 +1,7 @@
 # The ops workstation: an EC2 Ubuntu machine with every ops tool, reached only through SSM
-# Session Manager. All later Terraform, Ansible, kubectl and Docker commands run there, so nothing
-# has to be installed on the operator's laptop.
+# Session Manager. All later Terraform, Ansible, kubectl and Helm commands run there, so nothing has
+# to be installed on the operator's laptop. Docker is there for checks and image pulls only:
+# application images are built in the cluster by Jenkins with rootless BuildKit.
 
 # Canonical publishes the newest Ubuntu 24.04 image ID in this public SSM parameter, per region.
 # Reading it beats hard-coding an AMI ID, which is region-specific and goes stale.
