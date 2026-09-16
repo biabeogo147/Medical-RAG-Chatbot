@@ -157,7 +157,7 @@ creates exists, and it has no `main.tf` — its account lookup sits in `state.tf
 | `compute.tf` | 3 × `m7i-flex.large` Ubuntu 24.04, one per AZ, no public IP, no key pair, IMDSv2 required | Tagged `k8s-cluster=medical-rag`, which is how Ansible finds them |
 | `loadbalancers.tf` | Internal NLB :6443 and public NLB :80, with their target groups, listeners and 3 attachments each | The internal one is kubeadm's `controlPlaneEndpoint` |
 | `rancher.tf` | Internal NLB :443 target group/listener, 3 attachments, 3 firewall rules and the `rancher.<domain>` alias | Nine resources. The target group disables client-IP preservation to support Rancher agent hairpin connections |
-| `wireguard.tf` | Gateway SG, minimal IAM role/profile, EIP, `t3.small` instance and `vpn.<domain>` record | Ten resources. No SSH; only UDP 51820 is public |
+| `wireguard.tf` | Gateway SG, minimal IAM role/profile, EIP, `t3.small` instance and `vpn.<domain>` record | Ten resources. No SSH; only UDP 51820 is public. The gateway's own firewall lets the tunnel reach only DNS and TCP 443, not the API on 6443 |
 | `main.tf` | Also holds the `data` lookups of the shared stack | A missing shared stack fails the plan here |
 
 ## 4. Everything Terraform creates, by service

@@ -2584,7 +2584,8 @@ resource "aws_instance" "wireguard" {
   # address for the stable VPN endpoint a few seconds after boot, which drops any connection open at
   # that moment, so every network step in wireguard-init.sh is retried.
   associate_public_ip_address = true
-  source_dest_check           = false
+  # source_dest_check stays at its default (on). The gateway SNATs everything from the tunnel, so every
+  # packet on its network card carries its own address, and AWS has nothing to block.
 
   user_data = templatefile("${path.module}/wireguard-init.sh", {
     region         = var.region
@@ -2592,6 +2593,8 @@ resource "aws_instance" "wireguard" {
     server_address = "${cidrhost(var.wireguard_cidr, 1)}/${split("/", var.wireguard_cidr)[1]}"
     peer_address   = cidrhost(var.wireguard_cidr, 2)
     wireguard_cidr = var.wireguard_cidr
+    vpc_cidr       = var.vpc_cidr
+    vpc_resolver   = cidrhost(var.vpc_cidr, 2) # the Route 53 Resolver sits at the VPC range plus two
   })
 
   metadata_options {
@@ -2677,13 +2680,33 @@ PEER_KEY=$(jq -r .operatorPublicKey /run/wireguard-secret.json)
 rm -f /run/wireguard-secret.json
 INTERFACE=$(ip route show default | awk '{print $5; exit}')
 
+# The tunnel reaches Rancher and nothing else. From wg0 the gateway forwards only DNS to the VPC
+# resolver and TCP 443 into the VPC; everything else is dropped, including the Kubernetes API on 6443.
+# Replies are let back in, but nothing in the VPC can open a connection towards the laptop, and
+# nothing from the tunnel reaches the gateway itself. The rules live in their own chain, so PostDown
+# removes them cleanly.
 cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
 Address = ${server_address}
 ListenPort = 51820
 PrivateKey = $PRIVATE_KEY
+PostUp = iptables -N WG_FWD
+PostUp = iptables -A WG_FWD -d ${vpc_resolver}/32 -p udp --dport 53 -j ACCEPT
+PostUp = iptables -A WG_FWD -d ${vpc_resolver}/32 -p tcp --dport 53 -j ACCEPT
+PostUp = iptables -A WG_FWD -d ${vpc_cidr} -p tcp --dport 443 -j ACCEPT
+PostUp = iptables -A WG_FWD -j DROP
+PostUp = iptables -A FORWARD -i wg0 -j WG_FWD
+PostUp = iptables -A FORWARD -o wg0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostUp = iptables -A FORWARD -o wg0 -j DROP
+PostUp = iptables -A INPUT -i wg0 -j DROP
 PostUp = iptables -t nat -A POSTROUTING -s ${wireguard_cidr} -o $INTERFACE -j MASQUERADE
 PostDown = iptables -t nat -D POSTROUTING -s ${wireguard_cidr} -o $INTERFACE -j MASQUERADE
+PostDown = iptables -D INPUT -i wg0 -j DROP
+PostDown = iptables -D FORWARD -o wg0 -j DROP
+PostDown = iptables -D FORWARD -o wg0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostDown = iptables -D FORWARD -i wg0 -j WG_FWD
+PostDown = iptables -F WG_FWD
+PostDown = iptables -X WG_FWD
 
 [Peer]
 PublicKey = $PEER_KEY
@@ -2834,6 +2857,10 @@ Argo CD installs Rancher later; its chart pin, values, secret wiring and upgrade
 
 - The dedicated gateway isolates internet-facing UDP from the administrator workstation and its
   `AdministratorAccess` role.
+- **The tunnel reaches Rancher and nothing else.** Security groups open the internal NLB to the whole
+  VPC, because Rancher's own agents need it, so the VPN peer would otherwise reach the Kubernetes API
+  on 6443 as well. The gateway's firewall allows only DNS and TCP 443; the laptop has no `kubectl`
+  anyway, and the API stays reachable through `make tunnel` on the workstation.
 - The internal NLB DNS name resolves publicly to private addresses, so normal DNS and a public CA
   work while the network path still requires WireGuard.
 - TLS passes through unchanged. ingress-nginx holds the key, and Rancher agents avoid NLB hairpin
@@ -2881,7 +2908,7 @@ aws ssm describe-instance-information --filters Key=InstanceIds,Values="$WG_ID" 
 
 COMMAND_ID=$(aws ssm send-command --instance-ids "$WG_ID" \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["cloud-init status --wait || true","test -f /var/log/wireguard-ready && echo READY","wg show"]' \
+  --parameters 'commands=["cloud-init status --wait || true","test -f /var/log/wireguard-ready && echo READY","wg show","iptables -S WG_FWD"]' \
   --query 'Command.CommandId' --output text)
 aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"   # rerun if it times out
 aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WG_ID" \
@@ -2895,7 +2922,8 @@ aws elbv2 describe-listeners \
 dig +short rancher.recruitai.io.vn
 dig +short vpn.recruitai.io.vn
 ```
-Expect `READY`, and after the laptop connects, a recent `latest handshake` in `wg show`. The internal
+Expect `READY`, the four `WG_FWD` rules (DNS over UDP and TCP, TCP 443, then `DROP`), and after the
+laptop connects, a recent `latest handshake` in `wg show`. The internal
 NLB has TCP 6443 and 443 listeners, the Rancher name resolves to private `10.10.x.x` addresses, and
 the VPN name resolves to the gateway EIP.
 
@@ -2934,7 +2962,12 @@ Expect `HTTP/1.1 308 Permanent Redirect`: the only answer is a redirect to an HT
 internet cannot reach.
 
 **The browser**, on the laptop: Rancher loads while the tunnel is active and times out after you
-deactivate it.
+deactivate it. With the tunnel active, PowerShell (built into Windows) confirms the tunnel reaches only
+Rancher. `rancher.recruitai.io.vn` points at the internal NLB, which also carries the Kubernetes API:
+```powershell
+Test-NetConnection rancher.recruitai.io.vn -Port 443    # TcpTestSucceeded : True
+Test-NetConnection rancher.recruitai.io.vn -Port 6443   # TcpTestSucceeded : False
+```
 
 #### Revoke a lost client
 
@@ -2975,6 +3008,7 @@ key no longer handshakes, and the new one does.
 | Existing records stopped resolving after step 17 | The DNS inventory was incomplete, or DNSSEC still has a stale DS record. Restore the missing records before continuing |
 | WireGuard has no handshake | Check `vpn.recruitai.io.vn`, UDP 51820 and the server public key. If the tunnel was recreated on the laptop, it has a new key: store its public key again (see *Revoke a lost client*) |
 | VPN connects but `rancher.recruitai.io.vn` does not resolve | The profile is missing `DNS = 10.10.0.2`, so the home router answered and dropped the private address. Add the line and reconnect; `nslookup rancher.recruitai.io.vn 10.10.0.2` must return `10.10.x.x` addresses |
-| VPN connects but Rancher is unreachable | Confirm the client routes `10.10.0.0/16`, the gateway is SNATing, and the internal NLB has a healthy 30443 target |
+| VPN connects but Rancher is unreachable | Confirm the client routes `10.10.0.0/16`, `iptables -S WG_FWD` on the gateway lists the 443 rule, and the internal NLB has a healthy 30443 target |
+| Anything other than Rancher times out through the VPN | By design: the gateway forwards only DNS and TCP 443. Reach the Kubernetes API with `make tunnel` on the workstation |
 | The gateway never prints `READY` | cloud-init failed after its retries. Read `/var/log/cloud-init-output.log` through SSM; a failure at `get-secret-value` usually means `medical-rag/wireguard` has no value yet (step 17) |
 | A node shows `ConnectionLost` in SSM | NAT gateway or route problem: check step 10, then reboot the instance |

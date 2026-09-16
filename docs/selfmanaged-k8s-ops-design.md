@@ -133,7 +133,8 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   - The SSM agent is present on the Ubuntu AMI.
   - One `t3.small` WireGuard gateway in a public subnet, with an encrypted 8 GiB root volume, an EIP,
     no SSH key and no application IAM permissions. Its role can register with SSM and read only
-    `medical-rag/wireguard`.
+    `medical-rag/wireguard`. Its firewall forwards only DNS to the VPC resolver and TCP 443 from the
+    tunnel; everything else, including the Kubernetes API on 6443, is dropped.
 - **Load balancers:**
   - Internal NLB TCP 6443 → the Kubernetes API and TCP 443 → ingress-nginx NodePort 30443.
   - Public NLB TCP 80 → NodePort 30080 on the 3 nodes.
@@ -170,7 +171,8 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
 `vpn.recruitai.io.vn:51820` and resolves names with the VPC resolver `10.10.0.2` (the VPC CIDR base
 plus two) through the tunnel. The gateway (`10.99.0.1/24`) and client (`10.99.0.2/32`) addresses
 are derived from `wireguard_cidr` (`10.99.0.0/24` by default). The gateway enables IPv4 forwarding
-and SNATs VPN traffic to its VPC address. Its cloud-init fetches `serverPrivateKey` and
+and SNATs VPN traffic to its VPC address, forwarding only DNS and TCP 443; replies return, but
+nothing in the VPC can open a connection towards the client. Its cloud-init fetches `serverPrivateKey` and
 `operatorPublicKey` from the dedicated secret. The client private key never leaves the operator's
 device. A cluster rebuild replaces the gateway and its EIP: the `vpn` record follows the new address
 and the server key comes back from Secrets Manager, so the client profile stays the same — reconnect
@@ -410,7 +412,7 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | WireGuard exposes UDP 51820 to the internet | WireGuard silently drops unauthenticated packets; the gateway has no SSH key, no application permissions, and reads only its own secret. If a client is lost, replace its public key in Secrets Manager, reload the gateway configuration through SSM (or replace the instance), and verify only the new peer handshakes. |
 | Rancher controls the whole cluster | TCP 443 exists only on the internal NLB, open to the whole cluster VPC because Rancher's own agents connect to it from inside. From outside the VPC, access requires a valid WireGuard peer and Rancher credentials. Configure an MFA-enforcing external identity provider before treating MFA as a control. Disconnect the VPN and destroy the cluster when idle. |
 | A Kubernetes minor exceeds Rancher's chart constraint | The §4.2.1 gate: keep 1.36.4 until a candidate chart accepts the target, upgrade Rancher first, and require Argo CD health. |
-| The VPN peer gets network-level access to the cluster VPC, not only to Rancher | The gateway SNATs and forwards without restriction, so a connected peer can reach whatever a security group opens to `10.10.0.0/16`: the internal NLB on 443 (Rancher) and 6443 (the Kubernetes API). Both still require credentials, and there is a single peer. |
+| The internal NLB is open to the whole VPC, including the Kubernetes API on 6443, and the VPN peer arrives with a VPC address | The gateway firewall forwards only DNS to the VPC resolver and TCP 443 from the tunnel, drops everything else, and blocks connections from the VPC towards the client. The API stays reachable only through the SSM tunnel from the workstation. |
 | **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | IMDSv2 hop limit 2 is required for pods today. NetworkPolicy egress deny to `169.254.169.254/32` for all app namespaces, allowed only for external-secrets, ebs-csi and Jenkins agents. Documented as a known limitation; P2 is self-hosted IRSA (pod-identity-webhook + S3-hosted OIDC discovery). |
 | Day 1–3 overrun | Cut order: P1 items → prod PR automation (promote manually) → SBOM attestation. Never cut scan + sign + GitOps. |
 
