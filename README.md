@@ -11,13 +11,17 @@ A Retrieval Augmented Generation (RAG) assistant that answers medical questions 
 - **GitOps delivery:** Jenkins builds and tests, Argo CD deploys. Every commit reaches `dev` automatically; `prod` changes only through a reviewed pull request.
 - **Supply-chain security:** images are scanned with Trivy, get an SBOM, and are signed with Cosign using an AWS KMS key. Kyverno rejects unsigned images in `prod`.
 - **Observability:** health probes, Prometheus metrics aggregated across gunicorn workers, and Grafana.
+- **Private operations:** Rancher is reachable only through a WireGuard VPN; TLS with a Sectigo certificate ends at ingress-nginx inside the cluster.
 
 ## 🧠 System Architecture
 ```mermaid
 flowchart LR
-    U[User] --> NLB[Public NLB] --> ING[ingress-nginx]
+    U[App user] --> NLB[Public NLB :80] --> ING[ingress-nginx]
     ING -->|"/dev"| DEV[medical-rag dev]
     ING -->|"/"| PROD[medical-rag prod]
+    OP[Operator + WireGuard client] -->|UDP 51820| VPN[WireGuard gateway]
+    VPN --> INLB[Internal NLB :443] --> ING
+    ING -->|rancher.recruitai.io.vn| RAN[Rancher]
     PROD -->|query embedding| HF[Hugging Face Inference API]
     PROD -->|generate answer| GM[Gemini API]
     JOB[Index build Job] -->|FAISS index| S3[(S3 artifacts)]
@@ -33,9 +37,13 @@ flowchart LR
     ARGO --> DEV
     ARGO --> PROD
 ```
-The 3 EC2 nodes run the control plane and workloads together. The Kubernetes API is reached through an internal NLB, and operators connect with SSM Session Manager (no SSH, no bastion).
+The 3 EC2 nodes run the control plane and workloads together. The Kubernetes API sits behind an
+internal NLB, and operators reach the machines with SSM Session Manager (no SSH).
 
 ## 🐳 Run locally with Docker
+
+For working on the app itself, on any machine with Docker and the Compose plugin. The AWS deployment
+below does not use it.
 
 ```bash
 cp .env.example .env        # fill GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN, FLASK_SECRET_KEY
@@ -57,7 +65,12 @@ docker compose up --build   # index-build runs once, then the app starts on http
 
 Step-by-step Terraform instructions: [`docs/terraform/guide.md`](docs/terraform/guide.md), with the architecture and file-by-file explanation in [`docs/terraform/README.md`](docs/terraform/README.md).
 
-**Prerequisites:** an AWS account with an admin identity, a browser, and git. Nothing else runs on your laptop. You also need a Hugging Face token with the *Inference Providers* permission, a Gemini API key, and a GitHub token that can push to this repo and open pull requests.
+**Prerequisites:** an AWS account with an admin identity, a browser, git, a WireGuard client, the
+`recruitai.io.vn` domain, and a Sectigo certificate order for `rancher.recruitai.io.vn`. You also need
+a Hugging Face token with the *Inference Providers* permission, a Gemini API key, and a GitHub token
+that can push to this repo and open pull requests. Terraform, Ansible, kubectl, Helm and the AWS CLI
+run on the ops workstation in AWS, and application images are built by Jenkins, so the deployment
+needs nothing else on the laptop.
 
 1. **Create the state bucket and the ops workstation** (once per account). Open **AWS CloudShell** in the console and run:
    ```bash
@@ -66,41 +79,55 @@ Step-by-step Terraform instructions: [`docs/terraform/guide.md`](docs/terraform/
    terraform -chdir=infra/terraform/bootstrap init
    terraform -chdir=infra/terraform/bootstrap apply
    ```
-   The workstation is an EC2 Ubuntu instance with every ops tool preinstalled. Connect to it from **EC2 → Instances → Connect → Session Manager**, then run all the following steps there:
+   The workstation is an EC2 Ubuntu instance with every ops tool preinstalled. Connect to it from **EC2 → Instances → Connect → Session Manager**:
    ```bash
    sudo su - ubuntu
    git clone https://github.com/biabeogo147/Medical-RAG-Chatbot && cd Medical-RAG-Chatbot
    ```
-   Edit code on your laptop, push, and `git pull` on the workstation. Stop the instance when you are done for the day.
-2. **Create the long-lived services:** ECR, the index artifacts bucket, the cosign KMS key, empty secrets and the budget alarm. They are kept when the cluster is destroyed.
+   First finish [Terraform guide step 6](docs/terraform/guide.md) (laptop + CloudShell) to move the
+   bootstrap state into S3. Every later step runs on the workstation: edit code on your laptop, push,
+   and `git pull` there.
+2. **Create the long-lived services:** ECR, the index artifacts bucket, the cosign KMS key, Route 53
+   zone, empty secrets and the budget alarm. They are kept when the cluster is destroyed.
    ```bash
    cp infra/terraform/shared/terraform.tfvars.example infra/terraform/shared/terraform.tfvars   # set budget_email
    make shared
    ```
-3. **Provision the cluster infrastructure:** VPC, 3 EC2 nodes, load balancers, IAM role and cluster buckets.
+3. **Prepare DNS, TLS and WireGuard.** Before changing nameservers, copy every existing DNS record to
+   Route 53. Then delegate the zone, create the Sectigo CSR outside the repo, and store the Rancher
+   password, TLS chain and WireGuard keys in Secrets Manager. Exact commands and checks are in
+   [Terraform guide step 17](docs/terraform/guide.md#step-17--migrate-dns-and-store-the-keys).
+4. **Provision the cluster infrastructure:** VPC, 3 Kubernetes nodes, the WireGuard gateway, load
+   balancers, IAM roles and cluster buckets.
    ```bash
    make infra
    ```
-4. **Store the keys** in Secrets Manager. External Secrets syncs them into the cluster later.
+   Then finish the WireGuard client profile on the laptop, as in
+   [Terraform guide step 18](docs/terraform/guide.md#step-18--wireguard-and-the-private-rancher-entry-point).
+5. **Store the application keys.** External Secrets syncs them into the cluster later.
    ```bash
    aws secretsmanager put-secret-value --secret-id medical-rag/llm \
      --secret-string '{"GOOGLE_API_KEY":"...","HUGGINGFACEHUB_API_TOKEN":"...","FLASK_SECRET_KEY":"..."}'
    aws secretsmanager put-secret-value --secret-id medical-rag/github \
      --secret-string '{"token":"..."}'
    ```
-5. **Build the Kubernetes cluster** with Ansible over SSM, then open a tunnel to the API server:
+6. **Build the Kubernetes cluster** with Ansible over SSM, then open a tunnel to the API server.
+   Step-by-step instructions: [`docs/ansible/guide.md`](docs/ansible/guide.md).
    ```bash
-   make cluster
-   make tunnel                # SSM port-forward to the internal API; writes the kubeconfig
-   kubectl get nodes          # 3 nodes, all Ready
+   make ansible-deps          # once per workstation
+   make cluster               # also writes the kubeconfig to the workstation
+   make tunnel                # SSM port-forward to the internal API; keep this window open
+   kubectl get nodes          # in a second window: 3 nodes, all Ready
    ```
-6. **Bootstrap GitOps.** This installs Argo CD, which then installs everything else: ingress-nginx, External Secrets, monitoring, Jenkins and the app.
+7. **Connect WireGuard and bootstrap GitOps.** Activate the profile from step 4, confirm a recent
+   handshake, then install Argo CD. Argo CD installs ingress-nginx, External Secrets,
+   monitoring, Jenkins, Rancher and the app.
    ```bash
    make bootstrap
    kubectl -n argocd get applications   # all Synced / Healthy
    ```
-   `make up` runs steps 3, 5 and 6 in one go.
-7. **Ship a change.** Push to `main`. Within 2 minutes Jenkins picks it up and:
+   `https://rancher.recruitai.io.vn` works only while the VPN is connected.
+8. **Ship a change.** Push to `main`. Jenkins polls the repository every 2 minutes, then:
    1. runs lint and tests
    2. builds the image and pushes it to ECR
    3. scans it with Trivy and generates the SBOM
@@ -109,20 +136,22 @@ Step-by-step Terraform instructions: [`docs/terraform/guide.md`](docs/terraform/
    6. opens a pull request with the same change for `prod`
 
    Merge the pull request to release to `prod`.
-8. **Verify the release:**
+9. **Verify the release:**
    ```bash
    NLB=$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)
    curl http://$NLB/readyz            # prod
    curl http://$NLB/dev/readyz        # dev
-   IMAGE=$(yq .image.ref deploy/envs/prod/values.yaml)     # repo@sha256:...
+   IMAGE_REPO=$(yq .image.repository deploy/envs/prod/values.yaml)
+   IMAGE_TAG=$(yq .image.tag deploy/envs/prod/values.yaml) # tag@sha256:...
+   IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
    cosign verify --key awskms:///alias/medical-rag-cosign "$IMAGE"
    kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
    ```
-9. **Tear down** when idle (about 0.50 USD/hour while running):
-   ```bash
-   make cost    # hours up × hourly estimate
-   make down    # removes Argo CD apps first, then destroys the cluster stack
-   ```
+10. **Tear down** when idle, then stop the workstation (EC2 → Instances → Instance state → Stop):
+    ```bash
+    make cost    # hours up × hourly estimate
+    make down    # removes Argo CD apps first, then destroys the cluster stack
+    ```
 
 ## 🧩 End-to-End MLOps Blueprint
 
@@ -134,13 +163,17 @@ Step-by-step Terraform instructions: [`docs/terraform/guide.md`](docs/terraform/
 | **Continuous Delivery** | Git as source of truth, digest-pinned images | `deploy/charts/medical-rag`, `deploy/envs/{dev,prod}`, Argo CD |
 | **Security** | Hardened pods, secrets outside Git | Kyverno, NetworkPolicies, External Secrets, Secrets Manager |
 | **Observability** | Probes, latency and index metrics | `/healthz`, `/readyz`, `/metrics`, kube-prometheus-stack |
+| **Operations** | Private cluster UI behind a VPN | Rancher, WireGuard, Route 53, Sectigo TLS |
 
 ## 🔄 Model & Data Operations
 - **Index refresh:** changing the PDF, chunk settings or embedding model produces a new index version. An Argo CD PreSync Job builds it before the pods roll, and skips the build if that version already exists.
 - **Index rollback:** revert `index.version` in `deploy/envs/<env>/values.yaml`. Argo CD syncs the previous index back.
 - **Retrieval & model tuning:** set `RETRIEVER_K` or `MODEL_NAME` in the env values and promote through `dev` → `prod`. Changing `EMBEDDING_MODEL_NAME` also produces a new `index.version`, so promote both together.
-- **Cluster day-2:** etcd is snapshotted to S3 every 6 hours, and Kubernetes is upgraded one node at a time with the Ansible `upgrade.yml` playbook. Step-by-step procedures live in [`docs/runbooks/`](docs/runbooks/).
+- **Cluster day-2:** etcd is snapshotted to S3 every 6 hours. Kubernetes is upgraded one node at a
+  time, only after the [Rancher compatibility gate](docs/selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate) passes.
 
 ## 📚 Docs
 - Design: [`docs/selfmanaged-k8s-ops-design.md`](docs/selfmanaged-k8s-ops-design.md)
+- Infrastructure: [`docs/terraform/`](docs/terraform/) — architecture and a step-by-step build guide
+- Cluster: [`docs/ansible/`](docs/ansible/) — the same pair for the kubeadm cluster
 - Measured results: [`docs/evidence/`](docs/evidence/)

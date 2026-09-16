@@ -4,11 +4,12 @@ A step-by-step guide to build every AWS resource of this project with Terraform.
 
 ## How this guide works
 
-**Where commands run.** Nothing is installed on your laptop.
+**Where commands run.** The laptop has an editor, Git Bash and the WireGuard client used to reach
+Rancher. Every infrastructure command runs in AWS.
 
 | Where | What you do there |
 |---|---|
-| **Laptop:** editor + **Git Bash** | Write the files shown in each step, commit, push to GitHub |
+| **Laptop:** editor + **Git Bash** | Write the files, manage the WireGuard client, commit and push |
 | **AWS CloudShell** (browser) | The bootstrap stack only (steps 4 and 6) |
 | **Ops workstation:** EC2 Ubuntu, opened with Session Manager in the browser | Everything else: `git pull`, `make`, checks |
 
@@ -19,8 +20,8 @@ A step-by-step guide to build every AWS resource of this project with Terraform.
 | Stack | Folder | Creates | Applied from | Lifetime |
 |---|---|---|---|---|
 | bootstrap | `infra/terraform/bootstrap/` | State bucket, ops workstation and its small VPC | CloudShell | Kept |
-| shared | `infra/terraform/shared/` | ECR registry, index artifacts bucket, cosign KMS key, secrets, budget | Workstation | Kept |
-| cluster | `infra/terraform/cluster/` | VPC, security groups, IAM, 3 nodes, 2 NLBs, etcd and SSM buckets | Workstation | **Destroyed when idle** |
+| shared | `infra/terraform/shared/` | ECR, artifacts, KMS, secrets, Route 53, budget | Workstation | Kept |
+| cluster | `infra/terraform/cluster/` | VPC, 3 nodes, WireGuard gateway, 2 NLBs, cluster buckets | Workstation | **Destroyed when idle** |
 
 All three store their state in the same S3 bucket under different keys: `bootstrap/`, `shared/`, `cluster/`.
 
@@ -47,15 +48,20 @@ All three store their state in the same S3 bucket under different keys: `bootstr
 | 13 | Workstation | 3 Kubernetes nodes | 3 instances `Online` in SSM |
 | 14 | Workstation | 2 Network Load Balancers | both `active`, 3 targets each |
 | 15 | Workstation | Rebuild test and evidence | destroy → apply works (65 resources), `plan` → `No changes` |
+| 16 | Workstation | DNS zone, three private-access secrets, secret inventory output | shared stack has 17 managed resources |
+| 17 | Workstation + laptop | DNS migration, Sectigo certificate and WireGuard keys | DNS records survive delegation; secrets expose names only |
+| 18 | Workstation + laptop | WireGuard gateway and private Rancher entry point | handshake recorded; internal NLB lists 6443 and 443; Rancher name resolves to private addresses |
 
 ## Cost
 
 | What | When it costs | About |
 |---|---|---|
 | State bucket, artifacts bucket, ECR images | Always | < 0.50 USD/month |
-| KMS key + 2 secrets | Always | 1.80 USD/month |
+| KMS key + 5 secrets | Always | 3.00 USD/month |
+| Route 53 hosted zone | Always | 0.50 USD/month |
 | Ops workstation (`t3.small`, 30 GB) | Hourly while running; disk always | 0.03 USD/hour + 2.90 USD/month |
-| Cluster (3 × `m7i-flex.large`, NAT gateway, 2 NLBs, public IPs, 120 GB disks) | While it exists | **0.50 USD/hour** |
+| Cluster + WireGuard (`t3.small`, 8 GB, public IPv4) | While it exists | **about 0.53 USD/hour** as a planning estimate; recalculate before use as evidence |
+| Domain + Sectigo DV | Yearly, outside AWS | Record the invoice amount separately |
 
 **End of every session:** `make infra-destroy`, then stop the workstation (EC2 → Instances → Instance state → Stop).
 
@@ -1222,7 +1228,7 @@ resource "aws_secretsmanager_secret" "app" {
 }
 ```
 
-Create `infra/terraform/shared/budgets.tf`:
+Create `infra/terraform/shared/bugdets.tf` (the repository keeps this historical filename):
 ```hcl
 # An email when this project's spend crosses half and then all of the monthly budget.
 resource "aws_budgets_budget" "monthly" {
@@ -1256,7 +1262,7 @@ resource "aws_budgets_budget" "monthly" {
 }
 ```
 
-Create `infra/terraform/shared/outputs.tf`:
+Create `infra/terraform/shared/ouputs.tf` (the repository keeps this historical filename):
 ```hcl
 # What the cluster stack, CI and the Helm charts need from here.
 
@@ -1585,7 +1591,8 @@ aws ec2 describe-nat-gateways --filter Name=vpc-id,Values=$VPC --query 'NatGatew
 
 Create `infra/terraform/cluster/security.tf`:
 ```hcl
-# The firewalls. Three groups, and eight rules between them. Rules are separate resources, so each
+# The baseline firewalls: three groups and eight rules. Step 18 adds the WireGuard group and five
+# rules for VPN and private Rancher access. Rules are separate resources, so each
 # has its own ID and description and can be changed without touching the others.
 # Wherever possible a rule names another security group instead of an IP range: nodes can then be
 # replaced and get new addresses without any rule needing an edit.
@@ -1680,7 +1687,7 @@ resource "aws_vpc_security_group_egress_rule" "api_nlb_to_nodes" {
 
 # --- public ingress NLB ---
 
-# The only inbound rule in the whole stack open to the internet.
+# The only public inbound rule at this point. Step 18 also opens WireGuard UDP 51820, not TCP 443.
 resource "aws_vpc_security_group_ingress_rule" "ingress_nlb_http" {
   security_group_id = aws_security_group.ingress_nlb.id
   cidr_ipv4         = "0.0.0.0/0"
@@ -1708,7 +1715,7 @@ resource "aws_vpc_security_group_egress_rule" "ingress_nlb_to_nodes" {
 | Nodes ← API NLB, 6443 | The internal load balancer forwards API calls and runs health checks |
 | Nodes ← public NLB, 30080 | The public load balancer reaches ingress-nginx |
 | API NLB ← VPC, 6443 | Only callers inside the VPC reach the API: the nodes and, later, the SSM tunnel |
-| Public NLB ← internet, 80 | The only inbound rule open to `0.0.0.0/0` |
+| Public NLB ← internet, 80 | The only public inbound rule at this point in the guide |
 
 - **Groups referenced instead of IP addresses:** rules keep working when nodes are replaced and get new IPs.
 - **One resource per rule (`aws_vpc_security_group_*_rule`):** the current provider recommendation; each rule has its own ID and description.
@@ -1722,7 +1729,7 @@ aws ec2 describe-security-groups --filters Name=vpc-id,Values=$VPC \
   --query 'SecurityGroups[].GroupName'                     # 4 groups: nodes, api-nlb, ingress-nlb + default
 SGS=$(aws ec2 describe-security-groups --filters Name=vpc-id,Values=$VPC --query 'SecurityGroups[].GroupId' --output text | tr '\t' ',')
 aws ec2 describe-security-group-rules --filters Name=group-id,Values=$SGS \
-  --query 'SecurityGroupRules[?CidrIpv4==`0.0.0.0/0` && !IsEgress].[GroupId,FromPort,ToPort]' --output table   # only port 80
+  --query 'SecurityGroupRules[?CidrIpv4==`0.0.0.0/0` && !IsEgress].[GroupId,FromPort,ToPort]' --output table   # only port 80 before step 18
 ```
 
 ---
@@ -1944,7 +1951,7 @@ output "buckets" {
 | KMS `Sign` / `GetPublicKey`, **the cosign key only** | Jenkins signs images |
 
 - **Least privilege:** every statement names its exact resources, except `ecr:GetAuthorizationToken`, which AWS only supports on `*`.
-- **Known limitation:** on a self-managed cluster every pod on a node can use the node's role, and the IMDS hop limit is 2 precisely so pods can reach it. The mitigations are this tightly scoped policy and, later, a NetworkPolicy that blocks pod access to the metadata address.
+- **Known limitation:** on a self-managed cluster every pod on a node can use the node's role. The design doc lists the mitigations (IMDS hop limit, NetworkPolicy).
 
 **Run:** `make plan` (expect 15 to add), then `make infra`.
 
@@ -2257,6 +2264,698 @@ make plan                                                          # No changes.
 
 ---
 
+## Part D — Private access to Rancher
+
+Rancher is a cluster-admin UI, so TCP 443 is never exposed to the internet. Argo CD installs the
+chart later; these steps create the persistent DNS and secrets, a WireGuard gateway, and a private
+TCP path through the existing internal NLB.
+
+The split follows the same rule as everywhere else. What must survive a teardown — the zone, the
+certificate, password and VPN keys — goes in the **shared** stack. The gateway, internal listener
+and DNS records are rebuilt with the **cluster** stack.
+
+**Why a domain at all.** Rancher insists on being served at the root of its own hostname; it cannot
+live under `/rancher` next to the app. With a name of its own, ingress-nginx routes by host and there
+is no clash: `rancher.recruitai.io.vn` on 443 goes to Rancher, and the load balancer's own name on 80
+still goes to the app.
+
+### Step 16 — The zone and the private-access secrets
+
+**Goal:** Route 53 owns the domain and the empty Rancher, TLS and WireGuard secrets survive every
+cluster rebuild.
+
+Create `infra/terraform/shared/rancher.tf`:
+```hcl
+# Persistent DNS and credentials for private Rancher access. Values are inserted later with the AWS
+# CLI, never with Terraform, so private keys do not enter state.
+
+# The hosted zone is here rather than in the cluster stack because a zone gets a new set of name
+# servers every time it is created, and those name servers are typed in by hand at the domain
+# registrar. Recreating it would mean repeating that step and waiting for the change to spread.
+resource "aws_route53_zone" "main" {
+  name    = var.domain
+  comment = "Public names for ${var.project}"
+
+  lifecycle {
+    # The registrar points at this zone. Deleting it takes down every name under the domain until the
+    # registrar is updated again.
+    prevent_destroy = true
+  }
+}
+
+# Three empty secrets, filled in once with `aws secretsmanager put-secret-value`:
+#   <project>/rancher      {"bootstrapPassword": "..."}  the password for the first login
+#   <project>/rancher-tls  {"tls.crt": "...", "tls.key": "..."}  the certificate bought from Sectigo
+#   <project>/wireguard    {"serverPrivateKey": "...", "operatorPublicKey": "..."}
+resource "aws_secretsmanager_secret" "rancher" {
+  for_each = toset(["rancher", "rancher-tls", "wireguard"])
+
+  name                    = "${var.project}/${each.key}"
+  recovery_window_in_days = 7
+}
+
+variable "domain" {
+  description = "Domain this stack owns the Route 53 zone for. Its name servers are set at the registrar."
+  type        = string
+  default     = "recruitai.io.vn"
+}
+
+# Enter these four at the registrar, once. They only change if the zone is recreated.
+output "route53_name_servers" {
+  value = aws_route53_zone.main.name_servers
+}
+```
+
+Update `infra/terraform/shared/ouputs.tf` so the inventory lists all five names, never values:
+```hcl
+output "secret_names" {
+  value = concat(
+    [for s in aws_secretsmanager_secret.app : s.name],
+    [for s in aws_secretsmanager_secret.rancher : s.name],
+  )
+}
+```
+
+The project owns `recruitai.io.vn`; choose a different domain only before the first `make shared`.
+The zone has `prevent_destroy`, so changing it later is intentionally blocked.
+
+**Why:**
+
+- **The certificate is in Secrets Manager, not in Git and not in a Terraform variable.** Terraform
+  creates the empty secret; the value goes in with one CLI call, so the private key never reaches
+  the state file. External Secrets syncs it into the cluster later.
+
+**Run:**
+```bash
+cd ~/Medical-RAG-Chatbot
+make shared          # expect 4 to add (the zone and three secrets), plus the changed secret_names output
+```
+
+**Verify:**
+```bash
+terraform -chdir=infra/terraform/shared output route53_name_servers
+aws secretsmanager list-secrets \
+  --query 'SecretList[?starts_with(Name, `medical-rag/`)].Name' --output text
+```
+The output includes four Route 53 name servers and the empty `rancher`, `rancher-tls` and
+`wireguard` secrets. Do not put values in them until the DNS inventory in step 17 is complete.
+
+**Commit:** `git add infra/terraform/shared && git commit -m "Add private Rancher access secrets"`
+
+---
+
+### Step 17 — Migrate DNS and store the keys
+
+**Goal:** delegation changes without breaking existing names, and all private values exist before
+the cluster is built.
+
+**Run — migrate DNS safely.** Before the cutover:
+
+- Lower the TTLs at the current DNS provider, and wait for the old TTL to pass.
+- Export every record except the apex SOA and NS, keeping type, name, value, TTL and routing policy.
+  Do not assume only the common types exist.
+- Recreate them in Route 53 and compare the answers from each new name server. A missing mail or
+  verification record breaks a service silently, even while the website still works.
+
+Print the new name servers:
+```bash
+terraform -chdir=infra/terraform/shared output route53_name_servers
+```
+
+If the parent/registrar has a DS record, remove it first, confirm it has disappeared through public
+resolvers, and wait at least its previous TTL. A stale DS paired with unsigned Route 53 answers makes
+the whole zone return `SERVFAIL`. Then change the name servers at the registrar. Keep the old DNS
+provider serving the unchanged zone for at least 48 hours. After the Route 53 delegation is stable, optionally enable Route 53 DNSSEC signing,
+wait for the KSK to become active, and publish the new DS at the registrar.
+
+**Verify — DNS** (run from the ops workstation and also check an independent public resolver):
+```bash
+dig +short NS recruitai.io.vn
+dig +short DS recruitai.io.vn @1.1.1.1
+for ns in $(terraform -chdir=infra/terraform/shared output -json route53_name_servers | jq -r '.[]'); do
+  dig +short @"$ns" recruitai.io.vn SOA
+done
+```
+Expect four `awsdns` names after delegation. During an unsigned migration, the DS query must be empty.
+Re-check every inventoried record, the existing website, and mail flow before continuing.
+
+**Run — create and store the certificate secrets outside the repo:**
+```bash
+install -d -m 700 ~/tls/rancher.recruitai.io.vn
+cd ~/tls/rancher.recruitai.io.vn
+umask 077
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout rancher.key -out rancher.csr \
+  -subj "/CN=rancher.recruitai.io.vn" \
+  -addext "subjectAltName=DNS:rancher.recruitai.io.vn"
+openssl req -in rancher.csr -noout -subject -ext subjectAltName
+```
+
+Paste `rancher.csr` into the Sectigo order (print it with `cat rancher.csr` and copy it from the
+Session Manager window). Keep `rancher.key` in this mode-700 directory and never commit or copy it to
+the laptop.
+
+Sectigo gives you a validation `CNAME`. During the 48-hour overlap, some resolvers still follow the
+old name servers, so add the record at **both** the old provider and Route 53:
+```bash
+ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name recruitai.io.vn \
+  --query 'HostedZones[0].Id' --output text)
+aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" --change-batch '{
+  "Changes": [{"Action": "UPSERT", "ResourceRecordSet": {
+    "Name": "<name from Sectigo>", "Type": "CNAME", "TTL": 300,
+    "ResourceRecords": [{"Value": "<value from Sectigo>"}]}}]}'
+dig +short CNAME <name from Sectigo> @1.1.1.1
+dig +short CAA recruitai.io.vn @1.1.1.1
+```
+The `CNAME` must resolve. The `CAA` answer must be empty or include `sectigo.com`; a migrated `CAA`
+record that names another CA blocks issuance.
+
+After validation, bring the leaf certificate and the intermediate bundle into this directory. Both are
+PEM text, so paste each one into the Session Manager window with `cat > <file name> <<'EOF'`, then a
+line containing only `EOF`.
+
+The filenames depend on the Sectigo download. Put the leaf first, normalize the PEM boundary, verify
+the chain and confirm the certificate matches the private key:
+```bash
+awk 1 rancher_recruitai_io_vn.crt SectigoDVBundle.ca-bundle > fullchain.crt
+openssl verify -untrusted SectigoDVBundle.ca-bundle rancher_recruitai_io_vn.crt
+test "$(openssl x509 -in rancher_recruitai_io_vn.crt -pubkey -noout | openssl sha256)" = \
+     "$(openssl pkey -in rancher.key -pubout | openssl sha256)"
+
+jq -n --rawfile crt fullchain.crt --rawfile key rancher.key \
+  '{"tls.crt": $crt, "tls.key": $key}' > rancher-tls.json
+jq -n --arg p "$(openssl rand -base64 24)" \
+  '{bootstrapPassword: $p}' > rancher-password.json
+
+aws secretsmanager put-secret-value --secret-id medical-rag/rancher-tls \
+  --secret-string file://rancher-tls.json
+aws secretsmanager put-secret-value --secret-id medical-rag/rancher \
+  --secret-string file://rancher-password.json
+shred -u rancher-tls.json rancher-password.json
+```
+
+**Verify** the values are there, without printing them:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/rancher-tls \
+  --query 'SecretString' --output text | jq -c 'keys'
+```
+`["tls.crt","tls.key"]`. Read the password back when you first log in to Rancher:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/rancher \
+  --query 'SecretString' --output text | jq -r '.bootstrapPassword'
+```
+
+**Run — create WireGuard keys.** Generate the client key on the device that will run the VPN client. Its
+private key never leaves that device. Generate the server key on the ops workstation:
+On the laptop, in the WireGuard app, choose **Add Tunnel → Add empty tunnel…**, name it
+`medical-rag`, copy the **Public key** it shows, and click **Save**. The app generated the private key
+inside that tunnel, and it stays there: step 18 edits this same tunnel rather than creating a new one,
+because a new tunnel would get a new key that the gateway does not know.
+
+On the ops workstation:
+```bash
+cd ~/tls/rancher.recruitai.io.vn
+umask 077
+sudo apt-get update && sudo apt-get install -y wireguard-tools
+wg genkey | tee wireguard-server.key | wg pubkey > wireguard-server.pub
+read -r -p "Operator public key: " OPERATOR_PUBLIC_KEY
+jq -n --rawfile serverPrivateKey wireguard-server.key --arg operatorPublicKey "$OPERATOR_PUBLIC_KEY" \
+  '{serverPrivateKey: ($serverPrivateKey | rtrimstr("\n")), operatorPublicKey: $operatorPublicKey}' \
+  > wireguard.json
+aws secretsmanager put-secret-value --secret-id medical-rag/wireguard \
+  --secret-string file://wireguard.json
+shred -u wireguard.json wireguard-server.key
+cat wireguard-server.pub
+```
+
+The server private key now lives only in Secrets Manager; the gateway reads it from there at boot.
+Keep `wireguard-server.pub`: it is public and goes into the client profile in step 18. Verify the
+secret without printing either key:
+```bash
+aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
+  --query SecretString --output text | jq -c 'keys'
+```
+Expect `["operatorPublicKey","serverPrivateKey"]`.
+
+Nothing to commit: this step changes DNS and secret values, not code.
+
+---
+
+### Step 18 — WireGuard and the private Rancher entry point
+
+**Goal:** the WireGuard tunnel is up, and the private Rancher name and TCP 443 listener exist. Rancher
+itself answers only after `make bootstrap` in the GitOps phase.
+
+Create `infra/terraform/cluster/wireguard.tf`:
+```hcl
+variable "wireguard_cidr" {
+  description = "VPN address range. Must not overlap the VPC, pod or Service CIDRs."
+  type        = string
+  default     = "10.99.0.0/24"
+}
+
+variable "wireguard_instance_type" {
+  description = "Small gateway type known to be launchable by this account's Free plan."
+  type        = string
+  default     = "t3.small"
+}
+
+data "aws_secretsmanager_secret" "wireguard" {
+  name = "${var.project}/wireguard"
+}
+
+resource "aws_iam_role" "wireguard" {
+  name               = "${local.name}-wireguard"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "wireguard_ssm" {
+  role       = aws_iam_role.wireguard.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+data "aws_iam_policy_document" "wireguard" {
+  statement {
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+    resources = [data.aws_secretsmanager_secret.wireguard.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "wireguard" {
+  name   = "read-wireguard-secret"
+  role   = aws_iam_role.wireguard.id
+  policy = data.aws_iam_policy_document.wireguard.json
+}
+
+resource "aws_iam_instance_profile" "wireguard" {
+  name = "${local.name}-wireguard"
+  role = aws_iam_role.wireguard.name
+}
+
+resource "aws_security_group" "wireguard" {
+  name        = "${local.name}-wireguard"
+  description = "WireGuard gateway; no SSH"
+  vpc_id      = module.vpc.vpc_id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "wireguard_udp" {
+  security_group_id = aws_security_group.wireguard.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "udp"
+  from_port         = 51820
+  to_port           = 51820
+  description       = "WireGuard handshake; unauthenticated packets are discarded"
+}
+
+resource "aws_vpc_security_group_egress_rule" "wireguard_all" {
+  security_group_id = aws_security_group.wireguard.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+  description       = "Secrets Manager, SSM and private VPC destinations"
+}
+
+resource "aws_instance" "wireguard" {
+  ami                    = data.aws_ssm_parameter.ubuntu_2404.insecure_value
+  instance_type          = var.wireguard_instance_type
+  subnet_id              = module.vpc.public_subnets[0]
+  vpc_security_group_ids = [aws_security_group.wireguard.id]
+  iam_instance_profile   = aws_iam_instance_profile.wireguard.name
+  # Gives cloud-init internet access immediately. Attaching the EIP below swaps this temporary
+  # address for the stable VPN endpoint a few seconds after boot, which drops any connection open at
+  # that moment, so every network step in wireguard-init.sh is retried.
+  associate_public_ip_address = true
+  source_dest_check           = false
+
+  user_data = templatefile("${path.module}/wireguard-init.sh", {
+    region         = var.region
+    secret_id      = data.aws_secretsmanager_secret.wireguard.name
+    server_address = "${cidrhost(var.wireguard_cidr, 1)}/${split("/", var.wireguard_cidr)[1]}"
+    peer_address   = cidrhost(var.wireguard_cidr, 2)
+    wireguard_cidr = var.wireguard_cidr
+  })
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  root_block_device {
+    volume_size = 8
+    volume_type = "gp3"
+    encrypted   = true
+  }
+
+  tags = { Name = "${local.name}-wireguard" }
+  lifecycle { ignore_changes = [ami] }
+}
+
+resource "aws_eip" "wireguard" {
+  domain   = "vpc"
+  instance = aws_instance.wireguard.id
+  tags     = { Name = "${local.name}-wireguard" }
+}
+
+resource "aws_route53_record" "vpn" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "vpn.${var.domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.wireguard.public_ip]
+}
+
+output "wireguard_instance_id" {
+  value = aws_instance.wireguard.id
+}
+
+output "wireguard_public_ip" {
+  value = aws_eip.wireguard.public_ip
+}
+
+# The address to put in the client profile. It is derived from wireguard_cidr, so changing that
+# variable changes the server, the peer and this value together.
+output "wireguard_client_address" {
+  value = "${cidrhost(var.wireguard_cidr, 2)}/32"
+}
+```
+
+Create `infra/terraform/cluster/wireguard-init.sh`:
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+# The EIP is attached a few seconds after boot and replaces the public address, which drops any
+# connection open at that moment. Every step that uses the network is therefore retried, and fails
+# the script only after ten attempts.
+retry() {
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    "$@" && return 0
+    sleep 10
+  done
+  return 1
+}
+
+# On first boot unattended-upgrades holds the dpkg lock for minutes. Wait for it inside apt, as the
+# workstation does, rather than failing fast and burning the retries.
+APT="apt-get -o DPkg::Lock::Timeout=600"
+retry $APT update
+retry $APT install -y wireguard-tools jq unzip iptables
+
+# AWS CLI v2 from AWS's own URL, as on the ops workstation. Ubuntu's awscli package is not v2.
+cd /tmp
+retry curl -fsSL -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+unzip -q awscliv2.zip
+./aws/install --update
+
+umask 077
+retry aws --region "${region}" secretsmanager get-secret-value \
+  --secret-id "${secret_id}" --query SecretString --output text > /run/wireguard-secret.json
+jq -e '.serverPrivateKey and .operatorPublicKey' /run/wireguard-secret.json >/dev/null
+PRIVATE_KEY=$(jq -r .serverPrivateKey /run/wireguard-secret.json)
+PEER_KEY=$(jq -r .operatorPublicKey /run/wireguard-secret.json)
+rm -f /run/wireguard-secret.json
+INTERFACE=$(ip route show default | awk '{print $5; exit}')
+
+cat > /etc/wireguard/wg0.conf <<EOF
+[Interface]
+Address = ${server_address}
+ListenPort = 51820
+PrivateKey = $PRIVATE_KEY
+PostUp = iptables -t nat -A POSTROUTING -s ${wireguard_cidr} -o $INTERFACE -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -s ${wireguard_cidr} -o $INTERFACE -j MASQUERADE
+
+[Peer]
+PublicKey = $PEER_KEY
+AllowedIPs = ${peer_address}/32
+EOF
+
+chmod 600 /etc/wireguard/wg0.conf
+printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-wireguard.conf
+sysctl --system
+systemctl enable --now wg-quick@wg0
+touch /var/log/wireguard-ready
+```
+
+Create `infra/terraform/cluster/rancher.tf`:
+```hcl
+# Private TCP 443 on the existing internal NLB. Rancher itself is installed later by Argo CD; this
+# file only creates its network path and stable name.
+
+variable "ingress_https_nodeport" {
+  description = "NodePort of ingress-nginx for HTTPS, targeted by the internal NLB."
+  type        = number
+  default     = 30443
+}
+
+variable "domain" {
+  description = "Domain of the Route 53 zone the shared stack created. Must match its `domain`."
+  type        = string
+  default     = "recruitai.io.vn"
+}
+
+# TLS passes through the NLB unchanged; the load balancer never terminates it or sees the key. The key is
+# stored only in Secrets Manager and in the tls-rancher-ingress Secret.
+resource "aws_lb_target_group" "ingress_https" {
+  name        = "${local.name}-ingress-https"
+  port        = var.ingress_https_nodeport
+  protocol    = "TCP"
+  vpc_id      = module.vpc.vpc_id
+  target_type = "instance"
+
+  # Rancher agents connect back through this NLB. Disabling preservation prevents a target that is
+  # routed back to itself from failing NAT loopback. Rancher therefore sees NLB addresses, not the
+  # client's; with a single WireGuard peer, any VPN session is that one operator.
+  preserve_client_ip = false
+
+  # Like the HTTP target group, a plain TCP check: the targets stay unhealthy until ingress-nginx is
+  # installed, which does not happen until the GitOps phase.
+  health_check {
+    protocol            = "TCP"
+    port                = "traffic-port"
+    interval            = 10
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+resource "aws_lb_listener" "ingress_https" {
+  load_balancer_arn = aws_lb.api.arn
+  port              = 443
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.ingress_https.arn
+  }
+}
+
+resource "aws_lb_target_group_attachment" "ingress_https" {
+  count = var.node_count
+
+  target_group_arn = aws_lb_target_group.ingress_https.arn
+  target_id        = aws_instance.nodes[count.index].id
+  port             = var.ingress_https_nodeport
+}
+
+# TCP 443 is private. WireGuard SNATs the peer to the gateway's VPC address, and Rancher agents also
+# originate inside the VPC.
+resource "aws_vpc_security_group_ingress_rule" "api_nlb_https_from_vpc" {
+  security_group_id = aws_security_group.api_nlb.id
+  cidr_ipv4         = var.vpc_cidr
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  description       = "Private Rancher HTTPS from the VPC and WireGuard"
+}
+
+resource "aws_vpc_security_group_egress_rule" "api_nlb_to_nodes_https" {
+  security_group_id            = aws_security_group.api_nlb.id
+  referenced_security_group_id = aws_security_group.nodes.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.ingress_https_nodeport
+  to_port                      = var.ingress_https_nodeport
+  description                  = "Forward and health-check to ingress-nginx TLS"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "nodes_ingress_https" {
+  security_group_id            = aws_security_group.nodes.id
+  referenced_security_group_id = aws_security_group.api_nlb.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.ingress_https_nodeport
+  to_port                      = var.ingress_https_nodeport
+  description                  = "ingress-nginx TLS NodePort from the internal NLB"
+}
+
+# --- the name ----------------------------------------------------------------------------------------
+data "aws_route53_zone" "main" {
+  name         = "${var.domain}."
+  private_zone = false
+}
+
+resource "aws_route53_record" "rancher" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "rancher.${var.domain}"
+  type    = "A"
+
+  # Internal load balancer names are publicly resolvable to private addresses. DNS works everywhere,
+  # but only a client with a route into the VPC can connect: from outside, that means WireGuard.
+  # Inside the VPC, Rancher's own agents connect to this name as well.
+  alias {
+    name    = aws_lb.api.dns_name
+    zone_id = aws_lb.api.zone_id
+
+    # With no healthy target there is nowhere else to send the query, so target health is not a
+    # useful DNS signal here.
+    evaluate_target_health = false
+  }
+}
+
+output "rancher_url" {
+  description = "The Rancher UI, once the GitOps phase has installed the chart"
+  value       = "https://${aws_route53_record.rancher.name}"
+}
+```
+
+Expand the workload secret lookup in `infra/terraform/cluster/main.tf`. Nodes read the Rancher
+values. Of the roles in the cluster stack, only the gateway role can read `medical-rag/wireguard`;
+admin identities, including the workstation role, can still read every secret:
+```hcl
+data "aws_secretsmanager_secret" "app" {
+  for_each = toset(["llm", "github", "rancher", "rancher-tls"])
+  name     = "${var.project}/${each.key}"
+}
+```
+
+Argo CD installs Rancher later; its chart pin, values, secret wiring and upgrade gate are in
+[design §4.2.1](../selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate).
+
+**Why:**
+
+- The dedicated gateway isolates internet-facing UDP from the administrator workstation and its
+  `AdministratorAccess` role.
+- The internal NLB DNS name resolves publicly to private addresses, so normal DNS and a public CA
+  work while the network path still requires WireGuard.
+- TLS passes through unchanged. ingress-nginx holds the key, and Rancher agents avoid NLB hairpin
+  failures because the HTTPS target group disables client-IP preservation.
+
+**Run:**
+```bash
+make infra           # expect 19 to add, 1 to change, 0 to destroy
+```
+The one change is the node inline policy expanding from two workload secrets to four. Final
+baselines are 17 managed resources in `shared` and 84 in `cluster`.
+
+**Finish the client profile on the laptop.** Edit the `medical-rag` tunnel created in step 17: keep
+its existing `PrivateKey` line and add the other lines below. Use the server public key recorded in
+step 17 and the address from
+`terraform -chdir=infra/terraform/cluster output -raw wireguard_client_address`:
+```ini
+[Interface]
+PrivateKey = <operator-private-key>
+Address = <output wireguard_client_address, e.g. 10.99.0.2/32>
+DNS = 10.10.0.2
+
+[Peer]
+PublicKey = <wireguard-server-public-key>
+Endpoint = vpn.recruitai.io.vn:51820
+AllowedIPs = 10.10.0.0/16
+PersistentKeepalive = 25
+```
+`DNS = 10.10.0.2` sends lookups through the tunnel to the VPC resolver. Without it, many home routers
+drop public answers that point to private `10.10.x.x` addresses, so the Rancher name would not
+resolve. Windows asks the tunnel's resolver first; if browsing stalls while the gateway is down,
+deactivate the tunnel.
+
+Every cluster rebuild gives the gateway a new public address behind `vpn.recruitai.io.vn`. The
+profile does not change, but deactivate and reactivate the tunnel so the new address is resolved.
+
+Do not save this profile in the repo. Activate it, then verify.
+
+**Verify** from the workstation. The gateway needs a few minutes after `make infra` to register
+with SSM and finish cloud-init, so wait for `Online` first:
+```bash
+WG_ID=$(terraform -chdir=infra/terraform/cluster output -raw wireguard_instance_id)
+aws ssm describe-instance-information --filters Key=InstanceIds,Values="$WG_ID" \
+  --query 'InstanceInformationList[0].PingStatus' --output text      # repeat until: Online
+
+COMMAND_ID=$(aws ssm send-command --instance-ids "$WG_ID" \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["cloud-init status --wait || true","test -f /var/log/wireguard-ready && echo READY","wg show"]' \
+  --query 'Command.CommandId' --output text)
+aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"   # rerun if it times out
+aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WG_ID" \
+  --query StandardOutputContent --output text
+
+aws elbv2 describe-listeners \
+  --load-balancer-arn $(aws elbv2 describe-load-balancers --names medical-rag-api \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text) \
+  --query 'Listeners[].[Port,Protocol]' --output table
+
+dig +short rancher.recruitai.io.vn
+dig +short vpn.recruitai.io.vn
+```
+Expect `READY`, and after the laptop connects, a recent `latest handshake` in `wg show`. The internal
+NLB has TCP 6443 and 443 listeners, the Rancher name resolves to private `10.10.x.x` addresses, and
+the VPN name resolves to the gateway EIP.
+
+On the laptop, with the tunnel active, the WireGuard app shows a recent handshake, and
+`nslookup rancher.recruitai.io.vn` answers from `10.10.0.2` with `10.10.x.x` addresses. TCP 443 has no
+healthy target yet, so there is nothing to open in the browser until the GitOps phase.
+
+#### After `make bootstrap`
+
+Once ingress-nginx and Rancher are installed, check three things.
+
+**The certificate**, from the WireGuard gateway. The workstation lives in its own VPC
+(`10.20.0.0/24`) with no route to the cluster VPC, so it cannot reach the private Rancher addresses;
+the gateway can. From the workstation:
+```bash
+WG_ID=$(terraform -chdir=infra/terraform/cluster output -raw wireguard_instance_id)
+PARAMS=$(jq -n --arg c 'openssl s_client -connect rancher.recruitai.io.vn:443 -servername rancher.recruitai.io.vn -verify_return_error </dev/null 2>&1 | grep -E "subject=|issuer=|Verify return code|verify error|errno|refused|timed out"; true' \
+  '{commands: [$c]}')
+COMMAND_ID=$(aws ssm send-command --instance-ids "$WG_ID" --document-name AWS-RunShellScript \
+  --parameters "$PARAMS" --query 'Command.CommandId' --output text)
+aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WG_ID"
+aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WG_ID" \
+  --query StandardOutputContent --output text
+```
+Expect `subject=CN = rancher.recruitai.io.vn`, a Sectigo issuer and `Verify return code: 0 (ok)`
+(it may appear twice with TLS 1.3). Any `verify error`, `errno` or `timed out` line says what failed.
+`jq` builds the parameter JSON so the quotes inside the command survive.
+
+**The public load balancer does not serve Rancher.** ingress-nginx on port 80 routes by `Host`
+header, so ask for Rancher there:
+```bash
+curl -sI -H 'Host: rancher.recruitai.io.vn' \
+  "http://$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)/" | head -1
+```
+Expect `HTTP/1.1 308 Permanent Redirect`: the only answer is a redirect to an HTTPS address that the
+internet cannot reach.
+
+**The browser**, on the laptop: Rancher loads while the tunnel is active and times out after you
+deactivate it.
+
+#### Revoke a lost client
+
+Create a new empty tunnel on the replacement device, copy its public key, then from the workstation:
+```bash
+umask 077
+read -r -p "New operator public key: " NEW_PUB
+aws secretsmanager get-secret-value --secret-id medical-rag/wireguard \
+  --query SecretString --output text \
+  | jq --arg k "$NEW_PUB" '.operatorPublicKey = $k' > wg.json
+aws secretsmanager put-secret-value --secret-id medical-rag/wireguard --secret-string file://wg.json
+shred -u wg.json
+terraform -chdir=infra/terraform/cluster apply -replace=aws_instance.wireguard
+```
+The replacement gateway reads the new key at boot. The EIP and the `vpn` record stay the same; the old
+key no longer handshakes, and the new one does.
+
+**Commit:** `git add infra/terraform/cluster && git commit -m "Add private Rancher access through WireGuard"`
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -2271,4 +2970,11 @@ make plan                                                          # No changes.
 | `InsufficientInstanceCapacity` | Temporary shortage in one AZ: retry later, or fall back to `c7i-flex.large` (4 GB, the only other free-tier type big enough) and cut Prometheus retention |
 | `no space left on device` during `terraform init` in CloudShell | `TF_DATA_DIR` is not set: the AWS provider needs about 830 MB and the CloudShell home folder holds 1 GB. Run `rm -rf .terraform`, then the exports in step 4.3 again |
 | Budget stays at 0 USD | The `project` cost allocation tag is not active (step 6) |
+| `dig NS` still shows the registrar's name servers | The change has not propagated, or it was entered in the wrong place: it is the **name server** setting of the domain, not a record inside the zone |
+| `no matching Route 53 Hosted Zone found` in step 18 | Step 16 was not applied, or the two stacks use different domains |
+| Existing records stopped resolving after step 17 | The DNS inventory was incomplete, or DNSSEC still has a stale DS record. Restore the missing records before continuing |
+| WireGuard has no handshake | Check `vpn.recruitai.io.vn`, UDP 51820 and the server public key. If the tunnel was recreated on the laptop, it has a new key: store its public key again (see *Revoke a lost client*) |
+| VPN connects but `rancher.recruitai.io.vn` does not resolve | The profile is missing `DNS = 10.10.0.2`, so the home router answered and dropped the private address. Add the line and reconnect; `nslookup rancher.recruitai.io.vn 10.10.0.2` must return `10.10.x.x` addresses |
+| VPN connects but Rancher is unreachable | Confirm the client routes `10.10.0.0/16`, the gateway is SNATing, and the internal NLB has a healthy 30443 target |
+| The gateway never prints `READY` | cloud-init failed after its retries. Read `/var/log/cloud-init-output.log` through SSM; a failure at `get-secret-value` usually means `medical-rag/wireguard` has no value yet (step 17) |
 | A node shows `ConnectionLost` in SSM | NAT gateway or route problem: check step 10, then reboot the instance |

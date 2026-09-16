@@ -7,10 +7,11 @@ with a check, and the next step assumes it passed.
 
 ## How this guide works
 
-**Start here only when the Terraform phase is finished:** `make infra` applied, and all three nodes
-`Online` in SSM (step 13 of [`../terraform/guide.md`](../terraform/guide.md)).
+**Start here when Terraform guide steps 1–15 are done:** `make infra` applied, and all three nodes
+`Online` in SSM (step 13 of [`../terraform/guide.md`](../terraform/guide.md)). Part D of that guide is
+needed before `make bootstrap`, not before Ansible.
 
-**Where commands run.** Nothing is installed on your laptop, and CloudShell is not used in this
+**Where commands run.** No ops tool is installed on your laptop, and CloudShell is not used in this
 phase.
 
 | Where | What you do there |
@@ -630,12 +631,11 @@ Add `- kubernetes_packages` to the `roles:` list, below `- containerd`.
 
 **Why:**
 
-- **Pinned to Rancher's supported Kubernetes line.** The cluster stays on 1.36.4 until the GitOps
-  phase pins and verifies a Rancher chart whose `kubeVersion` accepts the next minor release.
+- **Compatibility-gated pin.** The cluster starts on 1.36.4 and changes minor only after the Rancher
+  gate in [design §4.2.1](../selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate) passes.
 - **Held packages.** An unattended upgrade that restarted the kubelet would restart every pod on the
   node; one that crossed a minor version could also make Rancher unschedulable. Upgrades are done
-  deliberately, one node at a time, after the compatibility gate described in
-  [`README.md`](README.md), §9.
+  deliberately, one node at a time, after that gate.
 - **The kubelet is enabled but not started.** Until kubeadm writes its configuration the kubelet has
   nothing to do and restarts in a loop. That is normal, and `kubeadm init` fixes it in step 6.
 

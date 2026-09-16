@@ -2,14 +2,14 @@
 
 - **Date:** 2026-09-15
 - **Timebox:** Days 1–3 of a 7-day plan shared with Anime-Recommender (EKS)
-- **Budget:** ~0.50 USD/hour while running in ap-southeast-1 (plus ~0.03 USD/hour for the ops workstation); 128 USD of Free plan credits available until 2027-02-13, about 250 cluster-hours; the NAT gateway and both NLBs are not in the free tier at all; destroyed when idle
+- **Budget envelope:** about 0.53 USD/hour while the cluster and WireGuard gateway run, plus about 0.03 USD/hour for the ops workstation; roughly 6.90 USD/month remains with the cluster destroyed (KMS key, 5 secrets, Route 53, buckets and the stopped workstation disk). Domain and Sectigo renewal are yearly costs outside AWS.
 - **Target role:** DevOps / Platform / SRE (LLMOps as a bonus)
 
 ## 1. Goal
 
 Rebuild this project's operations the way a company running Kubernetes itself would. The four pillars:
 
-- **Reproducible infrastructure:** Terraform + Ansible, with no manual steps.
+- **Reproducible infrastructure:** Terraform + Ansible for repeatable builds, with the unavoidable bootstrap, DNS delegation and secret-entry steps documented and verified.
 - **GitOps delivery:** Jenkins does CI and Argo CD does CD, with dev → prod promotion by pull request.
 - **Supply-chain security:** scan, SBOM, KMS-backed signing, and admission verification.
 - **Day-2 operations:** etcd backup/restore and cluster upgrades.
@@ -26,19 +26,17 @@ This project is the **self-managed** counterpart to Anime-Recommender, which run
 | Focus | Cluster ops, delivery, supply chain | SLOs, canary, autoscaling, LLM observability |
 
 ### Non-goals
-- A custom domain or TLS certificate (the public NLB serves HTTP; P2 is cert-manager).
+- A custom domain or TLS certificate for the application paths. Rancher is the exception: it uses a dedicated hostname and a purchased Sectigo DV certificate.
 - Multi-region operation or disaster recovery of AWS resources beyond etcd.
 - A service mesh.
 - Canary rollouts and SLO burn-rate alerting (these belong to Anime).
 
-## 2. Current state (verified 2026-09-15)
+## 2. Baseline before the upgrade (verified 2026-09-15)
 
-**App:**
-- Flask dev server on :8000.
-- LangChain RetrievalQA (k=1) over FAISS, built from one 759-page PDF (7,079 chunks at 500/50).
-- Gemini API `gemma-3n-e2b-it`; embeddings via the HF Inference API.
+The app used the Flask development server on port 8000,
+rebuilt a 7,079-chunk FAISS index at startup, and called Gemini plus the HF Inference API directly.
 
-**Delivery and infrastructure today:**
+**Delivery and infrastructure:**
 - `docker-entrypoint.sh` rebuilds the whole index on **every pod start**, before Flask listens.
 - A 6-stage Jenkinsfile on a separate VM pushes to Docker Hub and runs `kubectl apply` with a raw admin kubeconfig.
 - Cluster setup scripts live in the `MLops-Common` submodule: bash, manual, on-prem IPs.
@@ -53,26 +51,33 @@ This project is the **self-managed** counterpart to Anime-Recommender, which run
 
 ### Prerequisites
 - An AWS account and an identity with admin access, used once from **AWS CloudShell** to apply the bootstrap stack.
-- **Nothing is installed on the operator's Windows laptop** beyond an editor and git. Every ops command (Terraform, Ansible, kubectl, Helm, cosign) runs on the **ops workstation**, an EC2 Ubuntu 24.04 instance created by the bootstrap stack (see §4.0).
-- An HF token **with the "Inference Providers" permission**; the current token returns 403. A Gemini API key.
+- The laptop needs only an editor, git and a WireGuard client. Terraform, Ansible, kubectl, Helm,
+  cosign and every other ops command run on the **ops workstation**, an EC2 Ubuntu 24.04 instance
+  created by the bootstrap stack (see §4.0).
+- An HF token with the **Inference Providers** permission and a Gemini API key.
+- Control of `recruitai.io.vn` and a Sectigo DV order for `rancher.recruitai.io.vn`.
 
 ## 3. Architecture
 
-```
-                         ┌──────────────────────── AWS VPC 10.10.0.0/16 (3 AZ) ─────────────────────────┐
- Internet ──► public NLB :80 ──► NodePort 30080 ingress-nginx ──► medical-rag (prod | dev namespaces)       │
-                         │                                                                                  │
- Operator ──► SSM Session Manager (no SSH, no bastion)                                                      │
-                         │  private subnets                                                                 │
-                         │  ┌─────────── node-1 ───────────┐ ┌── node-2 ──┐ ┌── node-3 ──┐                   │
-                         │  │ control-plane + worker       │ │   same     │ │   same     │  m7i-flex.large ×3│
-                         │  │ etcd, containerd, Calico     │ └────────────┘ └────────────┘                   │
-                         │  └──────────────────────────────┘                                                  │
-                         │  internal NLB :6443 ──► kube-apiserver ×3 (kubeadm controlPlaneEndpoint)          │
-                         │  NAT GW (1 AZ) ──► Gemini API, HF Inference API, GitHub, ECR                     │
-                         └──────────────────────────────────────────────────────────────────────────────────┘
- AWS services: ECR (images + signatures) · S3 (FAISS index artifacts, etcd snapshots, SSM transfer, TF state)
-               KMS (cosign key) · Secrets Manager (API keys) · Budgets (50/100 USD alarms)
+```mermaid
+flowchart TB
+    APPUSER["App user"] -->|"HTTP 80"| PUBLIC["Public NLB"]
+    OP["Operator"] -->|"WireGuard, UDP 51820"| WG["WireGuard gateway"]
+    OP -->|"SSM, no SSH"| NODES
+    WG -->|"private VPC route"| INTERNAL["Internal NLB"]
+
+    subgraph VPC["Cluster VPC 10.10.0.0/16"]
+        PUBLIC -->|"30080"| ING["ingress-nginx"]
+        INTERNAL -->|"6443"| API["kube-apiserver x3"]
+        INTERNAL -->|"443 to 30443"| ING
+        ING --> APP["medical-rag dev + prod"]
+        ING --> RANCHER["Rancher"]
+        NODES["3 x control-plane + worker nodes"]
+        NAT["NAT gateway"]
+    end
+
+    NODES --> NAT --> EXT["Gemini API · HF API · GitHub"]
+    NODES --> AWS["ECR · S3 · KMS · Secrets Manager"]
 ```
 
 ### In-cluster components
@@ -81,13 +86,14 @@ All components except Argo CD are installed **by Argo CD** from `deploy/argocd/`
 | Component | Purpose |
 |---|---|
 | Argo CD | GitOps controller. Bootstrapped once by `make bootstrap`, then self-managed. |
-| ingress-nginx | NodePort 30080/30443, targeted by the public NLB |
+| ingress-nginx | NodePort 30080 from the public NLB and 30443 from the internal NLB |
 | aws-ebs-csi-driver | PersistentVolumes for Jenkins and Prometheus (IAM via instance profile) |
 | external-secrets | Syncs Secrets Manager into K8s Secrets (instance-profile auth) |
 | kube-prometheus-stack | Cluster and app metrics, Grafana (reached by port-forward only) |
 | Jenkins (Helm, JCasC) | CI controller. Agents are ephemeral pods. |
 | medical-rag (Helm chart) | The app, as 2 Argo CD Applications: `medical-rag-dev`, `medical-rag-prod` |
 | kyverno (P1) | Image signature verification + baseline pod policies |
+| Rancher (Helm) | Private management UI at `https://rancher.recruitai.io.vn`, reachable only through WireGuard. It runs one replica and uses `ingress.tls.source: secret` with the Sectigo certificate, so cert-manager is not needed. The cluster remains on Kubernetes 1.36 until the compatibility gate passes. |
 
 ## 4. Components
 
@@ -110,37 +116,65 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   - `bootstrap/` (§4.0): state bucket and ops workstation. Applied from CloudShell only.
   - `shared/`: ECR, the index artifacts bucket, the cosign KMS key, Secrets Manager secrets, budgets. Kept, so a daily cluster teardown never loses the index, secret values, the signing key or images.
   - `cluster/`: everything below except those. Looks up shared resources with data sources by name; destroyed when idle.
-- Architecture and file-by-file notes are in `docs/terraform/README.md`; the step-by-step build guide is `docs/terraform/guide.md`.
+- Architecture and file-by-file notes are in `docs/terraform/README.md`; the step-by-step build guide is `docs/terraform/guide.md`. Ansible has the same pair in `docs/ansible/`.
 - **Network:** VPC with 3 public and 3 private subnets and 1 NAT gateway (cost choice, documented as a single point of failure).
+- **DNS, VPN and the Rancher entry point:** the shared stack keeps the Route 53 public zone and the
+  `rancher`, `rancher-tls` and `wireguard` secrets. The cluster stack creates a small WireGuard
+  gateway, `vpn.recruitai.io.vn`, and a TCP 443 listener on the existing internal NLB.
+  `rancher.recruitai.io.vn` resolves publicly to that internal NLB's private addresses, so it works
+  only for a client with a route into the VPC. ingress-nginx terminates TLS; the load balancer
+  passes it through and never sees the key, which is stored only in Secrets Manager and the
+  `tls-rancher-ingress` Secret.
 - **Compute:**
   - 3× `m7i-flex.large` (2 vCPU, 8 GB) Ubuntu 24.04 across 3 AZs, gp3 encrypted root volumes.
     The account is on the **AWS Free plan**, which refuses to launch instance types that are not
     free-tier eligible, so `t3.large` and `t3.medium` cannot be used.
   - IMDSv2 required, no public IPs, no key pair.
   - The SSM agent is present on the Ubuntu AMI.
+  - One `t3.small` WireGuard gateway in a public subnet, with an encrypted 8 GiB root volume, an EIP,
+    no SSH key and no application IAM permissions. Its role can register with SSM and read only
+    `medical-rag/wireguard`.
 - **Load balancers:**
-  - Internal NLB TCP 6443 → the 3 nodes.
+  - Internal NLB TCP 6443 → the Kubernetes API and TCP 443 → ingress-nginx NodePort 30443.
   - Public NLB TCP 80 → NodePort 30080 on the 3 nodes.
 - **Security groups:**
   - 6443 only from inside the VPC.
-  - NodePorts only from the NLB subnets.
+  - 443 only from inside the VPC. No public HTTPS rule exists.
+  - UDP 51820 from the internet to the WireGuard gateway; unauthenticated packets are discarded by
+    WireGuard before a tunnel is established.
+  - NodePorts only from the corresponding NLB security groups.
   - Node-to-node traffic for Calico (BGP 179 or VXLAN 4789, per the chosen mode), etcd 2379–2380, and kubelet 10250.
 - **IAM instance profile:**
   - `AmazonSSMManagedInstanceCore`
   - ECR read + write, the latter scoped to the repository for Jenkins BuildKit pushes
   - S3 read/write on the artifacts and backup buckets
-  - `secretsmanager:GetSecretValue` on the `medical-rag/*` prefix
+  - `secretsmanager:GetSecretValue` only for `medical-rag/llm`, `medical-rag/github`,
+    `medical-rag/rancher` and `medical-rag/rancher-tls`; no wildcard includes the WireGuard secret
   - `kms:Sign` and `kms:GetPublicKey` on the cosign key
   - The EBS CSI policy
 - **Registry, storage and keys:**
   - ECR `medical-rag` with scan on push and a lifecycle policy keeping the last 20 images.
   - S3 buckets `*-artifacts` (versioned), `*-etcd-backups` (lifecycle 14 days) and `*-ssm-transfer`, all with Block Public Access and TLS-only policies.
   - KMS asymmetric key `ECC_NIST_P256` / `SIGN_VERIFY`, alias `alias/medical-rag-cosign`.
-- **Secrets Manager:** empty secrets `medical-rag/llm` (GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN, FLASK_SECRET_KEY) and `medical-rag/github` (bot token). Values are set with the AWS CLI, never in Terraform.
+- **Secrets Manager:** five empty secrets: `medical-rag/llm`, `medical-rag/github`,
+  `medical-rag/rancher`, `medical-rag/rancher-tls` and `medical-rag/wireguard`. Values are set with
+  the AWS CLI, never in Terraform. Nodes can read the first four. Of the cluster machines, only the
+  gateway can read `medical-rag/wireguard`; admin identities, including the workstation role, can
+  read all five.
 - **Budgets:** alarms at 50 and 100 USD.
 - **Tagging:** default tags `project`, `env`, `owner`, `managed-by=terraform`.
 - **Inputs:** `shared/terraform.tfvars` (from the `.example`): budget email. Everything else has defaults.
 - **Outputs:** instance IDs, NLB DNS names, bucket names, ECR URL, and KMS ARN. Ansible and Helm values consume these outputs; nothing is hard-coded.
+
+**WireGuard data flow:** the client routes only `10.10.0.0/16` through
+`vpn.recruitai.io.vn:51820` and resolves names with the VPC resolver `10.10.0.2` (the VPC CIDR base
+plus two) through the tunnel. The gateway (`10.99.0.1/24`) and client (`10.99.0.2/32`) addresses
+are derived from `wireguard_cidr` (`10.99.0.0/24` by default). The gateway enables IPv4 forwarding
+and SNATs VPN traffic to its VPC address. Its cloud-init fetches `serverPrivateKey` and
+`operatorPublicKey` from the dedicated secret. The client private key never leaves the operator's
+device. A cluster rebuild replaces the gateway and its EIP: the `vpn` record follows the new address
+and the server key comes back from Secrets Manager, so the client profile stays the same — reconnect
+to pick up the new address.
 
 ### 4.2 Ansible (`infra/ansible/`)
 These roles replace the `MLops-Common` bash scripts and must be idempotent: a second run reports `changed=0`.
@@ -149,18 +183,57 @@ These roles replace the `MLops-Common` bash scripts and must be idempotent: a se
 - **Roles:**
   - `common`: swap off, kernel modules, sysctl, time sync.
   - `containerd`: `SystemdCgroup=true`, pinned version.
-  - `kubernetes_packages`: kubelet, kubeadm and kubectl from pkgs.k8s.io, **pinned to minor N-1** (currently 1.35) so the upgrade drill has somewhere to go. Packages are held.
+  - `kubernetes_packages`: kubelet, kubeadm and kubectl from pkgs.k8s.io, pinned to 1.36.4 and held.
+    A later minor is allowed only after the Rancher compatibility gate passes.
   - `ecr_credential_provider`:
-    - Installs `ecr-credential-provider` from kubernetes/cloud-provider-aws.
+    - Installs `ecr-credential-provider` v1.37.0 from kubernetes/cloud-provider-aws
+      (`artifacts.k8s.io`), verified against its published SHA256.
     - Sets kubelet `--image-credential-provider-config`.
     - Result: nodes pull from ECR with the instance profile and no imagePullSecrets.
-  - `kubeadm_init`: first node, with a `kubeadm-config.yaml` setting `controlPlaneEndpoint = internal NLB DNS:6443` and `--upload-certs`.
+  - `kubeadm_init`: first node, with a `kubeadm-config.yaml` (v1beta4) setting `controlPlaneEndpoint = internal NLB DNS:6443` and `--upload-certs`. `apiServer.certSANs` also lists `127.0.0.1`, because kubectl reaches the API through an SSM port-forward.
   - `kubeadm_join`: the remaining control planes, with the join token and certificate key passed via facts, never written to the repo.
-  - `cni_calico`: operator install with a pinned version and a pod CIDR that does not overlap the VPC.
+  - `cni_calico`: operator install (v3.32.2), **VXLAN** encapsulation to match the UDP 4789 rule in the node security group, pod CIDR `192.168.0.0/16` so it overlaps neither VPC nor the Service range.
   - `untaint_control_plane`: all 3 nodes schedule workloads, matching the current design.
 - **Playbooks:**
   - `site.yml`: full cluster.
-  - `upgrade.yml` (P1): `serial: 1`, drain, `kubeadm upgrade apply|node`, upgrade kubelet, uncordon, then wait for Ready and for all Argo CD apps to be Healthy before the next node.
+  - `upgrade.yml` (P1): after the §4.2.1 gate passes, `serial: 1`, drain, `kubeadm upgrade apply|node`,
+    upgrade kubelet, uncordon, and wait for Ready plus Argo CD health before the next node.
+
+### 4.2.1 Rancher GitOps contract and compatibility gate
+
+The Rancher Argo CD Application installs chart **2.15.1** from the `stable` channel
+(`https://releases.rancher.com/server-charts/stable`) into namespace `cattle-system`. That chart
+declares `kubeVersion: < 1.37.0-0`, so it accepts this cluster's 1.36.4 and refuses 1.37.
+
+**Values:**
+
+| Value | Setting | Why |
+|---|---|---|
+| `hostname` | `rancher.recruitai.io.vn` | Rancher serves only its own hostname |
+| `replicas` | `1` | The chart defaults to 3; three 8 GB nodes also run Jenkins and Prometheus |
+| `ingress.ingressClassName` | `nginx` | Unless ingress-nginx is the default IngressClass |
+| `ingress.tls.source` | `secret` | Uses the Sectigo certificate; no cert-manager |
+| `agentTLSMode` | `system-store` | The default since 2.9 is `strict`, which trusts only the CA in Rancher's `cacerts` setting; a public-CA certificate needs `system-store` |
+| `extraEnv` | `CATTLE_BOOTSTRAP_PASSWORD` from `bootstrap-secret/bootstrapPassword` | The password comes from Secrets Manager |
+| `bootstrapPassword` | **never set** | In chart 2.15.1, setting it renders its own `bootstrap-secret` hook and a second `CATTLE_BOOTSTRAP_PASSWORD`, which fight External Secrets |
+
+**Sync waves:** `-2` installs External Secrets, `-1` creates two `ExternalSecret` resources —
+`tls-rancher-ingress` (type `kubernetes.io/tls`) and `bootstrap-secret` (key `bootstrapPassword`) — and
+`0` installs Rancher. No password or private key appears in Git or an Argo CD value.
+
+**Compatibility gate.** Before any Kubernetes minor changes, check the candidate chart on the ops
+workstation and record the result in the upgrade evidence:
+
+```bash
+RANCHER_CHART_VERSION=2.15.1   # the candidate chart being evaluated
+helm show chart rancher --repo https://releases.rancher.com/server-charts/stable --version "$RANCHER_CHART_VERSION" | yq '.version, .kubeVersion'
+```
+
+The candidate's `kubeVersion` must accept the target minor, and that Kubernetes release must appear in
+Rancher's [official support matrix](https://www.suse.com/suse-rancher/support-matrix/all-supported-versions)
+for the candidate Rancher release. Upgrade Rancher first and wait until every Argo CD Application is
+`Synced` and `Healthy`. Only then change the Kubernetes package pin and run `upgrade.yml`. If either
+check fails, keep Kubernetes at `1.36.4`.
 
 ### 4.3 App changes (`src/app/`, `tests/`)
 
@@ -242,7 +315,7 @@ Images are referenced **by digest** in values as `tag@sha256:...`, so what was s
 - **etcd backup:**
   - A CronJob on control-plane nodes (nodeSelector + toleration, hostPath `/etc/kubernetes/pki/etcd`).
   - Runs `etcdctl snapshot save` every 6h and uploads to S3. `snapshot status` is verified before upload.
-- **Restore drill** (`docs/runbooks/etcd-restore.md`):
+- **Restore drill:**
   1. Delete a test namespace.
   2. Restore the latest snapshot on all 3 members.
   3. Verify the namespace is back.
@@ -251,7 +324,8 @@ Images are referenced **by digest** in values as `tag@sha256:...`, so what was s
   - `verifyImages` for `*.dkr.ecr.*/medical-rag*` with the KMS public key. Mode `Enforce` in prod and `Audit` in dev.
   - Baseline Pod Security policies.
   - Demo: deploying an unsigned image to prod is rejected, with the admission error captured as evidence.
-- **Upgrade drill:** `ansible-playbook upgrade.yml` takes 1.35 → 1.36. k6 or a curl loop hits prod throughout, and failed requests are recorded; the target is 0.
+- **Upgrade drill:** after the §4.2.1 gate passes, run `ansible-playbook upgrade.yml` one node at a
+  time while a curl loop records failed requests.
 
 ## 5. Error handling and failure modes
 
@@ -273,16 +347,17 @@ Each P0 item is done only when its check passes and the evidence is saved under 
 | 1 | Terraform | `terraform apply` from empty, then `plan` shows no changes | resource count, apply duration |
 | 2 | Ansible | `site.yml` builds the cluster; a second run gives `changed=0` | playbook recap, cluster build time |
 | 3 | HA API | Stop node-1: `kubectl get nodes` still works through the NLB | terminal capture |
-| 4 | Argo CD bootstrap | All addon apps Synced and Healthy | screenshot |
-| 5 | Index artifact | First Job embeds 7,079 chunks; a second sync skips the build | Job logs, build duration |
-| 6 | App readiness | Pod Ready in N seconds (vs rebuild-at-start before) | before/after startup time |
-| 7 | Pipeline | Commit → dev running | end-to-end minutes, stage durations |
-| 8 | Supply chain | `cosign verify --key awskms://...` passes; Trivy report archived | CRITICAL/HIGH counts before vs after base-image hardening |
-| 9 | Promotion | Prod PR opened by the bot, merged, prod synced | PR link |
-| 10 | Image size | `docker image ls` before vs after the multi-stage build | MB before/after |
-| 11 (P1) | etcd restore | Drill per runbook | RTO |
-| 12 (P1) | Kyverno | Unsigned image rejected in prod | admission error |
-| 13 (P1) | Upgrade | 1.35 → 1.36 under load | failed requests during upgrade |
+| 4 | Private Rancher | No public 443 rule; without VPN the URL times out; with VPN the Sectigo chain verifies and the UI loads; the public NLB answers the Rancher host only with a 308 redirect | SG query, `wg show`, TLS check, `curl -I` |
+| 5 | Argo CD bootstrap | All addon apps Synced and Healthy | screenshot |
+| 6 | Index artifact | First Job embeds 7,079 chunks; a second sync skips the build | Job logs, build duration |
+| 7 | App readiness | Pod Ready in N seconds (vs rebuild-at-start before) | before/after startup time |
+| 8 | Pipeline | Commit → dev running | end-to-end minutes, stage durations |
+| 9 | Supply chain | `cosign verify --key awskms://...` passes; Trivy report archived | CRITICAL/HIGH counts before vs after base-image hardening |
+| 10 | Promotion | Prod PR opened by the bot, merged, prod synced | PR link |
+| 11 | Image size | `docker image ls` before vs after the multi-stage build | MB before/after |
+| 12 (P1) | etcd restore | Restore drill (§4.6) | RTO |
+| 13 (P1) | Kyverno | Unsigned image rejected in prod | admission error |
+| 14 (P1) | Upgrade | Compatibility-gated minor upgrade under load | Rancher chart constraint and failed-request count |
 
 ## 7. Repo layout (after)
 
@@ -293,7 +368,7 @@ Dockerfile  .dockerignore  Jenkinsfile  Makefile
 infra/terraform/{bootstrap/, shared/, cluster/}
 infra/ansible/{requirements.yml, ansible.cfg, inventory/aws_ec2.yml, roles/, site.yml, upgrade.yml}
 deploy/{charts/medical-rag/, envs/{dev,prod}/, argocd/}
-docs/{evidence/, runbooks/}
+docs/{evidence/, terraform/, ansible/}
 ```
 
 The `MLops-Common` submodule is kept for the on-prem history; the new Ansible roles supersede it. The README gains an architecture section and an "Evidence" table.
@@ -305,9 +380,9 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | `make shared` | `terraform apply` of the shared stack (kept) |
 | `make infra` | `terraform apply` of the cluster stack |
 | `make cluster` | Ansible `site.yml` |
-| `make tunnel` | SSM port-forward to the internal API NLB and write the kubeconfig |
+| `make tunnel` | SSM port-forward to the internal API NLB (the kubeconfig is written by `make cluster`) |
 | `make bootstrap` | Install Argo CD, apply `deploy/argocd/root.yaml` |
-| `make up` | infra + cluster + bootstrap |
+| `make up` | infra + cluster + bootstrap, after DNS, certificate and WireGuard secrets exist |
 | `make down` | Delete Argo CD apps (releases PVs), then `terraform destroy` of the cluster stack (`make infra-destroy`). The shared and bootstrap stacks are kept. |
 | `make cost` | Print hours up × hourly estimate |
 
@@ -315,7 +390,7 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 
 | Day | Work |
 |---|---|
-| 1 | Terraform (incl. bootstrap state, KMS, ECR, budgets) the ops workstation, and the Ansible roles. **Cluster up with the HA check.** |
+| 1 | Terraform (including bootstrap state, KMS, ECR, budgets and WireGuard), the ops workstation, and the Ansible roles. **Cluster up with the HA check.** |
 | 2 | Argo CD bootstrap + addons, Helm chart, app changes (gunicorn, probes, metrics, index CLI + Job), dev env serving. |
 | 3 | Jenkins + full pipeline (scan, SBOM, KMS sign, dev bump, prod PR), prod env. Capture P0 evidence. P1 items only if time remains. |
 
@@ -327,9 +402,15 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Ansible over SSM is slow or flaky | Run from the ops workstation in the same region; pin collection versions in `requirements.yml`. |
 | Ops workstation holds `AdministratorAccess` | Anyone in the account allowed to `ssm:StartSession` on it gets admin rights. Mitigations: no inbound ports, SSM-only access, IMDSv2, stopped when idle, GitHub access through a fine-grained token limited to this repo, tool downloads verified by checksum. P2: scope the role down. |
 | `m7i-flex.large` gives about 40% of 2 vCPU as baseline and bursts above it, and unlike T instances it publishes no CPU credit metric, so exhaustion is silent | Nodes idle far below the baseline and Jenkins builds are short. Alert on `node_cpu_seconds_total` sustained above 80% instead of on credits. |
-| Free plan credits run out or expire (128 USD, 2027-02-13), which may suspend the account | The state bucket has `prevent_destroy` and the cosign KMS key cannot be recreated without invalidating every signature. P1: copy the state bucket and record the key ARN off-account before the expiry date. |
+| Account credits run out or expire, which may suspend the account | Track the live balance and expiry in `docs/evidence/`. The state bucket has `prevent_destroy`, and the cosign KMS key cannot be recreated without invalidating every signature. P1: copy the state bucket and record the key ARN off-account before expiry. |
 | Node memory pressure (Jenkins + Prometheus + builds) | Resource requests on all addons; Prometheus retention 24h; at most 1 concurrent Jenkins build. |
-| No domain for ingress | Path-based routing on the NLB DNS; TLS is out of scope. |
+| No domain for the app's ingress | Path-based routing on the public NLB DNS; TLS for app traffic is out of scope. Rancher uses its own private hostname and certificate. |
+| The Sectigo certificate is a Domain Validation certificate with a fixed expiry, and nothing renews it automatically | Calendar reminder before expiry, and the replacement goes in with one `put-secret-value`; External Secrets pushes it to the cluster without a redeploy. If manual renewal becomes a nuisance, switch to cert-manager with a Let's Encrypt DNS-01 issuer, which the Route 53 zone already makes possible. |
+| Delegating the whole domain can interrupt existing web or mail records | Lower TTLs early, copy every record except the apex SOA and NS, compare answers from both providers, and remove any parent DS record before changing name servers. Keep the old provider for at least 48 hours; enable Route 53 signing and publish a new DS only after the unsigned delegation is stable. |
+| WireGuard exposes UDP 51820 to the internet | WireGuard silently drops unauthenticated packets; the gateway has no SSH key, no application permissions, and reads only its own secret. If a client is lost, replace its public key in Secrets Manager, reload the gateway configuration through SSM (or replace the instance), and verify only the new peer handshakes. |
+| Rancher controls the whole cluster | TCP 443 exists only on the internal NLB, open to the whole cluster VPC because Rancher's own agents connect to it from inside. From outside the VPC, access requires a valid WireGuard peer and Rancher credentials. Configure an MFA-enforcing external identity provider before treating MFA as a control. Disconnect the VPN and destroy the cluster when idle. |
+| A Kubernetes minor exceeds Rancher's chart constraint | The §4.2.1 gate: keep 1.36.4 until a candidate chart accepts the target, upgrade Rancher first, and require Argo CD health. |
+| The VPN peer gets network-level access to the cluster VPC, not only to Rancher | The gateway SNATs and forwards without restriction, so a connected peer can reach whatever a security group opens to `10.10.0.0/16`: the internal NLB on 443 (Rancher) and 6443 (the Kubernetes API). Both still require credentials, and there is a single peer. |
 | **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | IMDSv2 hop limit 2 is required for pods today. NetworkPolicy egress deny to `169.254.169.254/32` for all app namespaces, allowed only for external-secrets, ebs-csi and Jenkins agents. Documented as a known limitation; P2 is self-hosted IRSA (pod-identity-webhook + S3-hosted OIDC discovery). |
 | Day 1–3 overrun | Cut order: P1 items → prod PR automation (promote manually) → SBOM attestation. Never cut scan + sign + GitOps. |
 
@@ -344,6 +425,10 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Builds | BuildKit rootless (not Kaniko) |
 | Signing | Cosign + AWS KMS |
 | Secrets | External Secrets + Secrets Manager |
-| Ops tooling | EC2 Ubuntu ops workstation via SSM (nothing installed locally) |
+| Ops tooling | EC2 Ubuntu ops workstation via SSM; only editor, git and WireGuard client are local |
+| Management UI | Rancher, installed by Argo CD, at `rancher.recruitai.io.vn` |
+| DNS | Route 53 public zone for `recruitai.io.vn`, delegated from the registrar |
+| TLS for Rancher | Purchased Sectigo DV certificate in Secrets Manager (no cert-manager) |
+| Rancher access | WireGuard gateway EC2 → internal NLB TCP 443 → ingress-nginx NodePort 30443 |
 | Ansible runtime | Native on the ops workstation |
-| Kubernetes version | Start at 1.35, upgrade drill to 1.36 |
+| Kubernetes version | Start at 1.36.4; change minor only after the Rancher compatibility gate passes |

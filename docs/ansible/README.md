@@ -191,20 +191,19 @@ earns that in its own way:
 
 | Component | Version | Why this one |
 |---|---|---|
-| Kubernetes | 1.36.4 (`1.36.4-1.1`) | Matches the Rancher 2.15 compatibility ceiling documented for the GitOps phase |
+| Kubernetes | 1.36.4 (`1.36.4-1.1`) | Initial pin; any minor change must pass the Rancher compatibility gate (design §4.2.1) |
 | containerd | 2.3.5, from the Docker repository | Newer than Ubuntu's, and it has a version string that can be pinned |
 | Calico | v3.32.2 | Installed through its operator, configured for VXLAN |
 | ecr-credential-provider | v1.37.0 | Published for this Kubernetes generation and speaks the stable v1 credential-provider API |
 | `amazon.aws` collection | 10.3.2 | Version 11 needs ansible-core 2.17; Ubuntu 24.04 ships 2.16 |
 
-Every pin sits in `inventory/group_vars/all.yml`. A minor upgrade is allowed only after the GitOps
-phase pins a Rancher chart whose `kubeVersion` accepts the target Kubernetes release. Upgrade Rancher
-first, verify every Argo CD Application is `Synced` and `Healthy`, and only then change these pins.
+Every pin sits in `inventory/group_vars/all.yml`. Change the Kubernetes minor only after the Rancher
+compatibility gate in [design §4.2.1](../selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate) passes; otherwise keep `1.36.4`.
 
 ## 9. Outside the Ansible boundary
 
-- **`upgrade.yml`** — a later day-2 runbook performs a compatibility-gated, one-node-at-a-time
-  upgrade: drain, `kubeadm upgrade`, uncordon, wait for Ready, then verify GitOps health.
+- **`upgrade.yml`** — a later day-2 playbook: one node at a time, drain, `kubeadm upgrade`, uncordon,
+  wait for Ready and GitOps health.
 - **etcd backups** — a CronJob that snapshots to the `etcd-backups` bucket. It arrives with the Helm
   charts, because it runs inside the cluster.
 - **Kyverno and NetworkPolicies** — installed by Argo CD in the GitOps phase.
