@@ -55,7 +55,7 @@ docker compose up --build   # index-build runs once, then the app starts on http
 
 ## ☁️ Deploy to AWS
 
-Step-by-step Terraform instructions: [`docs/terraform-guide.md`](docs/terraform-guide.md).
+Step-by-step Terraform instructions: [`docs/terraform/guide.md`](docs/terraform/guide.md), with the architecture and file-by-file explanation in [`docs/terraform/README.md`](docs/terraform/README.md).
 
 **Prerequisites:** an AWS account with an admin identity, a browser, and git. Nothing else runs on your laptop. You also need a Hugging Face token with the *Inference Providers* permission, a Gemini API key, and a GitHub token that can push to this repo and open pull requests.
 

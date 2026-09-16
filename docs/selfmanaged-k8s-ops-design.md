@@ -110,7 +110,7 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   - `bootstrap/` (§4.0): state bucket and ops workstation. Applied from CloudShell only.
   - `shared/`: ECR, the index artifacts bucket, the cosign KMS key, Secrets Manager secrets, budgets. Kept, so a daily cluster teardown never loses the index, secret values, the signing key or images.
   - `cluster/`: everything below except those. Looks up shared resources with data sources by name; destroyed when idle.
-- A step-by-step build guide is in `docs/terraform-guide.md`.
+- Architecture and file-by-file notes are in `docs/terraform/README.md`; the step-by-step build guide is `docs/terraform/guide.md`.
 - **Network:** VPC with 3 public and 3 private subnets and 1 NAT gateway (cost choice, documented as a single point of failure).
 - **Compute:**
   - 3× `t3.large` Ubuntu 24.04 across 3 AZs, gp3 encrypted root volumes.

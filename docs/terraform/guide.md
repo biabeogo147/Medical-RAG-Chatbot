@@ -1,6 +1,6 @@
 # Terraform guide
 
-A step-by-step guide to build every AWS resource of this project with Terraform. Follow the steps in order: each one ends with a check, and the next step assumes it passed.
+A step-by-step guide to build every AWS resource of this project with Terraform. Each file is commented, so the code you copy explains itself; the architecture overview is in [`README.md`](README.md) next to this file. Follow the steps in order: each one ends with a check, and the next step assumes it passed.
 
 ## How this guide works
 
@@ -106,12 +106,18 @@ git commit -m "Ignore Terraform state and force LF for Terraform files"
 
 Create `infra/terraform/bootstrap/versions.tf`:
 ```hcl
+# Settings for Terraform itself. Only constants are allowed here: no variables.
 terraform {
+  # 1.10 is the first release with native S3 state locking (use_lockfile), which all three stacks use.
   required_version = ">= 1.10"
 
+  # Terraform core knows nothing about AWS. The provider plugin makes the API calls.
+  # `terraform init` downloads it and records the exact version in .terraform.lock.hcl.
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws" # short for registry.terraform.io/hashicorp/aws
+
+      # "Pessimistic" operator: accepts 6.64, 6.65, 6.99 ... but never 7.0, which may break things.
       version = "~> 6.64"
     }
   }
@@ -120,15 +126,18 @@ terraform {
 
 Create `infra/terraform/bootstrap/providers.tf`:
 ```hcl
+# Which region to call and which credentials to use. No key is configured: in CloudShell the provider
+# uses the console session, and on the ops workstation it uses the EC2 instance role.
 provider "aws" {
-  region = var.region
+  region = var.region # var.<name> reads a variable declared in variables.tf
 
+  # Tags added automatically to every resource created through this provider.
   default_tags {
     tags = {
-      project    = var.project
+      project    = var.project # the tag the AWS budget filters on, to separate this project's spend
       owner      = var.owner
-      stack      = "bootstrap"
-      managed-by = "terraform"
+      stack      = "bootstrap" # says in the console which stack created a resource
+      managed-by = "terraform" # a warning not to edit the resource by hand
     }
   }
 }
@@ -136,6 +145,14 @@ provider "aws" {
 
 Create `infra/terraform/bootstrap/variables.tf`:
 ```hcl
+# The inputs of this stack. Everything else refers to them as var.<name>, so no name, size or region
+# is hard-coded further down. Override one without editing the code:
+#   terraform apply -var workstation_instance_type=t3.large
+#   a terraform.tfvars file, or the environment variable TF_VAR_workstation_instance_type
+#
+# `description` shows up in `terraform plan`; `type` makes Terraform reject a wrong value early;
+# `default` makes the variable optional (a variable without one must be supplied).
+
 variable "region" {
   description = "AWS region for every resource in this project."
   type        = string
@@ -157,13 +174,13 @@ variable "owner" {
 variable "ops_vpc_cidr" {
   description = "CIDR of the small VPC that hosts the ops workstation."
   type        = string
-  default     = "10.20.0.0/24"
+  default     = "10.20.0.0/24" # must not overlap the cluster VPC (10.10.0.0/16)
 }
 
 variable "workstation_instance_type" {
   description = "EC2 instance type of the ops workstation."
   type        = string
-  default     = "t3.medium"
+  default     = "t3.medium" # enough for Terraform, Ansible and Docker builds
 }
 
 variable "workstation_volume_gb" {
@@ -175,20 +192,34 @@ variable "workstation_volume_gb" {
 
 Create `infra/terraform/bootstrap/state.tf`:
 ```hcl
+# The S3 bucket that stores the Terraform state of all three stacks.
+# State is the record of what Terraform created; losing it means losing control of the resources.
+
+# A `data` source reads from AWS instead of creating anything. This one answers "which account is this?".
 data "aws_caller_identity" "current" {}
 
+# Values computed once and reused. "${...}" inserts a value into a string.
 locals {
+  # S3 bucket names are unique across every AWS account in the world, hence the account ID suffix.
   state_bucket = "${var.project}-tfstate-${data.aws_caller_identity.current.account_id}"
 }
 
+# A `resource` is something Terraform creates and owns.
+# "aws_s3_bucket" is the type, "state" is the local name used in references (aws_s3_bucket.state.id).
 resource "aws_s3_bucket" "state" {
   bucket = local.state_bucket
 
   lifecycle {
+    # Terraform refuses to delete this bucket, even with `terraform destroy`.
     prevent_destroy = true
   }
 }
 
+# Each bucket feature is its own resource. Before AWS provider v4 they were blocks inside aws_s3_bucket.
+# `bucket = aws_s3_bucket.state.id` is a reference: it passes the name AND tells Terraform to create
+# the bucket first. References are how Terraform works out the order; you never write the order yourself.
+
+# Keeps the previous copy of every overwritten object, so a broken state file can be rolled back.
 resource "aws_s3_bucket_versioning" "state" {
   bucket = aws_s3_bucket.state.id
 
@@ -197,6 +228,7 @@ resource "aws_s3_bucket_versioning" "state" {
   }
 }
 
+# AES256 uses keys AWS manages, at no cost. aws:kms would add a charge per request, pointless for state.
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   bucket = aws_s3_bucket.state.id
 
@@ -207,6 +239,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   }
 }
 
+# Four switches that make it impossible to expose the bucket publicly, even by accident later.
 resource "aws_s3_bucket_public_access_block" "state" {
   bucket = aws_s3_bucket.state.id
 
@@ -216,19 +249,22 @@ resource "aws_s3_bucket_public_access_block" "state" {
   restrict_public_buckets = true
 }
 
+# Builds an IAM policy in HCL and renders it to JSON: easier to read and review than a JSON blob.
 data "aws_iam_policy_document" "state_tls_only" {
   statement {
-    sid     = "DenyInsecureTransport"
-    effect  = "Deny"
+    sid     = "DenyInsecureTransport" # a name for the statement, visible in the console
+    effect  = "Deny"                  # an explicit Deny always wins, whatever else allows the action
     actions = ["s3:*"]
 
     principals {
-      type        = "*"
+      type        = "*" # applies to everyone
       identifiers = ["*"]
     }
 
+    # Both ARNs are needed: the bucket itself (listing) and the objects inside it.
     resources = [aws_s3_bucket.state.arn, "${aws_s3_bucket.state.arn}/*"]
 
+    # The Deny applies only when the request did NOT use TLS, so HTTPS keeps working and plain HTTP fails.
     condition {
       test     = "Bool"
       variable = "aws:SecureTransport"
@@ -241,6 +277,8 @@ resource "aws_s3_bucket_policy" "state" {
   bucket = aws_s3_bucket.state.id
   policy = data.aws_iam_policy_document.state_tls_only.json
 
+  # No reference links these two, but AWS can reject a bucket policy while it decides whether the
+  # policy is "public", so the public access block must exist first.
   depends_on = [aws_s3_bucket_public_access_block.state]
 }
 
@@ -251,17 +289,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
     id     = "expire-old-state-versions"
     status = "Enabled"
 
-    filter {}
+    filter {} # empty filter = every object. Required: without it the rule is rejected
 
+    # Versioning protects you, but without this the bucket would grow forever.
     noncurrent_version_expiration {
       noncurrent_days = 90
     }
 
+    # Interrupted uploads are otherwise kept and billed invisibly.
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
     }
   }
 
+  # A rule about old versions only makes sense once versioning is enabled.
   depends_on = [aws_s3_bucket_versioning.state]
 }
 ```
@@ -297,26 +338,36 @@ The workstation variables (`ops_vpc_cidr`, `workstation_instance_type`, `worksta
 
 Create `infra/terraform/bootstrap/workstation.tf`:
 ```hcl
+# The ops workstation: an EC2 Ubuntu machine with every ops tool, reached only through SSM
+# Session Manager. All later Terraform, Ansible, kubectl and Docker commands run there, so nothing
+# has to be installed on the operator's laptop.
+
+# Canonical publishes the newest Ubuntu 24.04 image ID in this public SSM parameter, per region.
+# Reading it beats hard-coding an AMI ID, which is region-specific and goes stale.
 data "aws_ssm_parameter" "ubuntu_2404" {
   name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
-# A tiny network of its own: one public subnet, no NAT. It does not depend on the default VPC
-# (which may have been modified) and never overlaps the cluster VPC (10.10.0.0/16).
+# Lists the AZs of the region, so no AZ name is written in the code.
 data "aws_availability_zones" "available" {
   state = "available"
 }
 
+# --- A small network of its own -------------------------------------------------------------------
+# One public subnet, no NAT. It does not depend on the default VPC (which anyone in the account can
+# change) and never overlaps the cluster VPC (10.10.0.0/16).
+
 resource "aws_vpc" "ops" {
   cidr_block           = var.ops_vpc_cidr
   enable_dns_support   = true
-  enable_dns_hostnames = true
+  enable_dns_hostnames = true # needed to resolve AWS endpoints such as ssm.<region>.amazonaws.com
 
   tags = {
     Name = "${var.project}-ops"
   }
 }
 
+# The VPC's door to the internet. Attaching it is not enough: a route must point at it (below).
 resource "aws_internet_gateway" "ops" {
   vpc_id = aws_vpc.ops.id
 
@@ -326,9 +377,11 @@ resource "aws_internet_gateway" "ops" {
 }
 
 resource "aws_subnet" "ops_public" {
-  vpc_id            = aws_vpc.ops.id
+  vpc_id = aws_vpc.ops.id
+
+  # cidrsubnet(10.20.0.0/24, 4, 0) adds 4 bits and takes the first block: 10.20.0.0/28. Enough for one machine.
   cidr_block        = cidrsubnet(var.ops_vpc_cidr, 4, 0)
-  availability_zone = data.aws_availability_zones.available.names[0]
+  availability_zone = data.aws_availability_zones.available.names[0] # lists are indexed from 0
 
   tags = {
     Name = "${var.project}-ops-public"
@@ -338,6 +391,7 @@ resource "aws_subnet" "ops_public" {
 resource "aws_route_table" "ops_public" {
   vpc_id = aws_vpc.ops.id
 
+  # "Anything not local goes to the internet gateway." This is what makes the subnet public.
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.ops.id
@@ -348,11 +402,16 @@ resource "aws_route_table" "ops_public" {
   }
 }
 
+# Without this the subnet would use the VPC's default route table, which has no internet route.
 resource "aws_route_table_association" "ops_public" {
   subnet_id      = aws_subnet.ops_public.id
   route_table_id = aws_route_table.ops_public.id
 }
 
+# --- Identity --------------------------------------------------------------------------------------
+# A role needs both halves: a trust policy saying WHO may assume it, and permissions saying WHAT it may do.
+
+# The trust policy: only the EC2 service can assume this role.
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -369,9 +428,13 @@ resource "aws_iam_role" "workstation" {
   assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
 }
 
+# for_each creates one resource per item in the set, instead of repeating the block. each.value is the item.
 resource "aws_iam_role_policy_attachment" "workstation" {
   for_each = toset([
+    # Terraform creates many kinds of resources, so the workstation gets full rights. A lab trade-off:
+    # anyone allowed to start an SSM session on this machine gets admin rights.
     "arn:aws:iam::aws:policy/AdministratorAccess",
+    # Lets the SSM agent register the instance, which is what makes the browser shell work.
     "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
   ])
 
@@ -379,36 +442,54 @@ resource "aws_iam_role_policy_attachment" "workstation" {
   policy_arn = each.value
 }
 
+# EC2 cannot be given a role directly, only a profile that contains one.
 resource "aws_iam_instance_profile" "workstation" {
   name = "${var.project}-ops-workstation"
   role = aws_iam_role.workstation.name
 }
 
+# --- Firewall ---------------------------------------------------------------------------------------
+# A security group with no ingress rule blocks everything inbound. Nothing listens for you: the SSM
+# agent dials out to AWS, and the browser session travels back over that connection. No SSH, no key pair.
 resource "aws_security_group" "workstation" {
   name        = "${var.project}-ops-workstation"
   description = "Ops workstation: no inbound rules, reached only through SSM"
   vpc_id      = aws_vpc.ops.id
 }
 
+# Rules are separate resources, so each has its own ID and description and can change independently.
 resource "aws_vpc_security_group_egress_rule" "workstation_all" {
   security_group_id = aws_security_group.workstation.id
   description       = "Outbound to SSM, AWS APIs, GitHub and package mirrors"
-  ip_protocol       = "-1"
+  ip_protocol       = "-1" # every protocol
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+# --- The machine ------------------------------------------------------------------------------------
+
 resource "aws_instance" "workstation" {
-  ami                         = data.aws_ssm_parameter.ubuntu_2404.insecure_value
-  instance_type               = var.workstation_instance_type
-  subnet_id                   = aws_subnet.ops_public.id
-  vpc_security_group_ids      = [aws_security_group.workstation.id]
-  iam_instance_profile        = aws_iam_instance_profile.workstation.name
+  # `insecure_value` is the plain value of the SSM parameter. The normal `.value` is marked sensitive,
+  # which would hide the AMI ID in every plan; a public AMI ID is not a secret.
+  ami                    = data.aws_ssm_parameter.ubuntu_2404.insecure_value
+  instance_type          = var.workstation_instance_type
+  subnet_id              = aws_subnet.ops_public.id
+  vpc_security_group_ids = [aws_security_group.workstation.id]
+  iam_instance_profile   = aws_iam_instance_profile.workstation.name
+
+  # This subnet has no NAT gateway, so the machine needs its own public IP to reach the SSM endpoints.
+  # Nothing can connect in, because the security group has no inbound rule.
   associate_public_ip_address = true
-  user_data                   = file("${path.module}/workstation-init.sh")
+
+  # Passed to cloud-init and run once as root on first boot. path.module is this file's folder.
+  user_data = file("${path.module}/workstation-init.sh")
 
   metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
+    http_endpoint = "enabled"
+    # IMDSv2 only: reading instance credentials needs a token obtained with a PUT, which a simple
+    # "fetch this URL" bug in an application cannot do.
+    http_tokens = "required"
+    # The metadata answer may travel one hop, so the host can read it but a container on it cannot.
+    # The cluster nodes use 2, because pods there do need it.
     http_put_response_hop_limit = 1
   }
 
@@ -422,10 +503,14 @@ resource "aws_instance" "workstation" {
     Name = "${var.project}-ops-workstation"
   }
 
-  # The route to the internet gateway must exist before cloud-init starts downloading tools.
+  # Terraform sees no reference between the instance and the route, but cloud-init starts downloading
+  # immediately: without a route to the internet gateway the boot script fails.
   depends_on = [aws_route_table_association.ops_public]
 
   lifecycle {
+    # Both values change over time (Canonical publishes new images; you edit the script). Without this,
+    # a new AMI would replace the machine you are working on, and an edited script would stop and
+    # restart it. To apply a new script deliberately: terraform apply -replace=aws_instance.workstation
     ignore_changes = [ami, user_data]
   }
 }
@@ -436,9 +521,15 @@ Create `infra/terraform/bootstrap/workstation-init.sh`:
 #!/bin/bash
 # cloud-init user data for the ops workstation. Runs once, as root, on first boot.
 # Progress: /var/log/cloud-init-output.log. Finished when /var/log/workstation-ready exists.
+#
+#   -e  stop at the first failing command, instead of continuing on a broken machine
+#   -u  an undefined variable is an error, not an empty string
+#   -x  print each command, so the log shows exactly where it stopped
+#   -o pipefail  a failure anywhere in a pipeline fails the pipeline
 set -euxo pipefail
-export DEBIAN_FRONTEND=noninteractive
+export DEBIAN_FRONTEND=noninteractive # apt never stops to ask: nobody is here to answer
 
+# Pinned versions: rebuilding this machine installs exactly the same tools.
 TERRAFORM_VERSION=1.16.2
 KUBECTL_VERSION=v1.35.8
 HELM_VERSION=v4.3.0
@@ -447,20 +538,28 @@ YQ_VERSION=v4.53.6
 GH_VERSION=2.100.0
 
 # On first boot unattended-upgrades holds the apt/dpkg lock: wait for it, and retry the index update.
+# If all 20 attempts fail the loop still exits 0, so the install continues on a stale package index.
 APT="apt-get -o DPkg::Lock::Timeout=600"
 for i in $(seq 20); do $APT update && break; sleep 15; done
+# python3-boto3 is what Ansible's AWS modules and its SSM connection plugin need later.
 $APT install -y git make unzip jq curl ca-certificates bash-completion tmux \
   docker.io docker-buildx ansible python3-boto3 python3-botocore
+# Lets you run docker without sudo. It applies at the next login, hence `sudo su - ubuntu`.
 usermod -aG docker ubuntu
 
-# Default region for the AWS CLI and Terraform, read from instance metadata (IMDSv2).
+# Default region for the AWS CLI and Terraform, read from instance metadata.
+# 169.254.169.254 is reachable only from the instance itself. The PUT first, then the token header,
+# is IMDSv2, required by http_tokens = "required".
 IMDS_TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
 REGION=$(curl -fsS -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" http://169.254.169.254/latest/meta-data/placement/region)
+# Every login shell exports it, so no AWS command needs --region.
 echo "export AWS_REGION=${REGION} AWS_DEFAULT_REGION=${REGION}" > /etc/profile.d/aws-region.sh
 
-cd "$(mktemp -d)"
+cd "$(mktemp -d)" # work in a throwaway folder
 
-# Every download below is checked against the checksum file published with the release.
+# Each download below is checked against the checksum file published with the release:
+#   curl -f fail on HTTP errors, -s silent, -S still show real errors, -L follow redirects, -O keep the name
+#   grep ... | sha256sum -c -   picks this file's line out of the checksum list and verifies it
 
 # Terraform
 curl -fsSLO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
@@ -471,9 +570,9 @@ unzip -o "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" terraform -d /usr/loca
 # kubectl
 curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
 echo "$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256")  kubectl" | sha256sum -c -
-install -m 0755 kubectl /usr/local/bin/kubectl
+install -m 0755 kubectl /usr/local/bin/kubectl # copy and set the executable bit in one step
 
-# Helm
+# Helm: --strip-components=1 drops the leading folder of the archive
 curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
 curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
 sha256sum -c "helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
@@ -485,7 +584,7 @@ curl -fsSLO "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSI
 grep " cosign-linux-amd64$" cosign_checksums.txt | sha256sum -c -
 install -m 0755 cosign-linux-amd64 /usr/local/bin/cosign
 
-# yq
+# yq: its checksum file uses the BSD format, so sed rewrites the line into "<hash>  <file>"
 curl -fsSLO "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
 curl -fsSLO "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/checksums-bsd"
 grep "^SHA256 (yq_linux_amd64) " checksums-bsd | sed 's/^SHA256 (\(.*\)) = \(.*\)$/\2  \1/' | sha256sum -c -
@@ -496,50 +595,62 @@ curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH
 curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt"
 grep " gh_${GH_VERSION}_linux_amd64.deb$" "gh_${GH_VERSION}_checksums.txt" | sha256sum -c -
 
-# AWS CLI v2 and the Session Manager plugin (used by Ansible over SSM and the kubectl tunnel)
+# AWS CLI v2 and the Session Manager plugin, needed by Ansible over SSM and by the kubectl tunnel.
+# Both come from AWS's own vendor URLs, which publish no SHA256 checksum file (the AWS CLI has only a
+# detached GPG signature).
 curl -fsSL -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
 unzip -q awscliv2.zip
 ./aws/install --update
 curl -fsSLO https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
 
-# Install the .deb packages through apt, which waits for the dpkg lock (dpkg -i does not).
+# Installed through apt, not `dpkg -i`, because only apt waits for the dpkg lock. With set -e a locked
+# dpkg would abort the whole script.
 $APT install -y ./session-manager-plugin.deb "./gh_${GH_VERSION}_linux_amd64.deb"
 
-touch /var/log/workstation-ready
+touch /var/log/workstation-ready # the finish flag checked in step 5 of the guide
 ```
 
 Create `infra/terraform/bootstrap/install-terraform.sh`:
 ```bash
 #!/usr/bin/env bash
-# Installs Terraform into ~/bin. Used once in AWS CloudShell to apply the bootstrap stack.
+# Installs Terraform into ~/bin. Used once in AWS CloudShell, which has no Terraform, to create the
+# workstation that does. No -x here: you run this by hand, so keep the output quiet unless it fails.
 set -euo pipefail
 
-VERSION="${TERRAFORM_VERSION:-1.16.2}"
+VERSION="${TERRAFORM_VERSION:-1.16.2}" # use the environment variable if set, otherwise this default
+
+# Pick the right build, and refuse anything else instead of downloading a binary that cannot run.
 case "$(uname -m)" in
   x86_64) ARCH=amd64 ;;
   aarch64) ARCH=arm64 ;;
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-mkdir -p "$HOME/bin"
-cd "$(mktemp -d)"
+mkdir -p "$HOME/bin"  # the guide adds this folder to PATH
+cd "$(mktemp -d)"     # download into a throwaway folder: the CloudShell home holds only 1 GB
+
 curl -fsSLO "https://releases.hashicorp.com/terraform/${VERSION}/terraform_${VERSION}_linux_${ARCH}.zip"
 curl -fsSLO "https://releases.hashicorp.com/terraform/${VERSION}/terraform_${VERSION}_SHA256SUMS"
 grep " terraform_${VERSION}_linux_${ARCH}.zip$" "terraform_${VERSION}_SHA256SUMS" | sha256sum -c -
-unzip -o "terraform_${VERSION}_linux_${ARCH}.zip" terraform -d "$HOME/bin"
+unzip -o "terraform_${VERSION}_linux_${ARCH}.zip" terraform -d "$HOME/bin" # extract only the binary
 "$HOME/bin/terraform" version
 ```
 
 Create `infra/terraform/bootstrap/outputs.tf`:
 ```hcl
+# Printed after `apply`, and readable later with `terraform output -raw <name>`.
+# These three are what the rest of the project needs from this stack.
+
 output "region" {
   value = var.region
 }
 
+# The backend of the shared and cluster stacks: `make init` passes it with -backend-config.
 output "state_bucket" {
   value = aws_s3_bucket.state.bucket
 }
 
+# Used to find the machine in the console, and for `aws ssm start-session --target <id>`.
 output "workstation_instance_id" {
   value = aws_instance.workstation.id
 }
@@ -755,12 +866,18 @@ infra-destroy: init
 
 Create `infra/terraform/shared/versions.tf`:
 ```hcl
+# Settings for Terraform itself. Only constants are allowed here: no variables.
 terraform {
+  # 1.10 is the first release with native S3 state locking (use_lockfile), used by this stack's backend.
   required_version = ">= 1.10"
 
+  # Terraform core knows nothing about AWS. The provider plugin makes the API calls.
+  # `terraform init` downloads it and records the exact version in .terraform.lock.hcl.
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws" # short for registry.terraform.io/hashicorp/aws
+
+      # "Pessimistic" operator: accepts 6.64, 6.65, 6.99 ... but never 7.0, which may break things.
       version = "~> 6.64"
     }
   }
@@ -769,10 +886,14 @@ terraform {
 
 Create `infra/terraform/shared/backend.tf`:
 ```hcl
-# bucket and region are passed by `make shared-init` (-backend-config), so the account ID is not hard-coded.
+# Where this stack's state is stored. A backend block cannot use variables, so the bucket name (which
+# contains the account ID) is passed by `make shared-init` with -backend-config and stays out of Git.
 terraform {
   backend "s3" {
-    key          = "shared/terraform.tfstate"
+    key = "shared/terraform.tfstate" # each stack has its own key in the same bucket
+
+    # Terraform writes a .tflock object in S3 while it works, so two applies cannot run at once.
+    # This replaces the DynamoDB lock table that older setups needed.
     use_lockfile = true
     encrypt      = true
   }
@@ -781,16 +902,19 @@ terraform {
 
 Create `infra/terraform/shared/providers.tf`:
 ```hcl
+# Which region to call and which credentials to use. No key is configured: the provider
+# uses the EC2 instance role of the ops workstation.
 provider "aws" {
-  region = var.region
+  region = var.region # var.<name> reads a variable declared in variables.tf
 
+  # Tags added automatically to every resource created through this provider.
   default_tags {
     tags = {
-      project    = var.project
+      project    = var.project # the tag the AWS budget filters on, to separate this project's spend
       owner      = var.owner
       env        = "lab"
-      stack      = "shared"
-      managed-by = "terraform"
+      stack      = "shared"    # says in the console which stack created a resource
+      managed-by = "terraform" # a warning not to edit the resource by hand
     }
   }
 }
@@ -798,6 +922,8 @@ provider "aws" {
 
 Create `infra/terraform/shared/variables.tf`:
 ```hcl
+# The inputs of the shared stack. budget_email has no default, so terraform.tfvars must set it.
+
 variable "region" {
   description = "AWS region for every resource in this project."
   type        = string
@@ -839,11 +965,13 @@ budget_email = "you@example.com"
 
 Create `infra/terraform/shared/main.tf`:
 ```hcl
+# Lookups and computed values used by the other files of this stack.
+
 data "aws_caller_identity" "current" {}
 
 locals {
   name       = var.project
-  account_id = data.aws_caller_identity.current.account_id
+  account_id = data.aws_caller_identity.current.account_id # part of the globally unique bucket name
 }
 ```
 
@@ -896,12 +1024,16 @@ aws s3 ls "s3://medical-rag-tfstate-$(aws sts get-caller-identity --query Accoun
 
 Create `infra/terraform/shared/registry.tf`:
 ```hcl
+# The container registry for the app image. It lives in the shared stack because destroying the
+# cluster must not delete images or the signatures that were made for them.
 resource "aws_ecr_repository" "app" {
-  name                 = local.name
+  name = local.name
+
+  # A release tag (the git SHA) can never be overwritten, so what was scanned and signed is what runs.
   image_tag_mutability = "IMMUTABLE_WITH_EXCLUSION"
 
-  # Release tags (git SHA) can never be overwritten. Legacy cosign tags (sha256-*) and the
-  # BuildKit cache tag are rewritten on every build, so they are excluded.
+  # Two exceptions, because cosign and BuildKit must be able to overwrite these tags: legacy cosign
+  # signature tags (sha256-*) and the BuildKit cache tag.
   image_tag_mutability_exclusion_filter {
     filter      = "sha256-*"
     filter_type = "WILDCARD"
@@ -913,7 +1045,7 @@ resource "aws_ecr_repository" "app" {
   }
 
   image_scanning_configuration {
-    scan_on_push = true
+    scan_on_push = true # a free vulnerability scan of every pushed image
   }
 
   encryption_configuration {
@@ -924,8 +1056,9 @@ resource "aws_ecr_repository" "app" {
 resource "aws_ecr_lifecycle_policy" "app" {
   repository = aws_ecr_repository.app.name
 
-  # Counts tagged images only. Cosign v3 stores signatures and SBOM attestations as untagged
-  # OCI referrers; an "any" rule would count them and could delete the signature of a running image.
+  # Counts tagged images only. Cosign v3 stores signatures and SBOM attestations as untagged OCI
+  # referrers, so a rule with tagStatus "any" would count them and could delete the signature of an
+  # image that is still running.
   policy = jsonencode({
     rules = [{
       rulePriority = 1
@@ -944,9 +1077,11 @@ resource "aws_ecr_lifecycle_policy" "app" {
 
 Create `infra/terraform/shared/storage.tf`:
 ```hcl
-# FAISS index versions. Kept across cluster rebuilds: the index is embedded once and reused.
+# The bucket that holds the FAISS index versions. It is in the shared stack because embedding the
+# corpus costs Hugging Face API quota and time: the cluster is rebuilt daily, the index is not.
 resource "aws_s3_bucket" "artifacts" {
-  bucket = "${local.name}-artifacts-${local.account_id}"
+  bucket = "${local.name}-artifacts-${local.account_id}" # bucket names are globally unique
+  # No force_destroy: S3 rejects the delete while the bucket still holds objects, so destroy fails loudly.
 }
 
 resource "aws_s3_bucket_public_access_block" "artifacts" {
@@ -968,6 +1103,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
   }
 }
 
+# An index file overwritten by mistake can be recovered.
 resource "aws_s3_bucket_versioning" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
 
@@ -985,6 +1121,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
 
     filter {}
 
+    # Only replaced versions expire; the current index is kept forever.
     noncurrent_version_expiration {
       noncurrent_days = 30
     }
@@ -1024,13 +1161,18 @@ resource "aws_s3_bucket_policy" "artifacts" {
 
 Create `infra/terraform/shared/kms.tf`:
 ```hcl
+# The key cosign signs images with. Asymmetric and SIGN_VERIFY, so the private half never leaves KMS:
+# CI asks KMS to sign, and anyone can verify with the public half.
+# It is kept across cluster rebuilds, because a new key would invalidate every existing signature.
 resource "aws_kms_key" "cosign" {
   description              = "Cosign image signing key for ${var.project}"
   key_usage                = "SIGN_VERIFY"
   customer_master_key_spec = "ECC_NIST_P256"
-  deletion_window_in_days  = 7
+  deletion_window_in_days  = 7 # AWS enforces a waiting period before a key is really deleted
 }
 
+# A stable name for the key, so nothing has to reference the generated key ID:
+#   cosign sign --key awskms:///alias/medical-rag-cosign
 resource "aws_kms_alias" "cosign" {
   name          = "alias/${var.project}-cosign"
   target_key_id = aws_kms_key.cosign.key_id
@@ -1039,31 +1181,41 @@ resource "aws_kms_alias" "cosign" {
 
 Create `infra/terraform/shared/secrets.tf`:
 ```hcl
-# Terraform creates empty secrets only. Values are set with `aws secretsmanager put-secret-value`,
-# so they never appear in the Terraform state or in Git.
+# Terraform creates empty secrets only: the names and who may read them. Values are set once with
+#   aws secretsmanager put-secret-value --secret-id medical-rag/llm --secret-string '{...}'
+# so they never appear in the Terraform state file or in Git. External Secrets syncs them into
+# Kubernetes later.
 resource "aws_secretsmanager_secret" "app" {
-  for_each = toset(["llm", "github"])
+  for_each = toset(["llm", "github"]) # medical-rag/llm: Gemini + HF keys. medical-rag/github: bot token
 
-  name                    = "${var.project}/${each.key}"
+  name = "${var.project}/${each.key}"
+
+  # A deleted secret can still be restored for 7 days. That is also why the name cannot be reused
+  # immediately after a destroy.
   recovery_window_in_days = 7
 }
 ```
 
 Create `infra/terraform/shared/budgets.tf`:
 ```hcl
+# An email when this project's spend crosses half and then all of the monthly budget.
 resource "aws_budgets_budget" "monthly" {
   name         = "${local.name}-monthly"
   budget_type  = "COST"
-  limit_amount = tostring(var.monthly_budget_usd)
+  limit_amount = tostring(var.monthly_budget_usd) # the AWS API expects a string here
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
-  # Counts only resources tagged project=<project>. Requires the "project" cost allocation tag to be active.
+  # The account also hosts other projects, so only resources tagged project=medical-rag count.
+  # In HCL "$${" is an escape sequence, so format() is the simplest way to write a literal "$".
+  # This needs the "project" cost allocation tag to be activated in the billing console.
   cost_filter {
     name   = "TagKeyValue"
     values = [format("user:project$%s", var.project)]
   }
 
+  # dynamic generates one notification block per item, here 50% and 100% of the limit.
+  # ACTUAL alerts on real spend; FORECASTED would also fire on predictions and cause false alarms.
   dynamic "notification" {
     for_each = [50, 100]
 
@@ -1080,6 +1232,8 @@ resource "aws_budgets_budget" "monthly" {
 
 Create `infra/terraform/shared/outputs.tf`:
 ```hcl
+# What the cluster stack, CI and the Helm charts need from here.
+
 output "ecr_repository_url" {
   value = aws_ecr_repository.app.repository_url
 }
@@ -1088,6 +1242,7 @@ output "artifacts_bucket" {
   value = aws_s3_bucket.artifacts.bucket
 }
 
+# What CI signs with: cosign sign --key awskms:///alias/medical-rag-cosign
 output "cosign_kms_key_alias" {
   value = aws_kms_alias.cosign.name
 }
@@ -1135,12 +1290,18 @@ aws budgets describe-budgets --account-id "$(aws sts get-caller-identity --query
 
 Create `infra/terraform/cluster/versions.tf`:
 ```hcl
+# Settings for Terraform itself. Only constants are allowed here: no variables.
 terraform {
+  # 1.10 is the first release with native S3 state locking (use_lockfile), used by this stack's backend.
   required_version = ">= 1.10"
 
+  # Terraform core knows nothing about AWS. The provider plugin makes the API calls.
+  # `terraform init` downloads it and records the exact version in .terraform.lock.hcl.
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws" # short for registry.terraform.io/hashicorp/aws
+
+      # "Pessimistic" operator: accepts 6.64, 6.65, 6.99 ... but never 7.0, which may break things.
       version = "~> 6.64"
     }
   }
@@ -1149,11 +1310,12 @@ terraform {
 
 Create `infra/terraform/cluster/backend.tf`:
 ```hcl
-# bucket and region are passed by `make init` (-backend-config), so the account ID is not hard-coded.
+# Where this stack's state is stored. The bucket name is passed by `make init` with -backend-config,
+# because a backend block cannot use variables.
 terraform {
   backend "s3" {
     key          = "cluster/terraform.tfstate"
-    use_lockfile = true
+    use_lockfile = true # a .tflock object in S3 stops two applies from running at the same time
     encrypt      = true
   }
 }
@@ -1161,16 +1323,19 @@ terraform {
 
 Create `infra/terraform/cluster/providers.tf`:
 ```hcl
+# Which region to call and which credentials to use. No key is configured: the provider
+# uses the EC2 instance role of the ops workstation.
 provider "aws" {
-  region = var.region
+  region = var.region # var.<name> reads a variable declared in variables.tf
 
+  # Tags added automatically to every resource created through this provider.
   default_tags {
     tags = {
-      project    = var.project
+      project    = var.project # the tag the AWS budget filters on, to separate this project's spend
       owner      = var.owner
       env        = "lab"
-      stack      = "cluster"
-      managed-by = "terraform"
+      stack      = "cluster"   # says in the console which stack created a resource
+      managed-by = "terraform" # a warning not to edit the resource by hand
     }
   }
 }
@@ -1178,6 +1343,9 @@ provider "aws" {
 
 Create `infra/terraform/cluster/variables.tf`:
 ```hcl
+# The inputs of the cluster stack. All have defaults, so no terraform.tfvars file is needed here.
+# Override one for a single run with: terraform apply -var node_instance_type=t3a.large
+
 variable "region" {
   description = "AWS region for every resource in this project."
   type        = string
@@ -1199,7 +1367,7 @@ variable "owner" {
 variable "vpc_cidr" {
   description = "CIDR of the cluster VPC. Must not overlap the Calico pod CIDR."
   type        = string
-  default     = "10.10.0.0/16"
+  default     = "10.10.0.0/16" # must not overlap the ops VPC (10.20.0.0/24) or the Calico pod CIDR
 }
 
 variable "node_count" {
@@ -1211,7 +1379,7 @@ variable "node_count" {
 variable "node_instance_type" {
   description = "EC2 instance type of the Kubernetes nodes."
   type        = string
-  default     = "t3.large"
+  default     = "t3.large" # kubeadm needs at least 2 vCPU and 2 GB
 }
 
 variable "node_volume_gb" {
@@ -1229,14 +1397,17 @@ variable "api_port" {
 variable "ingress_http_nodeport" {
   description = "NodePort of ingress-nginx for HTTP, targeted by the public NLB."
   type        = number
-  default     = 30080
+  default     = 30080 # ingress-nginx will listen here on every node
 }
 ```
 
 Create `infra/terraform/cluster/main.tf`:
 ```hcl
+# Lookups and computed values shared by every file of this stack.
+
 data "aws_caller_identity" "current" {}
 
+# opt-in-not-required filters out Local Zones and AZs that must be enabled by hand.
 data "aws_availability_zones" "available" {
   state = "available"
 
@@ -1249,15 +1420,19 @@ data "aws_availability_zones" "available" {
 locals {
   name       = var.project
   account_id = data.aws_caller_identity.current.account_id
-  azs        = slice(data.aws_availability_zones.available.names, 0, 3)
+  azs        = slice(data.aws_availability_zones.available.names, 0, 3) # the first three AZs, whatever node_count is
 
-  # 10.10.1.0/24, 10.10.2.0/24, 10.10.3.0/24 for nodes; 10.10.101.0/24 ... for load balancers and the NAT gateway.
+  # cidrsubnet(10.10.0.0/16, 8, n) gives /24 blocks:
+  # 10.10.1.0/24, 10.10.2.0/24, 10.10.3.0/24 for the nodes,
+  # 10.10.101.0/24 ... for the load balancers and the NAT gateway.
   private_subnets = [for i in range(3) : cidrsubnet(var.vpc_cidr, 8, i + 1)]
   public_subnets  = [for i in range(3) : cidrsubnet(var.vpc_cidr, 8, i + 101)]
 }
 
-# Resources of the shared stack, looked up by name. The cluster can be destroyed and rebuilt
-# while the registry, index artifacts, signing key and secrets stay.
+# --- Resources of the shared stack, looked up by name ------------------------------------------------
+# The two stacks share no state file. If the shared stack is missing, `terraform plan` fails here
+# instead of building half a cluster.
+
 data "aws_ecr_repository" "app" {
   name = var.project
 }
@@ -1266,6 +1441,7 @@ data "aws_s3_bucket" "artifacts" {
   bucket = "${var.project}-artifacts-${local.account_id}"
 }
 
+# Reading the alias, not the key, means the key can be rotated without touching this code.
 data "aws_kms_alias" "cosign" {
   name = "alias/${var.project}-cosign"
 }
@@ -1310,24 +1486,30 @@ aws s3 ls "s3://medical-rag-tfstate-$(aws sts get-caller-identity --query Accoun
 
 Create `infra/terraform/cluster/network.tf`:
 ```hcl
+# The cluster network. A module is a folder of Terraform code published for reuse; this one is the
+# community standard and creates the subnets, route tables, internet gateway, NAT gateway and its
+# Elastic IP. It also adopts the VPC's default security group and route table (leaving both empty) and
+# its default NACL (reset to allow-all).
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 6.7"
+  version = "~> 6.7" # modules are pinned like providers
 
   name = local.name
   cidr = var.vpc_cidr
   azs  = local.azs
 
-  private_subnets = local.private_subnets
-  public_subnets  = local.public_subnets
+  private_subnets = local.private_subnets # the nodes: no route from the internet
+  public_subnets  = local.public_subnets  # the public NLB and the NAT gateway
 
-  # One NAT gateway for all AZs: cheaper, but a single point of failure for outbound traffic.
+  # One NAT gateway for all three AZs instead of one per AZ: about 0.12 USD/hour cheaper. If its AZ
+  # fails, nodes lose outbound internet, but the cluster keeps serving traffic.
   enable_nat_gateway      = true
   single_nat_gateway      = true
-  map_public_ip_on_launch = false
+  map_public_ip_on_launch = false # nothing gets a public IP just by sitting in a public subnet
 }
 
-# Free gateway endpoint: S3 traffic (index artifacts, etcd backups, Ansible transfers) skips the NAT gateway.
+# A free gateway endpoint: S3 traffic (index artifacts, etcd backups, Ansible transfers) stays on the
+# AWS network instead of going through the NAT gateway, which is billed per GB.
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = module.vpc.vpc_id
   service_name      = "com.amazonaws.${var.region}.s3"
@@ -1375,6 +1557,11 @@ aws ec2 describe-nat-gateways --filter Name=vpc-id,Values=$VPC --query 'NatGatew
 
 Create `infra/terraform/cluster/security.tf`:
 ```hcl
+# The firewalls. Three groups, and eight rules between them. Rules are separate resources, so each
+# has its own ID and description and can be changed without touching the others.
+# Wherever possible a rule names another security group instead of an IP range: nodes can then be
+# replaced and get new addresses without any rule needing an edit.
+
 resource "aws_security_group" "nodes" {
   name        = "${local.name}-nodes"
   description = "Kubernetes nodes"
@@ -1407,6 +1594,8 @@ resource "aws_security_group" "ingress_nlb" {
 
 # --- nodes ---
 
+# The group refers to itself, so the rule means "from the other nodes and nothing else". All protocols,
+# because the cluster needs etcd (2379-2380), kubelet (10250), the API (6443) and Calico VXLAN (UDP 4789).
 resource "aws_vpc_security_group_ingress_rule" "nodes_from_nodes" {
   security_group_id            = aws_security_group.nodes.id
   referenced_security_group_id = aws_security_group.nodes.id
@@ -1441,6 +1630,7 @@ resource "aws_vpc_security_group_egress_rule" "nodes_all" {
 
 # --- internal API NLB ---
 
+# Callers inside the VPC only: the nodes themselves, and later the SSM tunnel used by kubectl.
 resource "aws_vpc_security_group_ingress_rule" "api_nlb_from_vpc" {
   security_group_id = aws_security_group.api_nlb.id
   cidr_ipv4         = var.vpc_cidr
@@ -1450,6 +1640,7 @@ resource "aws_vpc_security_group_ingress_rule" "api_nlb_from_vpc" {
   description       = "Kubernetes API from inside the VPC (nodes, SSM tunnel)"
 }
 
+# A load balancer's own group also needs an egress rule, for forwarded traffic and health checks.
 resource "aws_vpc_security_group_egress_rule" "api_nlb_to_nodes" {
   security_group_id            = aws_security_group.api_nlb.id
   referenced_security_group_id = aws_security_group.nodes.id
@@ -1461,6 +1652,7 @@ resource "aws_vpc_security_group_egress_rule" "api_nlb_to_nodes" {
 
 # --- public ingress NLB ---
 
+# The only inbound rule in the whole stack open to the internet.
 resource "aws_vpc_security_group_ingress_rule" "ingress_nlb_http" {
   security_group_id = aws_security_group.ingress_nlb.id
   cidr_ipv4         = "0.0.0.0/0"
@@ -1488,7 +1680,7 @@ resource "aws_vpc_security_group_egress_rule" "ingress_nlb_to_nodes" {
 | Nodes ← API NLB, 6443 | The internal load balancer forwards API calls and runs health checks |
 | Nodes ← public NLB, 30080 | The public load balancer reaches ingress-nginx |
 | API NLB ← VPC, 6443 | Only callers inside the VPC reach the API: the nodes and, later, the SSM tunnel |
-| Public NLB ← internet, 80 | The only rule open to `0.0.0.0/0` |
+| Public NLB ← internet, 80 | The only inbound rule open to `0.0.0.0/0` |
 
 - **Groups referenced instead of IP addresses:** rules keep working when nodes are replaced and get new IPs.
 - **One resource per rule (`aws_vpc_security_group_*_rule`):** the current provider recommendation; each rule has its own ID and description.
@@ -1513,23 +1705,26 @@ aws ec2 describe-security-group-rules --filters Name=group-id,Values=$SGS \
 
 Create `infra/terraform/cluster/storage.tf`:
 ```hcl
-# Cluster-scoped buckets: their content is only useful while this cluster exists.
+# Buckets whose content is only useful while this cluster exists. The FAISS index lives in the shared
+# stack instead, so a teardown never throws it away.
 locals {
   buckets = {
     etcd-backups = 14 # days to keep etcd snapshots
-    ssm-transfer = 1  # days to keep temporary files of Ansible over SSM
+    ssm-transfer = 1  # days to keep the temporary files Ansible copies through SSM
   }
 }
 
+# for_each over the map creates one bucket per key, and the same protections are written once instead
+# of twice. Each instance is addressed as aws_s3_bucket.this["etcd-backups"].
 resource "aws_s3_bucket" "this" {
   for_each = local.buckets
 
   bucket        = "${local.name}-${each.key}-${local.account_id}"
-  force_destroy = true
+  force_destroy = true # lets `make infra-destroy` delete the bucket even with objects in it
 }
 
 resource "aws_s3_bucket_public_access_block" "this" {
-  for_each = aws_s3_bucket.this
+  for_each = aws_s3_bucket.this # iterating over the resource keeps the same keys
 
   bucket                  = each.value.id
   block_public_acls       = true
@@ -1559,14 +1754,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
     id     = "expire-objects"
     status = "Enabled"
 
-    filter {}
+    filter {} # every object
 
     expiration {
-      days = each.value
+      days = each.value # the number from the map above
     }
   }
 }
 
+# Same TLS-only rule as the state bucket: requests over plain HTTP are denied.
 data "aws_iam_policy_document" "tls_only" {
   for_each = aws_s3_bucket.this
 
@@ -1602,6 +1798,10 @@ resource "aws_s3_bucket_policy" "this" {
 
 Create `infra/terraform/cluster/iam.tf`:
 ```hcl
+# What the nodes are allowed to do in AWS. They authenticate with this role, so no access key exists
+# on any machine. Known limitation of a self-managed cluster: every pod on a node can reach the node's
+# role, which is why each statement names its exact resources.
+
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -1620,21 +1820,24 @@ resource "aws_iam_role" "nodes" {
 
 resource "aws_iam_role_policy_attachment" "nodes" {
   for_each = toset([
-    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-    "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",          # Session Manager and Ansible over SSM
+    "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy", # volumes for Jenkins and Prometheus
   ])
 
   role       = aws_iam_role.nodes.name
   policy_arn = each.value
 }
 
+# The project-specific permissions, written as one inline policy.
 data "aws_iam_policy_document" "nodes" {
+  # The only action in this policy AWS cannot scope to a repository: it is registry-wide.
   statement {
     sid       = "EcrLogin"
     actions   = ["ecr:GetAuthorizationToken"]
     resources = ["*"]
   }
 
+  # Pull for the nodes, push for the Jenkins build pods. This repository only.
   statement {
     sid = "EcrPullPush"
     actions = [
@@ -1651,6 +1854,8 @@ data "aws_iam_policy_document" "nodes" {
     resources = [data.aws_ecr_repository.app.arn]
   }
 
+  # Listing a bucket and reading its objects are different permissions on different ARNs, so both
+  # statements are needed: the shared artifacts bucket plus the two cluster buckets.
   statement {
     sid       = "S3ListBuckets"
     actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
@@ -1663,12 +1868,14 @@ data "aws_iam_policy_document" "nodes" {
     resources = concat(["${data.aws_s3_bucket.artifacts.arn}/*"], [for b in aws_s3_bucket.this : "${b.arn}/*"])
   }
 
+  # Read by External Secrets, which turns them into Kubernetes Secrets.
   statement {
     sid       = "ReadAppSecrets"
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = [for s in data.aws_secretsmanager_secret.app : s.arn]
   }
 
+  # Sign, not decrypt: the CI pipeline asks KMS to sign image digests with the cosign key.
   statement {
     sid       = "CosignSign"
     actions   = ["kms:Sign", "kms:GetPublicKey", "kms:DescribeKey"]
@@ -1709,7 +1916,7 @@ output "buckets" {
 | KMS `Sign` / `GetPublicKey`, **the cosign key only** | Jenkins signs images |
 
 - **Least privilege:** every statement names its exact resources, except `ecr:GetAuthorizationToken`, which AWS only supports on `*`.
-- **Known limitation:** on a self-managed cluster every pod on a node can use the node's role. The design doc lists the mitigations (IMDS hop limit, NetworkPolicy).
+- **Known limitation:** on a self-managed cluster every pod on a node can use the node's role, and the IMDS hop limit is 2 precisely so pods can reach it. The mitigations are this tightly scoped policy and, later, a NetworkPolicy that blocks pod access to the metadata address.
 
 **Run:** `make plan` (expect 15 to add), then `make infra`.
 
@@ -1733,23 +1940,33 @@ aws iam simulate-principal-policy --policy-source-arn "$ROLE_ARN" \
 
 Create `infra/terraform/cluster/compute.tf`:
 ```hcl
+# The three Kubernetes machines. Terraform only creates them; Ansible turns them into a cluster.
+
 data "aws_ssm_parameter" "ubuntu_2404" {
   name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
 resource "aws_instance" "nodes" {
-  count = var.node_count
+  count = var.node_count # creates nodes[0], nodes[1], nodes[2]
 
-  ami                    = data.aws_ssm_parameter.ubuntu_2404.insecure_value
-  instance_type          = var.node_instance_type
-  subnet_id              = module.vpc.private_subnets[count.index % length(module.vpc.private_subnets)]
+  ami           = data.aws_ssm_parameter.ubuntu_2404.insecure_value
+  instance_type = var.node_instance_type # t3.large: kubeadm needs 2 vCPU, the rest runs the workloads
+
+  # node 1 to AZ a, node 2 to AZ b, node 3 to AZ c. Losing one AZ leaves 2 of 3 etcd members, which
+  # keeps quorum, so the cluster survives. There are always 3 subnets, so a 4th node would wrap onto
+  # the first one again.
+  subnet_id = module.vpc.private_subnets[count.index % length(module.vpc.private_subnets)]
+
   vpc_security_group_ids = [aws_security_group.nodes.id]
   iam_instance_profile   = aws_iam_instance_profile.nodes.name
+  # No public IP and no key pair: the only way in is Session Manager.
 
   metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 2 # pods need one extra hop to reach IMDS (External Secrets, EBS CSI)
+    http_endpoint = "enabled"
+    http_tokens   = "required" # IMDSv2 only
+    # 2 hops, unlike the workstation's 1: pods run in their own network namespace, so External Secrets
+    # and the EBS CSI driver need one extra hop to reach the metadata service.
+    http_put_response_hop_limit = 2
   }
 
   root_block_device {
@@ -1759,11 +1976,13 @@ resource "aws_instance" "nodes" {
   }
 
   tags = {
-    Name        = "${local.name}-node-${count.index + 1}"
-    k8s-cluster = local.name # Ansible's aws_ec2 inventory selects nodes by this tag
+    Name = "${local.name}-node-${count.index + 1}"
+    # Ansible's aws_ec2 inventory selects the nodes by this tag, so no IP address is ever written down.
+    k8s-cluster = local.name
   }
 
   lifecycle {
+    # Canonical publishes new images constantly; without this every apply would replace the nodes.
     ignore_changes = [ami]
   }
 }
@@ -1806,14 +2025,21 @@ aws ec2 describe-instances --filters Name=tag:k8s-cluster,Values=medical-rag Nam
 
 Create `infra/terraform/cluster/loadbalancers.tf`:
 ```hcl
-# --- internal NLB: one stable address for the 3 Kubernetes API servers (kubeadm controlPlaneEndpoint) ---
+# Two Network Load Balancers: one inside the VPC for the Kubernetes API, one facing the internet for
+# the app. A target group is the list of machines behind a load balancer; a listener is the port it
+# accepts traffic on.
+
+# --- internal NLB: one stable address for the 3 API servers (kubeadm controlPlaneEndpoint) ---
 
 resource "aws_lb" "api" {
-  name                             = "${local.name}-api"
-  internal                         = true
-  load_balancer_type               = "network"
-  subnets                          = module.vpc.private_subnets
-  security_groups                  = [aws_security_group.api_nlb.id]
+  name               = "${local.name}-api"
+  internal           = true # no public address
+  load_balancer_type = "network"
+  subnets            = module.vpc.private_subnets
+  security_groups    = [aws_security_group.api_nlb.id]
+
+  # Each AZ's load balancer node may send traffic to targets in the other AZs, so an API server stays
+  # reachable even if two of the three AZs have none running.
   enable_cross_zone_load_balancing = true
 }
 
@@ -1824,10 +2050,13 @@ resource "aws_lb_target_group" "api" {
   vpc_id      = module.vpc.vpc_id
   target_type = "instance"
 
-  # A node calling the API through the NLB may be routed back to itself. With client IP
-  # preservation on, that hairpin connection is dropped, so kubeadm join and kubelet time out.
+  # A node calling the API through the NLB can be routed back to itself. With client IP preservation
+  # on, AWS drops that "hairpin" connection and kubeadm join and kubelet time out. Turning it off makes
+  # the NLB the source address, which works. The API server does not need to see the real client IP.
   preserve_client_ip = false
 
+  # /readyz answers 200 only when the API server is really ready, which is stricter than "port 6443 is
+  # open". kubeadm allows anonymous access to it, and the NLB does not validate the certificate.
   health_check {
     protocol            = "HTTPS"
     path                = "/readyz"
@@ -1850,6 +2079,7 @@ resource "aws_lb_listener" "api" {
   }
 }
 
+# Registers each node in the target group: one attachment per node.
 resource "aws_lb_target_group_attachment" "api" {
   count = var.node_count
 
@@ -1858,7 +2088,7 @@ resource "aws_lb_target_group_attachment" "api" {
   port             = var.api_port
 }
 
-# --- public NLB: internet → ingress-nginx NodePort ---
+# --- public NLB: internet -> ingress-nginx NodePort ---
 
 resource "aws_lb" "ingress" {
   name                             = "${local.name}-ingress"
@@ -1871,11 +2101,12 @@ resource "aws_lb" "ingress" {
 
 resource "aws_lb_target_group" "ingress_http" {
   name        = "${local.name}-ingress-http"
-  port        = var.ingress_http_nodeport
+  port        = var.ingress_http_nodeport # 30080, where ingress-nginx will listen on every node
   protocol    = "TCP"
   vpc_id      = module.vpc.vpc_id
   target_type = "instance"
 
+  # A plain TCP check: ingress-nginx is not installed yet, so targets stay unhealthy until it is.
   health_check {
     protocol            = "TCP"
     port                = "traffic-port"
@@ -1920,6 +2151,8 @@ output "public_nlb_dns" {
 
 Your `infra/terraform/cluster/outputs.tf` should now match:
 ```hcl
+# What the next phases read from this stack, with `terraform output -raw <name>`.
+
 output "region" {
   value = var.region
 }
@@ -1928,8 +2161,9 @@ output "vpc_id" {
   value = module.vpc.vpc_id
 }
 
+# Ansible finds the nodes by tag, so these are for your own checks.
 output "node_instance_ids" {
-  value = aws_instance.nodes[*].id
+  value = aws_instance.nodes[*].id # [*] collects the attribute from every instance of the resource
 }
 
 output "node_private_ips" {
@@ -1946,6 +2180,7 @@ output "public_nlb_dns" {
   value       = aws_lb.ingress.dns_name
 }
 
+# Used in the Helm values of the etcd backup CronJob and in the Ansible SSM connection settings.
 output "buckets" {
   value = { for k, b in aws_s3_bucket.this : k => b.bucket }
 }
