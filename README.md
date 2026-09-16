@@ -177,4 +177,5 @@ needs nothing else on the laptop.
 - Design: [`docs/selfmanaged-k8s-ops-design.md`](docs/selfmanaged-k8s-ops-design.md)
 - Infrastructure: [`docs/terraform/`](docs/terraform/) — architecture and a step-by-step build guide
 - Cluster: [`docs/ansible/`](docs/ansible/) — the same pair for the kubeadm cluster
+- Ops workstation: [`docs/ops-workstation-files.md`](docs/ops-workstation-files.md) — the keys, configs and caches that live on it, and how to audit them
 - Measured results: [`docs/evidence/`](docs/evidence/)
