@@ -42,12 +42,6 @@ data "aws_kms_alias" "cosign" {
 }
 
 data "aws_secretsmanager_secret" "app" {
-  for_each = toset(["llm", "github"])
-
-  name = "${var.project}/${each.key}"
-}
-
-data "aws_secretsmanager_secret" "app" {
-  for_each = toset(["llm", "github", "rancher", "rancher-tls"])
+ for_each = toset(["llm", "github", "rancher", "rancher-tls"])
   name     = "${var.project}/${each.key}"
 }

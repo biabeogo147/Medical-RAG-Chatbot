@@ -96,6 +96,147 @@ flowchart LR
     SH -->|"looked up by name:<br/>ECR, bucket, KMS alias, secrets"| C
 ```
 
+### Inside each stack
+
+Each diagram groups a stack's resources by what they are for, with the number of resources in each
+group. Dotted arrows mean "is used by"; solid arrows are traffic or placement.
+
+#### `bootstrap/` — the foundation (18 resources)
+
+| Applied from | Command | State | Lifetime | Cost |
+|---|---|---|---|---|
+| AWS CloudShell, once per account | `terraform -chdir=infra/terraform/bootstrap apply` | `bootstrap/terraform.tfstate` | Kept | < 0.50 USD/month for the bucket; workstation 0.03 USD/hour while running, 2.90 USD/month for its disk |
+
+It creates the two things everything else stands on: the bucket that stores every stack's state, and
+the machine that runs every later command. Losing the bucket means losing track of what exists in
+AWS, so it has `prevent_destroy`.
+
+```mermaid
+flowchart LR
+    subgraph STATE["State storage · 6"]
+        SB[("S3 bucket medical-rag-tfstate-‹account›<br/>versioned · encrypted · private · TLS-only<br/>old versions expire after 90 days")]
+    end
+
+    subgraph NET["Ops network · 5"]
+        VPC["VPC 10.20.0.0/24"] --> SUB["1 public subnet"]
+        IGW["internet gateway"] --> RT["route table<br/>0.0.0.0/0 to the gateway"] --> SUB
+    end
+
+    subgraph IAM["Identity · 4"]
+        ROLE["IAM role<br/>AdministratorAccess + SSM"] --> PROF["instance profile"]
+    end
+
+    subgraph MACHINE["Workstation · 3"]
+        SG["security group<br/>no inbound rule"] --> WS["EC2 t3.small · Ubuntu 24.04<br/>30 GB · IMDSv2 · no key pair"]
+    end
+
+    SUB --> WS
+    PROF -.-> WS
+    WS -->|"runs make shared and make infra"| NEXT["shared and cluster stacks"]
+    SB -.->|"stores the state of all three stacks"| NEXT
+```
+
+#### `shared/` — what must survive a teardown (17 resources)
+
+| Applied from | Command | State | Lifetime | Cost |
+|---|---|---|---|---|
+| Ops workstation | `make shared` | `shared/terraform.tfstate` | Kept | ≈ 4 USD/month |
+
+Everything here is slow, costly or impossible to recreate: the index costs Hugging Face quota to
+build, secret values are typed in by hand, a new KMS key would invalidate every image signature, and a
+new DNS zone would get new name servers that must be entered at the registrar again. Terraform creates
+the secrets **empty**; their values are added with the AWS CLI, so they never reach the state file.
+
+```mermaid
+flowchart LR
+    subgraph IMAGES["Images · 2"]
+        ECR["ECR repository medical-rag<br/>scan on push · immutable tags<br/>keeps the last 20 tagged images"]
+    end
+
+    subgraph INDEX["Index artifacts · 6"]
+        ART[("S3 bucket medical-rag-artifacts-‹account›<br/>versioned · encrypted · private · TLS-only")]
+    end
+
+    subgraph SIGN["Image signing · 2"]
+        KMS["KMS key ECC_NIST_P256 · SIGN_VERIFY<br/>alias/medical-rag-cosign"]
+    end
+
+    subgraph SECRETS["Secrets Manager · 5 empty secrets"]
+        APPS["llm · github"]
+        RAN["rancher · rancher-tls"]
+        WGS["wireguard"]
+    end
+
+    subgraph DNS["DNS · 1"]
+        ZONE["Route 53 zone recruitai.io.vn<br/>prevent_destroy"]
+    end
+
+    subgraph BUDGET["Budget · 1"]
+        BUD["monthly budget<br/>email at 50 % and 100 %"]
+    end
+
+    ECR -.->|"Jenkins pushes, nodes pull"| USE["later phases"]
+    ART -.->|"index Job writes, pods read"| USE
+    KMS -.->|"Jenkins signs images"| USE
+    APPS -.->|"External Secrets"| USE
+    RAN -.->|"External Secrets, for Rancher"| USE
+    WGS -.->|"read by the WireGuard gateway at boot"| CL["cluster stack"]
+    ZONE -.->|"cluster adds the rancher and vpn records"| CL
+```
+
+#### `cluster/` — rebuilt every session (84 resources)
+
+| Applied from | Command | State | Lifetime | Cost |
+|---|---|---|---|---|
+| Ops workstation | `make infra`, and `make infra-destroy` when idle | `cluster/terraform.tfstate` | **Destroyed when idle** | ≈ 0.53 USD/hour while it exists |
+
+Nothing here holds data worth keeping, so it is destroyed at the end of every session and rebuilt from
+code. It finds the shared resources by name with `data` lookups; if the shared stack is missing, the
+plan fails at once.
+
+```mermaid
+flowchart TB
+    APPUSER(["App users"])
+    OPERATOR(["Operator laptop<br/>WireGuard client"])
+
+    subgraph ENTRY["Entry points · 19"]
+        PUB["Public NLB, TCP 80<br/>the app"]
+        INT["Internal NLB<br/>TCP 6443 Kubernetes API · TCP 443 Rancher"]
+        REC["Route 53 records<br/>rancher. to the internal NLB · vpn. to the gateway"]
+    end
+
+    subgraph MACHINES["Machines · 5"]
+        WG["WireGuard gateway<br/>t3.small + Elastic IP · public subnet<br/>forwards only DNS and TCP 443"]
+        NODES["3 Kubernetes nodes<br/>m7i-flex.large · one per AZ<br/>private subnets · no public IP"]
+    end
+
+    subgraph NET["Network · 24"]
+        VPC["VPC 10.10.0.0/16<br/>3 public + 3 private subnets<br/>internet gateway · route tables"]
+        NAT["NAT gateway + Elastic IP<br/>the nodes' only way out"]
+        S3E["S3 gateway endpoint<br/>S3 traffic skips the NAT"]
+    end
+
+    subgraph SUPPORT["Around the machines"]
+        SG["Security groups · 17<br/>4 groups, 13 rules<br/>internet may reach only TCP 80 and UDP 51820"]
+        IAM["Identity · 9<br/>node role: ECR, 3 buckets, 4 secrets, signing<br/>gateway role: SSM + the wireguard secret"]
+        BKT[("Cluster buckets · 10<br/>etcd-backups, 14 days<br/>ssm-transfer, 1 day")]
+    end
+
+    APPUSER --> PUB
+    OPERATOR -->|"UDP 51820"| WG
+    PUB -->|"NodePort 30080"| NODES
+    WG -->|"TCP 443"| INT
+    INT -->|"6443 and NodePort 30443"| NODES
+    REC -.-> INT
+    REC -.-> WG
+    NODES --> NAT
+    NODES -.-> S3E
+    SG -.-> MACHINES
+    IAM -.-> MACHINES
+    BKT -.->|"etcd snapshots, Ansible file transfer"| NODES
+    NODES -.- VPC
+```
+
 ## 3. Folder structure
 
 ```
