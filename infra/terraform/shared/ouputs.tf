@@ -18,5 +18,8 @@ output "cosign_kms_key_arn" {
 }
 
 output "secret_names" {
-  value = [for s in aws_secretsmanager_secret.app : s.name]
+  value = concat(
+    [for s in aws_secretsmanager_secret.app : s.name],
+    [for s in aws_secretsmanager_secret.rancher : s.name],
+  )
 }
