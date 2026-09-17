@@ -1,0 +1,75 @@
+---
+# containerd is the container runtime the kubelet talks to. Docker is not involved on the nodes.
+
+- name: Create the keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Add the Docker signing key
+  # containerd.io is published in Docker's repository, which is newer than Ubuntu's containerd and
+  # has version strings that can be pinned.
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+
+- name: Add the Docker repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+
+- name: Install the pinned containerd
+  ansible.builtin.apt:
+    name: "containerd.io={{ containerd_version }}"
+    state: present
+    update_cache: true
+    lock_timeout: 300
+    allow_change_held_packages: true
+
+- name: Hold containerd at that version
+  # Without a hold, an unattended upgrade could restart the runtime under a running cluster.
+  ansible.builtin.dpkg_selections:
+    name: containerd.io
+    selection: hold
+
+- name: Read the default containerd configuration
+  # The package ships a minimal config with the CRI plugin disabled, so the default has to be
+  # generated. Doing it this way keeps the file correct for whatever containerd version is pinned,
+  # instead of hard-coding option names that move between releases.
+  ansible.builtin.command: containerd config default
+  register: containerd_default
+  changed_when: false
+
+- name: Write /etc/containerd/config.toml with the systemd cgroup driver
+  # The kubelet uses systemd as its cgroup driver. If the runtime uses a different one, pods are
+  # accounted for in two different cgroup trees and the node goes unstable under memory pressure.
+  ansible.builtin.copy:
+    content: "{{ containerd_default.stdout | regex_replace('SystemdCgroup = false', 'SystemdCgroup = true') }}\n"
+    dest: /etc/containerd/config.toml
+    mode: '0644'
+  notify: Restart containerd
+
+- name: Start containerd at boot
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: Apply the restart before the kubelet is installed
+  ansible.builtin.meta: flush_handlers
+
+- name: Check the merged configuration selects the systemd cgroup driver
+  # `config dump` merges the file with containerd's built-in defaults, so it catches an option that
+  # moved to a new path between versions. It reads the file, not the running daemon; the restart
+  # handler above is what makes the daemon use it, and a failed restart fails the play.
+  ansible.builtin.shell: >
+    set -o pipefail;
+    containerd config dump | grep -q 'SystemdCgroup = true'
+  args:
+    executable: /bin/bash
+  changed_when: false
