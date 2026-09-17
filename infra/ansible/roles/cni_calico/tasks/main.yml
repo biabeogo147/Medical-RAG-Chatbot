@@ -1,0 +1,64 @@
+---
+# The pod network. Until a CNI plugin is installed every node stays NotReady.
+# All tasks run on the first node, using the kubeconfig kubeadm wrote there.
+
+- name: Install the Calico operator CRDs
+  # --server-side is required, not a preference: the CRD manifest is about 3 MB, and a client-side
+  # apply stores the whole file in an annotation, which the API server rejects as too long.
+  ansible.builtin.command: >-
+    kubectl apply --server-side --force-conflicts
+    -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/operator-crds.yaml
+  # A server-side apply prints the same output every run, so there is nothing to detect a change
+  # from. The Installation resource below is the one that carries the state.
+  changed_when: false
+
+- name: Install the Calico operator
+  ansible.builtin.command: >-
+    kubectl apply --server-side --force-conflicts
+    -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml
+  changed_when: false
+
+- name: Write the Calico installation resource
+  ansible.builtin.template:
+    src: installation.yaml.j2
+    dest: /etc/kubernetes/calico-installation.yaml
+    mode: '0644'
+
+- name: Apply it
+  # Server-side as well, and for a second reason: the operator writes its own defaults back into
+  # this resource, and a client-side apply would overwrite them on every run and always report a
+  # change.
+  ansible.builtin.command: >-
+    kubectl apply --server-side --force-conflicts --field-manager=ansible
+    -f /etc/kubernetes/calico-installation.yaml
+  changed_when: false
+
+- name: Wait for the operator to start
+  ansible.builtin.command: kubectl -n tigera-operator rollout status deploy/tigera-operator --timeout=300s
+  changed_when: false
+
+- name: Wait until the operator has created the calico-node daemonset
+  # `kubectl wait` fails immediately when the object does not exist yet, and right after the
+  # Installation is applied neither the namespace nor the daemonset exists. So poll for it.
+  ansible.builtin.command: kubectl -n calico-system get daemonset calico-node
+  register: calico_daemonset
+  until: calico_daemonset.rc == 0
+  retries: 60
+  delay: 5
+  failed_when: false
+  changed_when: false
+
+- name: Say something useful if it never appeared
+  ansible.builtin.assert:
+    that: calico_daemonset.rc == 0
+    fail_msg: >-
+      The operator did not create calico-system/calico-node. Look at
+      `kubectl -n tigera-operator logs deploy/tigera-operator`.
+
+- name: Wait until Calico is running on every node
+  ansible.builtin.command: kubectl -n calico-system rollout status ds/calico-node --timeout=600s
+  changed_when: false
+
+- name: Wait until every node reports Ready
+  ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=300s
+  changed_when: false

@@ -42,3 +42,13 @@
   serial: 1
   roles:
     - kubeadm_join
+
+- name: Install the pod network and open the nodes for scheduling
+  hosts: first_node
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  roles:
+    - cni_calico
+    - untaint_control_plane
+

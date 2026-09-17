@@ -1,0 +1,16 @@
+# The only custom resource the operator needs. Calico's own sample file also creates an API server,
+# a flow aggregator and a web UI; on 8 GB nodes that memory is better spent on workloads.
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    ipPools:
+      - name: default-ipv4-ippool
+        cidr: "{{ pod_cidr }}"
+        # VXLAN, not the operator default IPIP: the three nodes sit in three different subnets,
+        # and VXLAN crosses them unchanged over UDP 4789.
+        encapsulation: VXLAN
+        natOutgoing: Enabled
+        nodeSelector: all()

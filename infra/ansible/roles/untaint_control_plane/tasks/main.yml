@@ -1,0 +1,11 @@
+---
+# kubeadm taints control-plane nodes so that no workload is scheduled on them. This cluster has three
+# machines and no separate workers, so the taint is removed and all three run workloads.
+
+- name: Allow workloads on the control-plane nodes
+  ansible.builtin.command: kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule-
+  register: untaint
+  # Once the taint is gone kubectl exits non-zero with "taint ... not found", which is the state we
+  # want, not an error.
+  failed_when: untaint.rc != 0 and 'not found' not in untaint.stderr
+  changed_when: "'untainted' in untaint.stdout"
