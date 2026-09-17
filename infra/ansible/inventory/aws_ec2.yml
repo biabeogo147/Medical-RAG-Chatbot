@@ -1,0 +1,29 @@
+---
+# A dynamic inventory: the host list comes from the EC2 API every run, so no IP address and no
+# instance ID is ever written down. Terraform tags the nodes, Ansible finds them by that tag.
+plugin: amazon.aws.aws_ec2
+
+# Region and tag must match infra/terraform/cluster/variables.tf.
+regions:
+  - ap-southeast-1
+
+filters:
+  tag:k8s-cluster: medical-rag
+  instance-state-name: running
+
+# Use the Name tag as the host name, so the output reads medical-rag-node-1 instead of i-0a1b2c3d.
+hostnames:
+  - tag:Name
+
+compose:
+  # The aws_ssm connection plugin addresses a machine by its instance ID, not by an address.
+  ansible_aws_ssm_instance_id: instance_id
+  # Not used to connect; it only makes the logs and the etcd checks easier to read.
+  ansible_host: private_ip_address
+
+# Static groups built from the Name tag. kubeadm has to start on exactly one machine, and these two
+# groups say which one, without any task having to sort a list at run time.
+groups:
+  nodes: true
+  first_node: "tags['Name'] is defined and tags['Name'].endswith('-node-1')"
+  other_nodes: "tags['Name'] is defined and not tags['Name'].endswith('-node-1')"

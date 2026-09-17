@@ -1,0 +1,33 @@
+---
+# Settings that every play shares. Pinned versions live here so an upgrade is a one-line change.
+
+project: medical-rag
+aws_region: ap-southeast-1
+
+# --- pinned versions -------------------------------------------------------------------------------
+# Kubernetes stays on 1.36 until the GitOps phase pins a Rancher chart that accepts a newer minor.
+# The apt version string has its own suffix and must match the minor exactly.
+kubernetes_minor: "v1.36"
+kubernetes_version: "1.36.4"
+kubernetes_apt_version: "1.36.4-1.1"
+
+# containerd.io from the Docker repository: newer than the one in Ubuntu and with a version string
+# that can be pinned.
+containerd_version: "2.3.5-1~ubuntu.24.04~noble"
+
+# Calico, installed through its operator.
+calico_version: "v3.32.2"
+
+# The kubelet plugin that turns the node's IAM role into an ECR login, so no imagePullSecret is
+# needed anywhere. Upstream publishes binaries for only a limited range of Kubernetes releases.
+ecr_credential_provider_version: "v1.37.0"
+ecr_credential_provider_url: "https://artifacts.k8s.io/binaries/cloud-provider-aws/{{ ecr_credential_provider_version }}/linux/amd64/ecr-credential-provider-linux-amd64"
+ecr_credential_provider_dir: /etc/kubernetes/image-credential-provider
+
+# --- networking ------------------------------------------------------------------------------------
+# Neither range may overlap the cluster VPC (10.10.0.0/16) or the workstation VPC (10.20.0.0/24).
+pod_cidr: "192.168.0.0/16"
+service_cidr: "10.96.0.0/12"
+
+# The machine kubeadm runs `init` on; the other two join it.
+first_control_plane: "{{ groups['first_node'] | first }}"

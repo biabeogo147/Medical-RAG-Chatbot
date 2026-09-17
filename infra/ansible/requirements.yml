@@ -1,0 +1,10 @@
+---
+# The only collection this project needs. It provides both plugins used here:
+#   - amazon.aws.aws_ec2  : builds the inventory from the EC2 API
+#   - amazon.aws.aws_ssm  : runs tasks through Session Manager instead of SSH
+#
+# Pinned to 10.3.2 on purpose. Version 11 requires ansible-core >= 2.17, and Ubuntu 24.04 ships
+# ansible-core 2.16, which is what the ops workstation runs.
+collections:
+  - name: amazon.aws
+    version: "10.3.2"
