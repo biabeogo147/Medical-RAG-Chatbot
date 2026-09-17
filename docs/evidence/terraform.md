@@ -16,8 +16,8 @@ listener on the internal NLB. Every verification step of the guide returned its 
 | `shared` | 17 (13 after step 15, + 4 in step 16) | kept | ops workstation |
 | `cluster` | 84 (65 after step 15, + 19 in step 18) | destroyed when idle | ops workstation |
 
-At step 15, `terraform -chdir=infra/terraform/cluster state list | wc -l` → **77** (65 managed resources + 12 data sources).
-The rebuild numbers below were measured at step 15, before the Rancher access was added.
+`terraform -chdir=infra/terraform/cluster state list | wc -l` → **77** at step 15 (65 managed resources + 12 data sources)
+and **101** after step 18 (84 managed resources + 17 other entries: data sources, including those inside modules).
 
 ## Reproducibility
 
@@ -25,12 +25,20 @@ The rebuild numbers below were measured at step 15, before the Rancher access wa
 |---|---|
 | `terraform fmt -check` and `validate`, all three stacks | clean |
 | `terraform plan` after `apply` | `No changes. Your infrastructure matches the configuration.` |
-| `time make infra-destroy` | **1 m 27 s** |
-| `time make infra` (rebuild from nothing) | **3 m 19 s** |
-| `terraform plan` after the rebuild | `No changes.` |
 | `make shared-plan` after the cluster rebuild | `No changes.` — the registry, index bucket, signing key and secrets survived the teardown |
 
-A full cluster rebuild therefore takes **3.5 minutes** and needs no manual step.
+Rebuild timings of the cluster stack. The 2026-09-17 run applied with `TF_CLI_ARGS_apply=-auto-approve`
+and destroyed with `TF_CLI_ARGS_destroy=-auto-approve`, so no time was spent at the confirmation prompt.
+
+| Check | Step 15 (65 resources) | 2026-09-17, after step 18 (84 resources) |
+|---|---|---|
+| `time make infra` from nothing | **3 m 19 s** | **3 m 47 s** (`Apply complete! Resources: 84 added`) |
+| `terraform plan` after the rebuild | `No changes.` | `No changes. Your infrastructure matches the configuration.` |
+| `time make infra-destroy` | **1 m 27 s** | **2 m 15 s** (`Destroy complete! Resources: 84 destroyed.`) |
+
+Rebuilding the cluster stack's infrastructure takes **under 4 minutes** with no manual step. Turning the
+rebuilt nodes into a Kubernetes cluster takes another 6 m 10 s, measured in
+[`ansible.md`](ansible.md#rebuild-from-nothing).
 
 ## What is running (step 15)
 
