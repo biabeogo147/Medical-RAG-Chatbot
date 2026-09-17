@@ -178,4 +178,5 @@ needs nothing else on the laptop.
 - Infrastructure: [`docs/terraform/`](docs/terraform/) — architecture, a step-by-step build guide, and self-check / interview questions with answers
 - Cluster: [`docs/ansible/`](docs/ansible/) — the same pair for the kubeadm cluster
 - Ops workstation: [`docs/ops-workstation-files.md`](docs/ops-workstation-files.md) — the keys, configs and caches that live on it, and how to audit them
+- Interview prep: [`docs/common/`](docs/common/) — project-level questions with answers (Vietnamese)
 - Measured results: [`docs/evidence/`](docs/evidence/)

@@ -1,240 +1,302 @@
 # Đáp án tổng quan về project
 
-Đáp án cho [`questions.md`](questions.md), cùng số thứ tự. Mỗi câu mở đầu bằng **ý chính** để nói trước,
-phần sau là chi tiết khi người phỏng vấn hỏi thêm.
+Đáp án cho [`questions.md`](questions.md), cùng số thứ tự. Mỗi câu mở đầu bằng **Ý chính**, là phần nói trước
+và thường là đủ. Phần *Nếu được hỏi thêm* chỉ dùng khi người phỏng vấn muốn đi sâu. Dòng **Mẹo** là lời nhắc
+cho bạn, không đọc ra khi phỏng vấn.
 
 ## Trạng thái các phần
 
-Người phỏng vấn sẽ hỏi "cái này bạn đã chạy thật chưa". Bảng dưới đây là căn cứ để trả lời trung thực. Cập
-nhật nó mỗi khi xong một phase.
+Người phỏng vấn sẽ hỏi "cái này bạn đã chạy thật chưa". Bảng dưới đây là căn cứ để trả lời trung thực. Cập nhật
+nó mỗi khi xong một phase.
 
 | Phần | Trạng thái | Căn cứ |
 |---|---|---|
 | App: gunicorn, health check, metrics, index có version, image gọn | ✅ Đã làm, kiểm chứng ở local | [`evidence/local.md`](../evidence/local.md) |
 | Terraform: 3 stack, WireGuard, Route 53 | ✅ Đã làm, kiểm chứng trên AWS | [`evidence/terraform.md`](../evidence/terraform.md) |
 | Ansible: cluster kubeadm HA | 🔧 Đang làm | [`ansible/guide.md`](../ansible/guide.md) |
-| Argo CD, Helm chart, dev/prod, External Secrets, Rancher | 📐 Đã thiết kế, chưa làm | [design §4.2.1, §4.4](../selfmanaged-k8s-ops-design.md) |
-| Jenkins pipeline: scan, SBOM, ký image, promote | 📐 Đã thiết kế, chưa làm | [design §4.5](../selfmanaged-k8s-ops-design.md) |
-| Kyverno, backup/restore etcd, upgrade drill | 📐 Đã thiết kế, chưa làm (P1) | [design §4.6](../selfmanaged-k8s-ops-design.md) |
+| Argo CD, Helm chart, dev/prod, External Secrets, Rancher | 📐 Thiết kế, chưa làm | [design §4.2.1, §4.4](../selfmanaged-k8s-ops-design.md) |
+| Jenkins pipeline: quét, SBOM, ký image, promote | 📐 Thiết kế, chưa làm | [design §4.5](../selfmanaged-k8s-ops-design.md) |
+| Kyverno, backup/restore etcd, upgrade drill | 📐 Thiết kế, chưa làm (P1: làm sau khi xong phần chính) | [design §4.6](../selfmanaged-k8s-ops-design.md) |
 
-Trong đáp án, phần nào chưa làm được đánh dấu **📐 Thiết kế**. Khi phỏng vấn, nói "tôi thiết kế như sau" cho
-những phần đó, đừng nói "tôi đã làm".
+Trong đáp án, nhãn đặt ngay sau phần được nói tới: **✅ Đã làm**, **🔧 Đang làm**, **📐 Thiết kế**. Với phần 📐,
+nói "theo thiết kế…" hoặc "tôi thiết kế như sau", đừng nói "tôi đã làm".
 
 ---
 
 ## 1. Giới thiệu
 
-**1.1** **Ý chính:** "Đây là một chatbot hỏi đáp y khoa dùng RAG. Tôi dùng nó làm bài toán để dựng toàn bộ
-phần vận hành theo cách một công ty tự chạy Kubernetes: hạ tầng dựng lại được bằng code, cluster HA tự quản
-lý, triển khai theo GitOps, và chuỗi cung ứng image có ký và kiểm tra."
+**1.1** **Ý chính:** "Đây là chatbot hỏi đáp y khoa dùng RAG. Phần AI tôi giữ đơn giản; trọng tâm là phần vận
+hành, làm theo cách một công ty tự chạy Kubernetes."
 
 Nếu có thêm thời gian, kể theo ba lớp:
 
-- **Hạ tầng:** Terraform dựng mọi thứ trên AWS, chia ba stack theo vòng đời. Phần cluster xoá khi không dùng
-  và dựng lại trong vài phút.
-- **Cluster:** Ansible biến ba máy EC2 thành cluster kubeadm có ba control plane ở ba AZ, không dùng SSH.
-- **Triển khai:** Jenkins build, quét và ký image; Argo CD đồng bộ từ Git sang cluster; dev tự cập nhật, prod
+- **Hạ tầng ✅ Đã làm:** Terraform dựng mọi thứ trên AWS, chia ba stack theo vòng đời. Phần hạ tầng của cluster,
+  65 resource, xoá mất 1 phút 27 giây, dựng lại từ đầu mất 3 phút 19 giây, và plan sau đó không còn thay đổi.
+- **Cluster 🔧 Đang làm:** Ansible biến ba máy EC2 thành cluster kubeadm có ba control plane ở ba AZ, không dùng
+  SSH.
+- **Deploy 📐 Thiết kế:** Jenkins build, quét và ký image; Argo CD sync từ Git vào cluster; dev tự cập nhật, prod
   chỉ đổi qua pull request có review.
 
-Chốt bằng một con số: "Cluster 65 resource dựng lại từ đầu mất khoảng ba phút rưỡi, và plan sau đó không còn
-thay đổi nào."
+**1.2** **Ý chính:** người dùng hỏi một câu về y khoa; app tìm các đoạn liên quan trong tài liệu rồi để Gemini
+trả lời ngắn gọn **chỉ dựa trên các đoạn đó**. Tài liệu không có thì trả lời "không biết".
 
-**1.2** **Ý chính:** người dùng hỏi một câu về y khoa, app tìm đoạn liên quan trong bộ bách khoa y khoa rồi
-để Gemini trả lời ngắn gọn **chỉ dựa trên các đoạn đó**. Không có trong tài liệu thì trả lời "không biết".
+Tài liệu là một tập của bộ bách khoa y khoa Gale (tập 2, các mục C–F, 759 trang). Câu hỏi ngoài phạm vi đó thì
+app trả lời "không biết"; tôi đã thử cả hai trường hợp.
 
 Bên trong có hai giai đoạn:
 
-1. **Chuẩn bị (làm một lần):** đọc PDF (759 trang), cắt thành 7.079 đoạn nhỏ, biến mỗi đoạn thành vector
-   bằng model embedding qua Hugging Face API, rồi lưu vào FAISS index.
-2. **Trả lời (mỗi câu hỏi):**
-   - biến câu hỏi thành vector
-   - tìm 3 đoạn gần nhất trong FAISS
-   - gửi câu hỏi kèm 3 đoạn đó cho Gemini, với chỉ dẫn "chỉ dùng thông tin trong ngữ cảnh"
+1. **Chuẩn bị, làm một lần:** cắt PDF thành 7.079 chunk (đoạn văn ngắn), biến mỗi chunk thành vector (một dãy số
+   thể hiện ý nghĩa, để so độ giống nhau) qua Hugging Face API, rồi lưu vào FAISS index.
+2. **Trả lời, mỗi câu hỏi:** biến câu hỏi thành vector cũng qua Hugging Face, tìm 3 chunk gần nghĩa nhất trong
+   FAISS, rồi gửi câu hỏi kèm 3 chunk đó cho Gemini với chỉ dẫn "chỉ dùng thông tin trong ngữ cảnh".
 
-Cách này gọi là RAG (Retrieval Augmented Generation): model không phải "nhớ" kiến thức y khoa, nên câu trả lời
-bám vào tài liệu và ít bịa hơn.
+Cách này gọi là RAG (Retrieval Augmented Generation): model không cần "nhớ" kiến thức y khoa, nên câu trả lời bám
+vào tài liệu và ít bịa hơn.
 
-**1.3** **Ý chính:** phần vận hành. Phần RAG giữ ở mức đơn giản; việc của tôi là đưa nó từ một app chạy trên
-máy cá nhân thành một hệ thống triển khai, vận hành và kiểm chứng được.
+**1.3** **Ý chính:** phần vận hành. Việc của tôi là đưa một app chạy trên máy cá nhân thành một hệ thống deploy,
+vận hành và kiểm chứng được.
 
-Cụ thể:
+- Sửa app để chạy được trong môi trường thật: server production, health check, metrics, index có version, retry,
+  test. ✅ Đã làm
+- Thiết kế và dựng hạ tầng AWS bằng Terraform. ✅ Đã làm
+- Dựng cluster Kubernetes bằng Ansible. 🔧 Đang làm
+- Thiết kế CI/CD, bảo mật image và vận hành ngày 2. 📐 Thiết kế
+- Đo và ghi lại bằng chứng cho từng bước.
 
-- sửa app để chạy được trong môi trường thật: server production, health check, metrics, index có version
-- thiết kế và dựng hạ tầng AWS bằng Terraform
-- dựng cluster Kubernetes bằng Ansible
-- thiết kế luồng CI/CD, bảo mật chuỗi cung ứng và vận hành ngày 2
-- đo đạc và ghi lại bằng chứng cho từng bước
-
-**1.4** **Ý chính:** tôi hướng tới vị trí DevOps / Platform / SRE, nên muốn có một project chứng minh được
-bốn năng lực bằng số liệu thật, không chỉ bằng lời:
+**1.4** **Ý chính:** tôi hướng tới vị trí DevOps / Platform / SRE, nên muốn một project chứng minh bốn năng lực
+bằng số liệu thật, không chỉ bằng lời:
 
 1. **Hạ tầng tái tạo được:** xoá đi dựng lại mà không cần thao tác tay.
-2. **Triển khai theo GitOps:** Git là nguồn sự thật, prod đổi qua review.
-3. **Bảo mật chuỗi cung ứng:** quét, SBOM, ký image bằng KMS, chặn image chưa ký.
+2. **GitOps:** Git quyết định cái gì đang chạy; prod chỉ đổi qua review.
+3. **Bảo mật image:** quét lỗ hổng, SBOM, ký bằng KMS, chặn image chưa ký.
 4. **Vận hành ngày 2:** backup/khôi phục etcd, nâng cấp cluster.
 
-Tôi có một project thứ hai chạy trên EKS. Hai project bổ sung cho nhau: project này tự vận hành control plane,
-project kia dùng dịch vụ managed và tập trung vào autoscaling, canary và observability.
+Tôi đang làm song song một project thứ hai theo hướng EKS (mới xong phần app và thiết kế). Hai project cố ý chia
+vai: project này tự vận hành control plane, project kia dùng dịch vụ managed và tập trung vào autoscaling, canary
+và observability.
 
 **1.5** **Ý chính:** app và hạ tầng AWS đã xong và có số liệu; cluster Kubernetes đang dựng; phần GitOps, CI và
-vận hành ngày 2 đã thiết kế xong nhưng chưa triển khai.
+vận hành ngày 2 đã thiết kế xong nhưng chưa làm.
 
-Xem bảng *Trạng thái các phần* ở đầu file. Nói thẳng điều này khi được hỏi. Người phỏng vấn đánh giá cao việc
-tách rõ "đã chạy và đo" với "đã thiết kế", hơn là nghe tất cả đều đã xong.
+Chi tiết ở bảng *Trạng thái các phần* đầu file.
+
+> **Mẹo:** nói thẳng như vậy. Tách rõ "đã chạy và đo" với "đã thiết kế" gây ấn tượng tốt hơn là để người phỏng
+> vấn tự phát hiện ra phần chưa làm.
+
+**1.6** **Ý chính:** tôi làm một mình, theo kế hoạch một tuần chia cho hai project. Phần app và hạ tầng AWS của
+project này xong trong vài ngày đầu; cluster đang dựng.
+
+> **Mẹo:** cập nhật câu này theo thời gian thực tế khi xong các phase. Làm một mình giải thích vì sao một số lựa
+> chọn đơn giản hơn công ty (xem 8.2).
+
+**1.7** **Ý chính:** "Không. Phần RAG ban đầu dựa trên một ví dụ mã nguồn mở, README có ghi nguồn. Phần của tôi
+là viết lại để app vận hành được, và toàn bộ hạ tầng, cluster, thiết kế deploy."
+
+*Nếu được hỏi thêm*, những gì tôi đã làm trên app:
+
+- thay server development bằng gunicorn
+- tách `/healthz` và `/readyz`, thêm metrics Prometheus
+- biến index thành artifact có version, build một lần
+- embedding chia lô có retry, xử lý lỗi Gemini thành trang 502
+- Docker image nhiều stage, chạy non-root, filesystem chỉ đọc
+- 22 unit test
 
 ---
 
 ## 2. Kiến trúc tổng thể
 
-**2.1** **Ý chính:** ba lớp. Hạ tầng AWS ở dưới cùng, cluster Kubernetes ở giữa, các ứng dụng và công cụ
-chạy trong cluster ở trên cùng.
+**2.1** **Ý chính:** "Người dùng vào qua load balancer công khai. Người vận hành vào qua VPN và Session Manager.
+Code đi từ GitHub qua Jenkins lên ECR, còn Argo CD kéo từ Git vào cluster. Tất cả chạy trên ba node Kubernetes
+trong một VPC ba AZ."
+
+*Nếu được hỏi thêm*, vẽ ba luồng:
 
 ```
-Người dùng ──HTTP 80──> Public NLB ──> ingress-nginx ──> app dev (/dev) và prod (/)
-                                                            │
-                                                            ├─> Hugging Face API (embedding câu hỏi)
-                                                            ├─> Gemini API (sinh câu trả lời)
-                                                            └─< S3 (FAISS index theo version)
+# Luồng người dùng
+Người dùng ──HTTP 80──> Public NLB ──> ingress-nginx ──> app dev (/dev) hoặc prod (/)
+                                                          ├─> Hugging Face API (vector câu hỏi)
+                                                          ├─> Gemini API (sinh câu trả lời)
+                                                          └─> S3 (tải FAISS index theo version)
 
-Vận hành ──WireGuard──> gateway ──> Internal NLB :443 ──> ingress-nginx ──> Rancher
-         ──SSM────────> node (Ansible, kubectl qua tunnel tới Internal NLB :6443)
+# Luồng vận hành
+Người vận hành ──WireGuard──> WireGuard gateway ──> Internal NLB :443 ──> ingress-nginx ──> Rancher
+Người vận hành ──SSM──────> node (Ansible; kubectl qua tunnel tới Internal NLB :6443)
 
-GitHub ──> Jenkins (build, quét, ký) ──> ECR
-   ▲            │ cập nhật version trong Git
-   └────────────┘
-GitHub ──> Argo CD ──> đồng bộ vào cluster
+# Luồng CI/CD
+GitHub ──> Jenkins (test, build, quét, ký) ──> ECR
+Jenkins ──> ghi version mới vào GitHub ──> Argo CD kéo từ Git ──> cluster
 ```
 
-- **AWS:** một VPC trải ba AZ; ba node ở subnet private; hai NLB (public cho app, internal cho Kubernetes API
-  và Rancher); một NAT gateway; S3, ECR, KMS, Secrets Manager.
-- **Cluster:** ba node đều là control plane và đều chạy workload.
-- **Trong cluster** (📐 Thiết kế): Argo CD, ingress-nginx, External Secrets, Prometheus/Grafana, Jenkins,
-  Rancher, và app ở hai môi trường dev, prod.
+- **AWS ✅ Đã làm:** xem 4.1.
+- **Cluster 🔧 Đang làm:** ba node đều là control plane và đều chạy workload.
+- **Trong cluster 📐 Thiết kế:** Argo CD, ingress-nginx, External Secrets, Prometheus/Grafana, Jenkins, Rancher,
+  app ở dev và prod.
 
-**2.2** **Ý chính:** trình duyệt → public NLB → ingress-nginx → pod của app → FAISS trong bộ nhớ →
-Hugging Face và Gemini → trả về.
+**2.2** **Ý chính:** trình duyệt → public NLB → ingress-nginx → pod của app → tìm trong FAISS → gọi Gemini → trả
+về trang HTML.
 
-1. Trình duyệt gửi request tới DNS name của public NLB, cổng 80.
-2. NLB chuyển tới NodePort 30080 trên một trong ba node.
-3. ingress-nginx xem đường dẫn: `/dev` sang app dev, còn lại sang app prod.
-4. gunicorn nhận request trong pod. Chain RAG đã được dựng sẵn lúc khởi động, nên không phải load lại index.
-5. App gọi Hugging Face để biến câu hỏi thành vector, tìm 3 đoạn gần nhất trong FAISS (nằm sẵn trong bộ nhớ),
-   rồi gọi Gemini để sinh câu trả lời.
-6. Trả về HTML. Thời gian tìm kiếm và thời gian gọi LLM được đo riêng thành metric.
+1. Trình duyệt gọi DNS name của public NLB, cổng 80. 📐 Thiết kế
+2. ingress-nginx xem đường dẫn: `/dev` sang app dev, còn lại sang prod. 📐 Thiết kế
+3. gunicorn trong pod nhận request. Index đã được load sẵn lúc khởi động, không load lại mỗi request. ✅ Đã làm
+4. App biến câu hỏi thành vector, tìm 3 chunk gần nhất, gọi Gemini (chi tiết ở 1.2). ✅ Đã làm
+5. Thời gian tìm kiếm và thời gian gọi LLM được đo riêng thành metric. ✅ Đã làm
 
-Hạn chế đã biết: app đi qua HTTP thường, chưa có HTTPS, vì chưa có domain cho app. Điều này được ghi rõ là
-ngoài phạm vi.
+Bước 1–2 là thiết kế trên cluster; bước 3–5 đã chạy và đo ở local. Hạn chế đã biết: app đi qua HTTP thường vì
+chưa có domain cho app; điều này được ghi là ngoài phạm vi.
 
-**2.3** **Ý chính:** mỗi công cụ sở hữu đúng một lớp và không chạm sang lớp khác.
+**2.3** **Ý chính:** mỗi công cụ lo đúng một lớp, không đụng sang lớp khác.
 
-| Công cụ | Sở hữu | Không làm |
+| Công cụ | Lo phần | Không làm |
 |---|---|---|
 | Terraform | Tài nguyên AWS: mạng, máy, load balancer, IAM, bucket, DNS | Không cài gì lên máy |
 | Ansible | Cấu hình bên trong máy và chạy `kubeadm` để dựng cluster | Không tạo tài nguyên AWS, không cài addon |
-| Argo CD | Mọi thứ chạy trong cluster, đồng bộ từ Git | Không build image |
-| Jenkins | Build, test, quét, ký image, rồi cập nhật version trong Git | Không có quyền triển khai vào cluster |
+| Argo CD | Mọi thứ chạy trong cluster, sync từ Git | Không build image |
+| Jenkins | Test, build, quét, ký image, rồi ghi version mới vào Git | Không có quyền deploy vào cluster |
 
 **Vì sao chia rõ:**
 
-- **Biết ngay sửa ở đâu:** lỗi ở tầng nào thì tìm ở công cụ của tầng đó.
+- **Biết ngay sửa ở đâu:** lỗi ở lớp nào thì tìm ở công cụ của lớp đó.
 - **Dựng lại độc lập:** xoá cluster không đụng tới image, index hay secret.
-- **An toàn hơn:** Jenkins không cần quyền admin của cluster, nên lộ Jenkins không đồng nghĩa lộ cluster.
+- **Giới hạn thiệt hại:** Jenkins không có RBAC để deploy, nên lộ Jenkins không cho kẻ tấn công `kubectl` vào
+  prod. Nhưng agent của Jenkins vẫn dùng chung quyền IAM của node (xem 6.4), và nó sửa được dev qua Git; đó là
+  giới hạn đã ghi lại.
 
-**2.4** **Ý chính:** mục tiêu là tự vận hành control plane (etcd HA, backup, certificate, nâng cấp), và EKS giấu
-đúng những thứ đó. Project thứ hai của tôi đã dùng EKS.
+**2.4** **Ý chính:** mục tiêu là tự vận hành control plane: etcd HA, backup, certificate, nâng cấp. EKS làm hộ
+đúng những việc đó, nên dùng EKS thì không chứng minh được. Hướng EKS để cho project thứ hai.
 
-- **Được:** hiểu và chứng minh được cách Kubernetes vận hành từ bên trong; không mất phí control plane của EKS
-  (0.10 USD/giờ).
-- **Mất:** không có nâng cấp tự động và SLA của AWS; không có IRSA / Pod Identity nên pod dùng chung quyền của
-  node; không có AWS Load Balancer Controller nên NLB phải tạo tĩnh bằng Terraform; nhiều việc bảo trì hơn.
-- **Ở công ty:** tôi sẽ chọn EKS làm mặc định, trừ khi có lý do cụ thể như cần giống môi trường on-premise.
+- **Được:** hiểu và chứng minh cách Kubernetes vận hành từ bên trong; không mất phí control plane của EKS (0.10
+  USD/giờ).
+- **Mất:**
+  - không có nâng cấp tự động và SLA của AWS
+  - không có IRSA (cơ chế cấp quyền IAM riêng cho từng pod), nên mọi pod dùng chung quyền của node
+  - không có controller tự tạo load balancer, nên NLB phải tạo sẵn bằng Terraform
+  - nhiều việc bảo trì hơn
+- **Ở công ty:** tôi chọn EKS làm mặc định, trừ khi có lý do cụ thể như cần giống môi trường on-premise.
 
-**2.5** **Ý chính:** chỉ để phục vụ lưu lượng của app thì không cần. Nhưng project cần chạy cùng lúc nhiều
-thành phần, và Kubernetes là nơi hợp lý để vận hành chúng theo một cách thống nhất.
+**2.5** **Ý chính:** chỉ để phục vụ lưu lượng của app thì không cần. Nhưng project chạy cùng lúc nhiều thành phần,
+và Kubernetes cho chúng một cách chung để deploy, kiểm tra sức khoẻ, tự restart, cô lập mạng và quản lý secret.
 
-Những thứ chạy cùng nhau: app ở hai môi trường, job build index, Jenkins với agent tạm thời, Argo CD,
-Prometheus/Grafana, Rancher, Kyverno. Kubernetes cho chúng một cách chung để triển khai, kiểm tra sức khoẻ, tự
-khởi động lại, cô lập mạng và quản lý secret.
+Những thứ chạy cùng nhau (📐 Thiết kế): app ở hai môi trường, job build index, Jenkins với agent tạm thời, Argo CD,
+Prometheus/Grafana, Rancher, Kyverno.
 
-Nếu chỉ có một app nhỏ ở công ty thật, tôi sẽ dùng dịch vụ đơn giản hơn như ECS hoặc một máy chạy container.
-Trả lời thẳng như vậy tốt hơn là cố biện minh.
+Nếu chỉ có một app nhỏ ở công ty, tôi sẽ dùng thứ đơn giản hơn như ECS, hoặc một máy chạy container.
 
-**2.6** **Ý chính:** cùng một Helm chart, hai file values khác nhau, hai Argo CD Application, hai namespace.
-**📐 Thiết kế.**
+> **Mẹo:** thừa nhận điều này trước khi bị hỏi vặn. Biện minh rằng app nhỏ cần Kubernetes sẽ làm mất điểm.
+
+**2.6** **Ý chính:** cùng một Helm chart, hai file values, hai Argo CD Application, hai namespace. 📐 Thiết kế
 
 | | dev | prod |
 |---|---|---|
 | Values | `deploy/envs/dev/values.yaml` | `deploy/envs/prod/values.yaml` |
-| Replica | 1 | 2, trải trên các node khác nhau, PodDisruptionBudget |
+| Replica | 1 | 2, trải trên các node khác nhau, có PodDisruptionBudget |
 | Đường dẫn | `/dev` | `/` |
 | Cách đổi version | Jenkins commit thẳng | Pull request, người duyệt merge |
 | Kyverno | Chỉ ghi log (Audit) | Chặn image chưa ký (Enforce) |
 
-Chưa có domain cho app, nên hai môi trường chia nhau một NLB theo đường dẫn. Vì vậy app phải hỗ trợ chạy dưới
-tiền tố `/dev`, và phần này chưa làm xong.
+Chưa có domain cho app, nên hai môi trường chia nhau một NLB theo đường dẫn. Vì vậy app cần chạy được dưới đường
+dẫn `/dev` (📐 Thiết kế).
 
 ---
 
 ## 3. Ứng dụng và dữ liệu
 
-**3.1** **Ý chính:** app chạy được nhưng không vận hành được. Mỗi lần khởi động mất nhiều phút và tốn quota API,
-không có health check thật, và triển khai bằng quyền admin.
+**3.1** **Ý chính:** app chạy được nhưng không vận hành được.
 
-1. **Dựng lại toàn bộ index mỗi lần pod khởi động.** Chậm, tốn quota Hugging Face, và liveness probe có thể
-   giết pod giữa chừng.
-2. **Mỗi request lại load lại FAISS và LLM client.**
-3. **Chạy bằng server development của Flask,** health check chỉ là trang chủ `/`.
-4. **Tên Secret trong README không khớp với Deployment.**
-5. **CI đẩy thẳng lên cluster bằng kubeconfig admin,** không quét, không ký image, tag image sửa bằng `sed`.
-6. **Embedding gửi toàn bộ đoạn văn trong một request,** không chia lô, không thử lại.
+1. **Dựng lại toàn bộ index mỗi lần khởi động:** chậm nhiều phút, tốn quota Hugging Face, và liveness probe có
+   thể giết pod giữa chừng.
+2. **Chạy bằng server development của Flask,** không có health check thật, và mỗi request lại load lại FAISS.
+3. **CI deploy bằng kubeconfig admin,** không quét, không ký image.
 
-**3.2** **Ý chính:** index là một artifact có version, build một lần, lưu trên S3. Pod chỉ tải về đúng version
-được ghi trong Git. Rollback là sửa một dòng trong Git.
+**3.2** **Ý chính:** index là một artifact có version: build một lần, lưu trên S3, pod tải đúng version cần dùng.
+Muốn quay về index cũ thì đổi version về giá trị cũ.
 
-- **Version là một mã băm của nội dung:** SHA-256 của file PDF, kích thước đoạn, độ chồng lấn và tên model
-  embedding, lấy 12 ký tự đầu. Cùng đầu vào thì luôn ra cùng version. Đã kiểm chứng: build trong container và
-  trên máy Windows đều ra `cc759ae1a093`.
-- **Không build lại khi không cần:** lệnh `python -m app.index build` kiểm tra version đó đã có trên kho chưa.
-  Có rồi thì bỏ qua. Lần đầu mất 150,7 giây cho 7.079 đoạn; lần sau dưới 1 giây.
-- **Chống lỗi khi build:** embedding gửi theo lô, gặp lỗi giới hạn tốc độ (429) hoặc lỗi 5xx thì thử lại với
-  thời gian chờ tăng dần.
-- **Trên Kubernetes (📐 Thiết kế):** Argo CD chạy job build index *trước* khi cập nhật app (PreSync hook).
-  Version được ghi trong `values.yaml` của từng môi trường; một initContainer tải đúng version đó về.
-- **Rollback:** đổi `index.version` về giá trị cũ trong Git, Argo CD đồng bộ lại.
+- **Version là mã băm của nội dung ✅ Đã làm:** SHA-256 của file PDF, kích thước chunk, overlap và tên model
+  embedding, lấy 12 ký tự đầu. Cùng đầu vào luôn ra cùng version; build trong container và trên máy Windows đều ra
+  `cc759ae1a093`.
+- **Không build lại khi không cần ✅ Đã làm:** `python -m app.index build` kiểm tra version đó đã có trên S3 (ở
+  local là thư mục) chưa; có rồi thì bỏ qua. Lần đầu mất 150.7 giây cho 7.079 chunk; lần sau dưới 1 giây.
+- **Chống lỗi khi build ✅ Đã làm:** embedding gửi theo lô; lỗi tạm thời (408, 429, 5xx, mất kết nối) thì thử lại
+  với thời gian chờ tăng dần.
+- **Trên Kubernetes 📐 Thiết kế:** Argo CD chạy job build index *trước* khi cập nhật app (PreSync hook). Version
+  được ghi trong `values.yaml` của từng môi trường, một initContainer tải đúng version đó. Rollback là sửa một dòng
+  trong Git. Ở local hiện tại, app đọc con trỏ `LATEST`.
 
-**3.3** **Ý chính:** `/healthz` trả lời "process còn sống không", `/readyz` trả lời "đã sẵn sàng phục vụ chưa".
-Gộp làm một thì Kubernetes sẽ khởi động lại một pod chỉ đang chờ, hoặc gửi request tới pod chưa sẵn sàng.
+**3.3** **Ý chính:** `/healthz` trả lời "process còn sống không", `/readyz` trả lời "đã sẵn sàng phục vụ chưa". Gộp
+làm một thì Kubernetes sẽ restart một pod chỉ đang chờ, hoặc gửi request tới pod chưa sẵn sàng.
 
-- **`/healthz`** không kiểm tra gì bên ngoài. Dùng cho **liveness probe**: nếu fail, Kubernetes khởi động lại
+- **`/healthz` ✅ Đã làm:** không kiểm tra gì bên ngoài. Dùng cho liveness probe: fail thì Kubernetes restart
   container.
-- **`/readyz`** chỉ trả 200 khi index đã load và chain RAG đã dựng xong; trước đó trả 503 kèm lỗi gần nhất. Dùng
-  cho **readiness probe** (có nhận traffic không) và **startup probe** (cho tối đa 5 phút để khởi động).
+- **`/readyz` ✅ Đã làm:** chỉ trả 200 khi index đã load và chain đã dựng xong; trước đó trả 503 kèm lỗi gần nhất.
+  Dùng cho readiness probe (có nhận traffic không) và startup probe.
+- **Ví dụ ✅ có unit test:** Hugging Face tạm lỗi lúc khởi động. App thử lại trong nền; `/readyz` trả 503 nên
+  không nhận request, còn `/healthz` vẫn 200 nên pod không bị giết vô ích.
+- **Probe trên cluster 📐 Thiết kế:** startup probe cho tối đa 5 phút.
 
-Ví dụ: Hugging Face tạm lỗi lúc khởi động. App thử lại với thời gian chờ tăng dần. Trong lúc đó `/readyz` trả
-503 nên không nhận request, còn `/healthz` vẫn 200 nên Kubernetes không giết pod vô ích. Việc này đã có unit
-test.
+*Nếu được hỏi thêm:*
 
-**3.4** **Ý chính:** mỗi chỗ gọi API bên ngoài đều có cách xử lý riêng, để lỗi tạm thời không biến thành sự cố.
+- **Mỗi worker gunicorn tự dựng chain,** nên `/readyz` phản ánh worker nhận probe. Ở local mỗi worker xong trong
+  0.7 giây nên khoảng lệch rất nhỏ.
+- **Lỗi vĩnh viễn** như token sai: startup probe restart pod sau 5 phút. Đó là đúng ý, vì lỗi cấu hình phải lộ ra
+  thành CrashLoop thay vì âm thầm chờ mãi.
 
-| Tình huống | Cách xử lý |
-|---|---|
-| Hugging Face trả 429/5xx khi build index | Thử lại theo lô, chờ tăng dần, tối đa 6 lần. Hết lượt thì job fail, và **bản app cũ vẫn chạy với index cũ** |
-| API lỗi lúc app khởi động | Thử lại trong nền; `/readyz` trả 503 cho tới khi xong |
-| Gemini lỗi khi đang trả lời | Trả lỗi 502 dạng JSON, thử lại tối đa 1 lần có jitter để không dồn request; lỗi được đếm trong metric (📐 Thiết kế) |
-| Version index chưa có trên S3 | initContainer fail, pod mới không Ready, rolling update dừng lại và pod cũ vẫn phục vụ (📐 Thiết kế) |
+**3.4** **Ý chính:** lỗi tạm thời thì thử lại có giới hạn; hết lượt thì trả lỗi rõ ràng, và không phá bản đang chạy
+tốt. Điểm yếu còn lại: mỗi câu hỏi đều cần Hugging Face.
 
-Nguyên tắc chung: **lỗi thì dừng lại ở bản đang chạy tốt**, không phá bản cũ.
+| Tình huống | Cách xử lý | Trạng thái |
+|---|---|---|
+| Hugging Face lỗi khi build index | Thử lại theo lô, chờ tăng dần, tối đa 6 lần; hết lượt thì job fail | ✅ Đã làm |
+| … và job fail trên cluster | Bản app cũ vẫn chạy với index cũ, vì job chạy trước khi cập nhật app | 📐 Thiết kế |
+| API lỗi lúc app khởi động | Thử lại trong nền; `/readyz` trả 503 tới khi xong | ✅ Đã làm |
+| Gemini lỗi khi đang trả lời | Client thử lại 1 lần, timeout 30 giây; hết lượt thì trả trang lỗi 502, worker không sập; lỗi được đếm trong metric | ✅ Đã làm, có unit test |
+| Hugging Face lỗi khi đang trả lời | Embedding câu hỏi thử lại tới 6 lần; hết lượt thì trả 502 | ✅ Đã làm |
+
+**Điểm yếu đã biết:** Hugging Face là phụ thuộc đơn. Nó sập thì app không trả lời được câu nào, và với 6 lần thử,
+người dùng phải chờ khoảng nửa phút mới thấy lỗi. Cách sửa: embed câu hỏi bằng model nhỏ chạy ngay trong pod, hoặc
+giảm số lần thử khi đang phục vụ request.
 
 **3.5** **Ý chính:** image nhỏ đi gần một nửa, chạy bằng user thường với filesystem chỉ đọc, và test chạy ngay
-trong bước build.
+trong bước build. ✅ Đã làm
 
-- **Kích thước:** 926 MB → 483 MB (giảm 48 %), nhờ build nhiều stage: công cụ build nằm ở stage riêng, không
-  mang theo PDF hay `.git`.
-- **Bảo mật:** chạy bằng UID 10001, root filesystem chỉ đọc (đã thử `touch` và nhận `Read-only file system`),
-  chỉ `/tmp` và thư mục index được ghi.
-- **Server:** gunicorn 2 worker, mỗi worker 4 thread, thay cho server development của Flask.
+- **Kích thước:** 926 MB → 483 MB (giảm 48%), nhờ build nhiều stage: công cụ build ở stage riêng, không mang theo
+  PDF hay `.git`.
+- **Bảo mật:** chạy bằng UID 10001, root filesystem chỉ đọc (thử `touch` nhận `Read-only file system`), chỉ `/tmp`
+  được ghi.
+- **Server:** gunicorn 2 worker, mỗi worker 4 thread, thay server development của Flask.
 - **Test:** `docker build --target test .` chạy ruff và 22 unit test.
-- **Phụ thuộc:** khoá bằng `uv.lock` (93 package), không kéo PyTorch vì embedding gọi qua API.
+- **Phụ thuộc:** pin version bằng `uv.lock`, không kéo PyTorch vì embedding gọi qua API.
+
+**3.6** **Ý chính:** kiến thức nằm sẵn trong tài liệu, nên chỉ cần tìm đúng đoạn và đưa cho model, không cần dạy lại
+model.
+
+- **Cập nhật dễ:** đổi tài liệu thì build lại index trong vài phút, không phải train lại.
+- **Kiểm soát được nguồn:** câu trả lời bám vào đoạn văn tìm được, và app nói "không biết" khi tài liệu không có.
+- **Chi phí gần như bằng không:** không cần GPU, không cần dữ liệu huấn luyện.
+
+Fine-tune hợp hơn khi cần đổi *cách* model trả lời (giọng văn, định dạng), không phải khi cần thêm *kiến thức*.
+
+**3.7** **Ý chính:** chưa có bộ đánh giá tự động. Tôi mới kiểm tra thủ công vài câu trong phạm vi tài liệu (ví dụ
+triệu chứng tiểu đường, nguyên nhân đục thuỷ tinh thể) và ngoài phạm vi (phải trả lời "không biết").
+
+**Nếu làm tiếp:**
+
+1. Dựng một bộ câu hỏi có đáp án chuẩn.
+2. Đo retrieval: 3 chunk tìm được có chứa đoạn đúng không.
+3. Đo câu trả lời: có bám vào ngữ cảnh không, có bịa không.
+4. Chạy bộ này trong CI mỗi khi đổi kích thước chunk, số chunk hay model, để thay đổi làm tệ đi thì bị chặn.
+
+> **Mẹo:** trả lời thật là chưa có. Project tập trung vào vận hành; hứa hẹn một bộ đánh giá không tồn tại rất dễ bị
+> hỏi vặn.
+
+**3.8** **Ý chính:** có. Câu hỏi được gửi ra ngoài cho Hugging Face và Google, và app hiện đi qua HTTP thường. Với
+tài liệu bách khoa công khai và câu hỏi thử nghiệm thì chấp nhận được; với dữ liệu bệnh nhân thật thì không.
+
+- **Gửi ra ngoài:** câu hỏi đi tới Hugging Face (tạo vector) và Gemini (sinh câu trả lời).
+- **Lưu trữ:** app không có database và không ghi câu hỏi vào log. Lịch sử chat nằm trong cookie session: cookie
+  được ký nên không sửa được, nhưng không mã hoá.
+- **Truyền tải:** HTTP thường, chưa có HTTPS.
+
+**Với dữ liệu thật cần:** HTTPS; thoả thuận xử lý dữ liệu với nhà cung cấp, hoặc model tự host; không giữ lịch sử
+trong cookie; ghi rõ cho người dùng biết dữ liệu đi đâu.
 
 ---
 
@@ -242,231 +304,268 @@ trong bước build.
 
 Phần này có bộ câu hỏi chi tiết riêng: [`../terraform/questions.md`](../terraform/questions.md).
 
-**4.1** **Ý chính:** một VPC ba AZ, ba node Kubernetes ở subnet private, hai load balancer, và các dịch vụ
-dùng chung (ECR, S3, KMS, Secrets Manager, Route 53), tất cả dựng bằng Terraform.
+**4.1** **Ý chính:** một VPC ba AZ, ba node Kubernetes ở subnet private, hai load balancer, và các dịch vụ dùng
+chung, tất cả dựng bằng Terraform. ✅ Đã làm
 
 - **Mạng:** VPC `10.10.0.0/16`, subnet public và private ở ba AZ, một NAT gateway, S3 gateway endpoint.
-- **Máy:** ba node `m7i-flex.large` (2 vCPU, 8 GB), không public IP, không key SSH; một WireGuard gateway nhỏ;
-  một ops workstation để chạy mọi lệnh.
+- **Máy:** ba node `m7i-flex.large` (2 vCPU, 8 GB), không public IP, không key SSH; một WireGuard gateway nhỏ; một
+  ops workstation để chạy mọi lệnh.
 - **Load balancer:** public NLB cổng 80 cho app; internal NLB cổng 6443 cho Kubernetes API và 443 cho Rancher.
-- **Dịch vụ dùng chung:** ECR chứa image, S3 chứa index và state, KMS key để ký image, Secrets Manager chứa
-  secret, Route 53 cho domain, và một budget cảnh báo chi phí.
+- **Dịch vụ dùng chung:** ECR chứa image, S3 chứa index và Terraform state, KMS key để ký image, Secrets Manager
+  chứa secret, Route 53 cho domain, và budget cảnh báo chi phí.
 
-**4.2** **Ý chính:** cluster tốn khoảng 0.53 USD mỗi giờ, nên chỉ chạy khi cần. Nó xoá được vì mọi thứ quan
-trọng nằm ở chỗ khác, và dựng lại nhanh vì mọi thứ đều là code.
+**4.2** **Ý chính:** cluster tốn khoảng 0.53 USD mỗi giờ, nên chỉ chạy khi cần. Xoá được vì mọi thứ cần giữ nằm ở
+chỗ khác; dựng lại nhanh vì mọi thứ là code.
 
-- **Chia theo vòng đời:** ba stack Terraform. `bootstrap` (bucket state, workstation) và `shared` (image, index,
-  KMS key, secret, DNS) được giữ lại; `cluster` (mạng, node, load balancer) bị xoá.
-- **Đã đo:** bản cluster 65 resource xoá mất 1 phút 27 giây, dựng lại từ đầu mất 3 phút 19 giây, không có bước
-  thủ công, và `terraform plan` sau đó báo không còn thay đổi. Bản đầy đủ 84 resource có WireGuard đã dựng
-  thành công nhưng chưa đo lại thời gian.
-- **Phần còn lại** (Ansible dựng cluster, Argo CD cài addon) cũng là code, nên cả chuỗi dựng lại được bằng vài
-  lệnh `make`.
+- **Chia theo vòng đời ✅ Đã làm:** ba stack Terraform. `bootstrap` (bucket state, workstation) và `shared` (image,
+  index, KMS key, secret, DNS) được giữ; `cluster` (mạng, node, load balancer) xoá khi không dùng.
+- **Đã đo ✅:** phần hạ tầng AWS của cluster (65 resource) xoá mất 1 phút 27 giây, dựng lại từ đầu mất 3 phút 19
+  giây, không có bước thủ công, và `terraform plan` sau đó không còn thay đổi.
+- **Tự động hoá hiện có:** `make infra` và `make infra-destroy`. Ansible (🔧) và Argo CD (📐) được thiết kế để cả
+  chuỗi là `make up` / `make down`, nhưng hai lệnh đó chưa tồn tại.
 
-**4.3** **Ý chính:** qua AWS Systems Manager Session Manager. Không máy nào mở cổng SSH, không có key pair, không
-có bastion.
+**4.3** **Ý chính:** qua AWS Systems Manager Session Manager (SSM). Không máy nào mở cổng SSH, không có key pair,
+không có bastion. ✅ Đã làm
 
 - **Vào máy:** mở session trong trình duyệt hoặc bằng `aws ssm start-session`. IAM quyết định ai được vào.
-- **Ansible:** dùng connection plugin `aws_ssm` thay cho SSH; file module được chuyển qua một bucket S3.
-- **kubectl:** Kubernetes API chỉ có trên internal NLB. `make tunnel` mở một SSM port-forward từ workstation,
-  qua node 1, tới NLB; kubectl gọi `https://127.0.0.1:6443`. Vì vậy certificate của API server phải có thêm
-  `127.0.0.1`.
+- **Ansible 🔧 Đang làm:** dùng connection plugin `aws_ssm` thay cho SSH.
+- **kubectl 🔧 Đang làm:** Kubernetes API chỉ có trên internal NLB. `make tunnel` mở một SSM port-forward từ
+  workstation, qua node 1, tới NLB, và kubectl gọi `https://127.0.0.1:6443`. Vì vậy certificate của API server phải
+  thêm `127.0.0.1` vào danh sách tên hợp lệ (SAN).
 
-**Đánh đổi:** Ansible qua SSM chậm hơn SSH, và node cần NAT để tới được SSM.
+**Đánh đổi:** Ansible qua SSM chậm hơn SSH, và node cần NAT để tới được SSM. Có một sự cố thật với SSM agent, kể ở
+9.1.
 
-**Sự cố thật:** một lần node 2 không kết nối được SSM. Log boot cho thấy agent khởi động khi credential của IAM
-role chưa sẵn sàng. Reboot để agent lấy lại credential; cách phòng lần sau là script chờ credential lúc boot
-(xem 9.1).
+**4.4** **Ý chính:** ba node ở ba AZ, cả ba đều là control plane có etcd. Mất một node thì etcd vẫn đủ đa số (2/3)
+và API vẫn trả lời. 🔧 Đang làm
 
-**4.4** **Ý chính:** ba node ở ba AZ, cả ba đều là control plane với etcd, và API được gọi qua một load balancer.
-Mất một node thì etcd vẫn đủ đa số (2/3) và API vẫn trả lời.
+- **etcd** cần đa số member sống để ghi dữ liệu; ba member chịu được mất một.
+- **Internal NLB** đứng trước ba API server, kiểm tra `/readyz` và bỏ server hỏng. kubectl, `kubeadm join` và các
+  công cụ vận hành gọi API qua NLB; kubelet trên node control plane gọi API server ngay trên node đó; pod gọi qua
+  Service `kubernetes`.
+- **App prod 📐 Thiết kế:** 2 replica trên các node khác nhau, PodDisruptionBudget giữ ít nhất 1.
 
-- **etcd** cần đa số member sống để ghi dữ liệu. Ba member chịu được mất một.
-- **Internal NLB** đứng trước ba API server, kiểm tra `/readyz` và chỉ gửi traffic tới server khoẻ. Mọi thứ
-  (kubelet, kubectl) gọi qua NLB, không gọi thẳng node nào.
-- **App prod** (📐 Thiết kế): 2 replica trải trên các node khác nhau, PodDisruptionBudget giữ ít nhất 1.
-- **Bài kiểm tra** (🔧 phase Ansible): stop một node, xác nhận `kubectl get nodes` vẫn chạy.
+*Nếu được hỏi thêm:*
 
-**Điểm yếu đã biết:** chỉ có một NAT gateway, và nó nằm cùng AZ với node 1 và WireGuard gateway. Mất AZ đó thì cả
-ba node mất đường ra internet: app không gọi được Gemini, SSM ngắt, Rancher không vào được. Đây là đánh đổi chi
-phí có ghi lại; cách sửa là mỗi AZ một NAT gateway.
+- **Bài kiểm tra 🔧:** tắt node 2 hoặc 3, rồi `kubectl get nodes` qua tunnel vẫn trả lời. Nếu tắt node 1 thì phải
+  mở tunnel qua node khác, vì tunnel đang đi qua node 1.
+- **Điểm yếu đã biết:** chỉ có một NAT gateway, nằm cùng AZ với node 1 và WireGuard gateway. Mất AZ đó thì cả ba
+  node mất đường ra internet: app không gọi được Gemini, SSM ngắt, Rancher không vào được. Đây là đánh đổi chi phí
+  có ghi lại; cách sửa là mỗi AZ một NAT gateway.
 
-**4.5** **Ý chính:** Rancher là giao diện quản trị toàn quyền cluster, nên chỉ vào được qua VPN WireGuard. Cổng
-443 chỉ tồn tại trên load balancer nội bộ.
+**4.5** **Ý chính:** Rancher là giao diện quản trị toàn quyền cluster, nên chỉ vào được qua VPN WireGuard; cổng 443
+chỉ có trên internal NLB.
 
-- **Đường đi:** laptop → WireGuard (UDP 51820) → gateway → internal NLB :443 → ingress-nginx → Rancher.
-- **Tên miền:** `rancher.recruitai.io.vn` trỏ tới IP **private** của internal NLB. Ai tra DNS cũng thấy, nhưng
-  không có VPN thì không tới được.
-- **Gateway lọc chặt:** chỉ cho qua DNS và HTTPS; cổng 6443 của Kubernetes API bị chặn dù cùng nằm trên NLB đó.
-- **TLS:** certificate Sectigo mua riêng, private key nằm trong Secrets Manager; TLS được terminate ở
-  ingress-nginx.
-- **Trạng thái:** tunnel, DNS và cổng 443 đã dựng và kiểm chứng; Rancher được cài ở phase GitOps (📐 Thiết kế).
+- **Đường đi ✅ Đã làm:** laptop → WireGuard → gateway → internal NLB → ingress-nginx → Rancher. Tunnel, DNS và cổng
+  443 đã dựng và kiểm chứng.
+- **Rancher 📐 Thiết kế:** cài ở phase GitOps.
 
-**Vì sao không dùng AWS Client VPN:** tốn vài chục đô mỗi tháng kể cả khi không dùng. WireGuard chỉ cần một máy
-nhỏ, xoá cùng cluster.
+*Nếu được hỏi thêm:*
+
+- `rancher.recruitai.io.vn` trỏ tới IP **private** của NLB: ai tra DNS cũng thấy, nhưng không có VPN thì không tới
+  được.
+- Gateway chỉ cho qua DNS và HTTPS; cổng 6443 của Kubernetes API bị chặn dù nằm cùng NLB.
+- Certificate Sectigo, private key nằm trong Secrets Manager.
+- Không dùng AWS Client VPN vì tốn vài chục đô mỗi tháng kể cả khi không dùng; WireGuard chỉ cần một máy nhỏ, xoá
+  cùng cluster.
+
+**4.6** **Ý chính:** app không giữ trạng thái nên scale ngang bằng cách thêm replica. Nhưng nghẽn trước tiên là
+giới hạn tốc độ của Gemini và Hugging Face, không phải CPU. Chưa có autoscaling và chưa load test.
+
+- **Sức chứa mỗi pod:** 2 worker × 4 thread = 8 request đồng thời. Phần lớn thời gian là chờ API bên ngoài.
+- **Không giữ trạng thái:** index chỉ đọc; lịch sử chat nằm trong cookie, các worker dùng chung secret key nên pod
+  nào trả lời cũng được.
+- **Tăng gấp 10:**
+  1. Quota Gemini và Hugging Face: cần xin tăng, hoặc thêm cache cho câu hỏi lặp lại.
+  2. Thêm replica, sau đó thêm node; ba node 8 GB còn phải chạy Jenkins và Prometheus.
+  3. Giới hạn tốc độ ở ingress, để quá tải thì trả lỗi nhanh thay vì treo.
+- **Còn thiếu:** HorizontalPodAutoscaler và một lần load test để có con số thật.
 
 ---
 
 ## 5. CI/CD và GitOps
 
-Toàn bộ phần này là **📐 Thiết kế**; Jenkinsfile hiện tại vẫn là bản cũ.
+Toàn bộ phần này là **📐 Thiết kế**; Jenkinsfile trong repo vẫn là bản cũ.
 
-**5.1** **Ý chính:** push code → Jenkins test, build, quét, ký image → Jenkins ghi version mới vào Git → Argo CD
-thấy Git đổi và cập nhật dev → Jenkins mở pull request cho prod → người duyệt merge → Argo CD cập nhật prod.
+**5.1** **Ý chính:** theo thiết kế: push code → Jenkins test, build, quét, ký image → Jenkins ghi version mới vào
+Git → Argo CD thấy Git đổi và cập nhật dev → Jenkins mở pull request cho prod → người duyệt merge → Argo CD cập
+nhật prod.
+
+*Nếu được hỏi thêm*, các bước của Jenkins:
 
 1. **Test:** ruff, pytest, hadolint cho Dockerfile.
 2. **Build và push:** BuildKit build image, đẩy lên ECR với tag là git SHA.
 3. **Quét:** Trivy; có lỗ hổng CRITICAL đã có bản sửa thì dừng pipeline.
-4. **SBOM:** Syft tạo danh sách thành phần của image.
-5. **Ký:** Cosign ký image và gắn SBOM bằng KMS key.
-6. **Lên dev:** Jenkins sửa `deploy/envs/dev/values.yaml` và commit. Argo CD đồng bộ.
-7. **Lên prod:** Jenkins mở pull request sửa `deploy/envs/prod/values.yaml`, kèm tóm tắt kết quả quét. Người
-   duyệt merge thì Argo CD đồng bộ.
+4. **SBOM:** Syft liệt kê mọi thành phần trong image.
+5. **Ký:** Cosign ký image và SBOM bằng KMS key.
+6. **Lên dev:** sửa `deploy/envs/dev/values.yaml` và commit; Argo CD sync.
+7. **Lên prod:** mở pull request sửa `deploy/envs/prod/values.yaml`, kèm tóm tắt kết quả quét.
 
-**5.2** **Ý chính:** CI tạo ra artifact đáng tin; CD đưa trạng thái trong Git vào cluster. Tách ra thì Jenkins
-không cần quyền vào cluster, và Git trở thành nơi duy nhất quyết định cái gì đang chạy.
+**5.2** **Ý chính:** CI tạo ra image đáng tin; CD đưa trạng thái trong Git vào cluster. Tách ra thì Jenkins không
+cần quyền vào cluster, và Git là nơi duy nhất quyết định cái gì đang chạy.
 
-- **Push (Jenkins `kubectl apply`):** Jenkins phải giữ credential mạnh của cluster; ai sửa tay trên cluster thì
-  không ai biết; muốn biết đang chạy gì phải hỏi cluster.
-- **Pull (Argo CD):** Argo CD chạy trong cluster và tự kéo từ Git. Cluster lệch khỏi Git thì Argo CD báo và tự
-  sửa lại. Muốn biết đang chạy gì, đọc Git.
-- **Hệ quả tốt:** Jenkins sập thì không ảnh hưởng gì tới thứ đang chạy, chỉ tạm dừng việc ra bản mới.
+| | Push: Jenkins `kubectl apply` | Pull: Argo CD |
+|---|---|---|
+| Credential cluster | Jenkins phải giữ credential mạnh | Argo CD chạy trong cluster, không ai bên ngoài cần |
+| Ai đó sửa tay trên cluster | Không ai biết | Argo CD báo lệch và tự sửa về đúng Git |
+| Muốn biết đang chạy gì | Phải hỏi cluster | Đọc Git |
+| Jenkins sập | Không deploy được | Thứ đang chạy không bị ảnh hưởng; chỉ tạm dừng bản mới |
 
-**5.3** **Ý chính:** lên prod là merge một pull request đổi version trong Git; rollback là revert commit đó.
+**5.3** **Ý chính:** theo thiết kế, rollback là `git revert` commit đổi version; Argo CD sync về image cũ.
 
-- **Lên prod:** pull request do Jenkins mở chỉ sửa một file values. Người duyệt xem kết quả quét và digest của
-  image rồi merge.
-- **Rollback app:** `git revert` commit đổi version, Argo CD đồng bộ về image cũ. Image cũ vẫn còn trên ECR (giữ
-  20 bản gần nhất).
-- **Rollback index:** đổi `index.version` về giá trị cũ, tương tự.
-- **Ưu điểm:** mọi lần thay đổi prod đều có người duyệt, có lịch sử, và quay lại được bằng thao tác Git quen
-  thuộc.
+- **Image cũ vẫn còn:** ECR giữ 20 bản gần nhất.
+- **Index cũ:** đổi `index.version` về giá trị cũ, cách làm tương tự.
+- **Ưu điểm:** mọi lần đổi prod đều có người duyệt, có lịch sử, và quay lại bằng thao tác Git quen thuộc, không cần
+  quyền vào cluster.
 
-**5.4** **Ý chính:** tag có thể bị trỏ sang image khác, còn digest là mã băm của chính nội dung image. Ghi digest
-thì thứ đã được quét và ký chính xác là thứ đang chạy.
+**5.4** **Ý chính:** tag có thể bị trỏ sang image khác, còn digest là mã băm của chính nội dung image. Ghi digest thì
+thứ đã được quét và ký chính xác là thứ đang chạy.
 
 - Values ghi dạng `tag@sha256:...`: tag để người đọc hiểu, digest để máy dùng.
-- Chữ ký Cosign gắn với digest, nên Kyverno kiểm tra chữ ký trên đúng image sẽ chạy.
-- ECR còn đặt tag immutable: tag đã dùng thì không ghi đè được.
+- Chữ ký Cosign gắn với digest, nên Kyverno kiểm tra đúng image sẽ chạy.
+- ECR đặt tag immutable ✅ Đã làm: tag đã dùng thì không ghi đè được.
 
-**5.5** **Ý chính:** dùng BuildKit ở chế độ rootless trong một pod agent, không mount Docker socket của node.
+**5.5** **Ý chính:** theo thiết kế, dùng BuildKit ở chế độ rootless trong một pod agent, không mount Docker socket
+của node.
 
-- **Vì sao không mount Docker socket:** ai điều khiển Docker daemon của node thì gần như có quyền root trên node
-  đó.
-- **Vì sao không dùng Kaniko:** dự án Kaniko đã bị lưu trữ (archived), không còn được phát triển.
-- **Agent tạm thời:** mỗi build chạy trong pod riêng (Python, BuildKit, Trivy, Syft, Cosign), xong thì xoá.
-- **Cache:** cache của build lưu trên ECR, nên build sau nhanh hơn dù agent là pod mới.
+- **Không mount Docker socket:** ai điều khiển Docker daemon của node thì gần như có quyền root trên node đó.
+- **Không dùng Kaniko:** dự án Kaniko đã bị archive, không còn được phát triển.
+- **Agent tạm thời:** mỗi build chạy trong pod riêng, xong thì xoá; cache build lưu trên ECR để build sau vẫn nhanh.
 
-**5.6** **Ý chính:** bước đầu tiên của pipeline kiểm tra commit: nếu tác giả là `jenkins-bot` hoặc commit chỉ đổi
-thư mục `deploy/`, pipeline dừng ngay mà không build.
+**5.6** **Ý chính:** theo thiết kế, bước đầu tiên của pipeline kiểm tra commit: tác giả là `jenkins-bot`, hoặc commit
+chỉ đổi thư mục `deploy/`, thì dừng ngay mà không build.
 
-Không có bước này, Jenkins commit version mới → Jenkins thấy commit mới → build lại → commit version mới → vòng
-lặp vô hạn.
+Không có bước này: Jenkins commit version mới → Jenkins thấy commit mới → build lại → commit version mới → vòng lặp
+vô hạn.
+
+**5.7** **Ý chính:** để thể hiện việc tự vận hành một hệ thống CI trong cluster, đúng tinh thần tự quản lý của
+project này. Project EKS dùng GitHub Actions, nên hai project cho thấy cả hai cách.
+
+- **Jenkins được gì:** chạy trong cluster, agent là pod, dùng quyền IAM của node để push ECR và ký bằng KMS mà không
+  cần credential dài hạn nào.
+- **Jenkins mất gì:** phải tự vận hành, tự nâng cấp plugin; không có webhook công khai nên phải poll Git mỗi 2 phút.
+- **Ở công ty:** nếu code nằm trên GitHub và không có yêu cầu đặc biệt, GitHub Actions với OIDC tới AWS đơn giản
+  hơn.
+
+**5.8** **Ý chính:** mỗi công cụ một vai. Argo CD quyết định *cái gì được deploy*; Rancher là giao diện để *xem và
+thao tác* với cluster; kubectl là công cụ dòng lệnh.
+
+- **Rancher giúp:** xem nhanh trạng thái node, workload, log, event trên giao diện, hữu ích khi xử lý sự cố hoặc khi
+  người khác cần xem mà không quen kubectl.
+- **Quy tắc:** thay đổi lâu dài vẫn đi qua Git. Sửa tay trên Rancher sẽ bị Argo CD phát hiện là lệch và sửa về.
+- **Cái giá:** Rancher có toàn quyền cluster, nên chỉ vào được qua VPN (xem 4.5).
 
 ---
 
 ## 6. Bảo mật
 
-**6.1** **Ý chính:** secret nằm trong AWS Secrets Manager. External Secrets trong cluster đọc nó bằng quyền IAM
-của node và tạo Kubernetes Secret. Git, Terraform state và image không chứa giá trị secret nào.
+**6.1** **Ý chính:** secret nằm trong AWS Secrets Manager. Theo thiết kế, External Secrets trong cluster đọc nó và
+tạo Kubernetes Secret. Git, Terraform state và image không chứa giá trị secret nào.
 
-1. **Terraform** chỉ tạo secret rỗng (tên và quyền). ✅
-2. **Người vận hành** nhập giá trị một lần bằng AWS CLI từ một file tạm, rồi xoá file bằng `shred`. ✅
-3. **External Secrets** đồng bộ vào Kubernetes Secret; pod dùng như biến môi trường. 📐 Thiết kế
-4. **Đổi secret** chỉ cần cập nhật trên Secrets Manager; External Secrets tự đẩy xuống.
+1. **Terraform** chỉ tạo secret rỗng: tên và quyền. ✅ Đã làm
+2. **Người vận hành** nhập giá trị một lần bằng AWS CLI từ một file tạm, rồi xoá file bằng `shred`. ✅ Đã làm
+3. **External Secrets** sync vào Kubernetes Secret; pod dùng như biến môi trường. 📐 Thiết kế
+4. **Đổi secret:** chỉ cập nhật trên Secrets Manager, External Secrets tự đẩy xuống. 📐 Thiết kế
 
-Các key riêng cũng được sinh ngay nơi dùng: private key của certificate sinh trên workstation, private key
-WireGuard của laptop không bao giờ rời laptop.
+Key riêng tư cũng được sinh ngay nơi dùng: private key của certificate sinh trên workstation, private key WireGuard
+của laptop không rời laptop.
 
-**6.2** **Ý chính:** chuỗi bốn bước: quét → SBOM → ký bằng KMS → kiểm tra chữ ký lúc triển khai. Image chưa ký
-thì không vào được prod. **📐 Thiết kế.**
+**6.2** **Ý chính:** theo thiết kế, chuỗi bốn bước: quét → SBOM → ký bằng KMS → kiểm tra chữ ký trước khi pod chạy.
+Image chưa ký thì không vào được prod. 📐 Thiết kế
 
 - **Quét:** Trivy chặn pipeline khi có lỗ hổng CRITICAL đã có bản sửa.
-- **SBOM:** Syft liệt kê mọi thành phần trong image, lưu kèm image dưới dạng attestation.
-- **Ký:** Cosign ký digest của image bằng KMS key bất đối xứng. Private key không bao giờ rời KMS; Jenkins chỉ
-  được gọi lệnh ký.
-- **Kiểm tra:** Kyverno kiểm tra chữ ký bằng public key trước khi cho pod chạy. Prod chặn, dev chỉ ghi log.
-- **Bằng chứng dự kiến:** thử triển khai một image chưa ký lên prod và chụp lỗi bị từ chối.
+- **Ký:** Cosign ký digest của image bằng KMS key. Private key không bao giờ rời KMS; Jenkins chỉ được gọi lệnh ký.
+- **Kiểm tra:** Kyverno kiểm tra chữ ký bằng public key trước khi cho pod chạy; prod chặn, dev chỉ ghi log.
+- **Bằng chứng dự kiến:** deploy thử một image chưa ký lên prod và ghi lại lỗi bị từ chối.
 
 **6.3** **Ý chính:** chỉ hai cổng mở ra internet: HTTP 80 của app và UDP 51820 của WireGuard. Mọi thứ khác là
-private.
+private. ✅ Đã làm
 
-- **Không SSH:** vào máy bằng Session Manager.
-- **Node không có public IP;** API Kubernetes và Rancher chỉ có trên load balancer nội bộ.
-- **Quyền tối thiểu có giới hạn:** policy tự viết ghi đúng từng tài nguyên; gateway WireGuard chỉ đọc được
-  secret của chính nó.
-- **Mã hoá:** ổ đĩa EBS mã hoá, bucket S3 chặn truy cập public và chỉ nhận HTTPS.
-- **Metadata:** bắt buộc IMDSv2 để chống lấy trộm credential qua lỗi SSRF.
-- **Pod** (📐 Thiết kế): chạy non-root, filesystem chỉ đọc, NetworkPolicy mặc định chặn traffic vào.
+- **Không SSH:** vào máy bằng SSM.
+- **Private:** node không có public IP; Kubernetes API và Rancher chỉ có trên internal NLB.
+- **Least privilege:** policy tự viết chỉ cấp quyền trên đúng tài nguyên cần dùng; riêng hai managed policy của AWS
+  trên role của node còn rộng toàn account (xem 6.4).
+- **Mã hoá:** ổ EBS mã hoá; bucket S3 chặn truy cập public và chỉ nhận HTTPS.
+- **Metadata:** bắt buộc IMDSv2, để lỗi SSRF trong app không lấy trộm được credential của máy.
+- **Pod 📐 Thiết kế:** chạy non-root, filesystem chỉ đọc, NetworkPolicy mặc định chặn traffic vào.
 
-**6.4** **Ý chính:** có, và tôi ghi lại rõ trong thiết kế. Nói ra điểm yếu kèm cách sửa cho thấy mình hiểu hệ
-thống.
+**6.4** **Ý chính:** có năm điểm yếu chính, đều đã ghi lại kèm cách sửa.
 
-1. **Mọi pod dùng chung quyền IAM của node.** Cluster tự dựng không có sẵn IRSA, nên pod bị chiếm quyền có thể
-   dùng quyền ký image, đọc secret, và hai managed policy của AWS còn cho quyền rộng trên cả account. Cách sửa:
-   NetworkPolicy chặn metadata service, về lâu dài dựng IRSA.
-2. **Workstation có quyền `AdministratorAccess`.** Ai mở được session trên nó là admin. Cách sửa: tách role chỉ
-   plan và role apply.
-3. **App chưa có HTTPS**, vì chưa có domain cho app.
+1. **Mọi pod dùng chung quyền IAM của node.** Nếu một pod bị chiếm, kẻ tấn công có thể ký image và đọc secret; hai
+   managed policy còn cho quyền rộng trên cả account. Cách sửa trước mắt: NetworkPolicy chặn pod gọi metadata
+   service; lâu dài: dựng IRSA.
+2. **Workstation có `AdministratorAccess`.** Ai mở được session trên nó là admin. Cách sửa: tách role chỉ plan và
+   role apply.
+3. **App chưa có HTTPS,** vì chưa có domain cho app.
 4. **Một NAT gateway** là điểm lỗi đơn cho traffic đi ra (xem 4.4).
-5. **Load balancer nội bộ tin cả dải IP của VPC;** hiện chỉ firewall trên gateway WireGuard chặn laptop gọi
-   API. Cách sửa: giới hạn theo security group của node.
+5. **Internal NLB tin cả dải IP của VPC;** hiện chỉ firewall trên WireGuard gateway chặn laptop gọi tới API. Cách
+   sửa: chỉ cho phép security group của node.
+
+> **Mẹo:** kể điểm yếu kèm cách sửa, ngắn gọn, không xin lỗi. Người phỏng vấn tìm người biết giới hạn của hệ thống
+> mình dựng.
 
 ---
 
 ## 7. Vận hành ngày 2 và quan sát
 
-**7.1** **Ý chính:** app xuất metric Prometheus ở `/metrics`, đo riêng thời gian tìm kiếm và thời gian gọi LLM;
-kube-prometheus-stack thu thập metric của app và cluster, Grafana để xem.
+**7.1** **Ý chính:** app xuất metric Prometheus ở `/metrics`, đo riêng thời gian tìm kiếm và thời gian gọi LLM để
+biết chậm ở đâu. ✅ Đã làm. Trên cluster, kube-prometheus-stack thu thập và Grafana hiển thị. 📐 Thiết kế
 
-**Metric của app** (✅ đã làm):
+- `http_requests_total` theo route và mã trạng thái: tỉ lệ lỗi.
+- `http_request_duration_seconds`: độ trễ.
+- `rag_retrieval_duration_seconds` và `llm_request_duration_seconds`: chậm do tìm kiếm hay do Gemini.
+- `rag_index_info{version}`: pod đang dùng index version nào.
 
-- `http_requests_total` theo route và mã trạng thái: tỉ lệ lỗi
-- `http_request_duration_seconds`: độ trễ
-- `rag_retrieval_duration_seconds` và `llm_request_duration_seconds`: biết chậm do tìm kiếm hay do Gemini
-- `rag_index_info{version}`: pod đang dùng index version nào
+*Nếu được hỏi thêm:* gunicorn có 2 worker, mỗi worker giữ bộ đếm riêng. App dùng chế độ multiprocess của thư viện
+Prometheus để cộng dồn; nếu không, mỗi lần scrape chỉ thấy số của một worker ngẫu nhiên.
 
-**Chi tiết kỹ thuật:** gunicorn chạy 2 worker, mỗi worker có bộ đếm riêng. App dùng chế độ multiprocess của
-Prometheus để cộng dồn qua các worker; nếu không, mỗi lần scrape chỉ thấy số liệu của một worker ngẫu nhiên.
+**7.2** **Ý chính:** theo thiết kế, snapshot etcd định kỳ lên S3, và diễn tập khôi phục có đo thời gian. 📐 Thiết kế
+(P1)
 
-**Trên cluster** (📐 Thiết kế): ServiceMonitor để Prometheus tự tìm app, Prometheus giữ dữ liệu 24 giờ cho nhẹ,
-Grafana chỉ vào qua port-forward. Node `m7i-flex` không có metric CPU credit, nên cảnh báo theo mức dùng CPU kéo
-dài.
+- **Backup:** CronJob trên node control plane, 6 giờ một lần `etcdctl snapshot save`, kiểm tra snapshot hợp lệ rồi
+  mới đẩy lên S3.
+- **Diễn tập:** xoá một namespace thử, khôi phục snapshot trên cả ba member, xác nhận namespace quay lại, và ghi RTO
+  (thời gian từ lúc bắt đầu khôi phục tới khi mọi ứng dụng khoẻ lại).
+- **Giới hạn:** snapshot chỉ khôi phục đúng cluster đã tạo ra nó. Khi xoá cả cluster thì dựng lại từ code và Git.
 
-**7.2** **Ý chính:** snapshot etcd định kỳ lên S3, và diễn tập khôi phục có đo thời gian. **📐 Thiết kế (P1).**
+**7.3** **Ý chính:** theo thiết kế, nâng từng node một: drain → nâng kubeadm, kubelet → đưa node trở lại → chờ mọi
+thứ khoẻ rồi mới sang node tiếp. 📐 Thiết kế (P1)
 
-- **Backup:** một CronJob chạy trên node control plane, 6 giờ một lần `etcdctl snapshot save`, kiểm tra snapshot
-  hợp lệ rồi mới đẩy lên S3.
-- **Diễn tập:** xoá một namespace thử, khôi phục snapshot trên cả ba member, xác nhận namespace quay lại, và ghi
-  lại **RTO** (thời gian từ lúc bắt đầu khôi phục tới khi mọi ứng dụng khoẻ lại).
-- **Ghi chú:** snapshot chỉ phục hồi đúng cluster đã tạo ra nó. Khi xoá cả cluster thì dựng lại từ code và Git,
-  không cần etcd.
+- **Điều kiện trước khi nâng:** chart Rancher 2.15.1 chỉ chấp nhận Kubernetes dưới 1.37. Phải nâng Rancher trước và
+  xác nhận chart mới chấp nhận phiên bản đích; không đạt thì giữ 1.36.4.
+- **Playbook:** `upgrade.yml` với `serial: 1`, chờ node Ready và mọi Argo CD Application khoẻ.
+- **Đo:** chạy `curl` liên tục trong lúc nâng cấp và đếm số request lỗi.
 
-**7.3** **Ý chính:** nâng từng node một: drain → nâng kubeadm, kubelet → đưa node trở lại → chờ mọi thứ khoẻ rồi
-mới sang node tiếp. Trước đó kiểm tra Rancher có hỗ trợ phiên bản mới không. **📐 Thiết kế (P1).**
+**7.4** **Ý chính:** mỗi bước có lệnh kiểm tra, và kết quả được ghi vào `docs/evidence/`. Tôi chỉ nói những con số
+đã đo.
 
-- **Cổng kiểm tra tương thích:** chart Rancher 2.15.1 chỉ chấp nhận Kubernetes dưới 1.37. Nên phải nâng Rancher
-  trước, xác nhận chart mới chấp nhận phiên bản đích, rồi mới nâng Kubernetes. Không đạt thì giữ 1.36.4.
-- **Playbook:** `upgrade.yml` với `serial: 1`, chờ node Ready và mọi Argo CD Application khoẻ trước khi sang node
-  tiếp.
-- **Đo:** chạy một vòng `curl` liên tục trong lúc nâng cấp và đếm số request lỗi.
+- **Local:** 22 test pass; image 926 → 483 MB; build index 150.7 giây, lần hai dưới 1 giây; container khoẻ sau khoảng
+  6 giây.
+- **Terraform:** ba stack gồm bootstrap 18, shared 17, cluster 84 resource; phần cluster dựng lại trong 3 phút 19
+  giây và plan sau đó không còn thay đổi; request HTTP tới bucket state bị từ chối; mô phỏng IAM cho thấy quyền đúng
+  như thiết kế.
+- **Các phase sau** có sẵn điều kiện "xong khi nào": chạy Ansible lần hai phải `changed=0`, mất một node API vẫn trả
+  lời, image chưa ký bị từ chối, đo RTO khi khôi phục etcd.
 
-**7.4** **Ý chính:** mỗi bước đều có lệnh kiểm tra và kết quả được ghi vào thư mục `docs/evidence/`. Tôi chỉ nói
-những con số đã đo được.
+**7.5** **Ý chính:** hiện chưa có alert gửi tới người. Theo thiết kế, Prometheus và Alertmanager đi kèm
+kube-prometheus-stack sẽ lo việc này, nhưng các rule cụ thể chưa được viết. 📐 Thiết kế
 
-- **Local:** 22 test pass; image 926 → 483 MB; build index 150,7 giây, lần hai dưới 1 giây; container khoẻ sau
-  khoảng 6 giây.
-- **Terraform:** 18 / 17 / 84 resource; dựng lại 3 phút 19 giây; plan sau khi dựng không còn thay đổi; kiểm tra
-  bảo mật như request HTTP tới bucket bị từ chối, mô phỏng IAM cho thấy quyền đúng như thiết kế.
-- **Các phase sau** (📐 Thiết kế) có sẵn định nghĩa "xong khi nào": chạy Ansible lần hai phải `changed=0`, mất một
-  node API vẫn trả lời, image chưa ký bị từ chối, đo RTO khi khôi phục etcd.
+**Các alert tôi sẽ đặt đầu tiên:**
+
+1. Pod của app không Ready kéo dài, hoặc restart liên tục.
+2. Tỉ lệ lỗi 5xx vượt ngưỡng trong 5 phút.
+3. Độ trễ gọi Gemini tăng mạnh (thấy qua `llm_request_duration_seconds`).
+4. Node NotReady, etcd mất member, CPU node cao kéo dài.
+
+Gửi qua email hoặc Slack. Ngoài giờ, với một lab một người, không có on-call; ở công ty thì alert nghiêm trọng mới
+gọi người trực.
 
 ---
 
 ## 8. Chi phí và ràng buộc
 
-**8.1** **Ý chính:** cluster khoảng 0.53 USD/giờ và chỉ chạy khi cần; phần luôn giữ khoảng 7 USD/tháng. Chi phí
-được kiểm soát bằng thiết kế (xoá khi không dùng) và bằng cảnh báo (budget).
+**8.1** **Ý chính:** cluster khoảng 0.53 USD/giờ và chỉ chạy khi cần; phần luôn giữ khoảng 7 USD/tháng. Chi phí được
+kiểm soát bằng thiết kế (xoá khi không dùng) và bằng cảnh báo (budget).
 
 | Hạng mục | Chi phí |
 |---|---|
@@ -478,80 +577,78 @@ những con số đã đo được.
 
 - xoá cluster khi không dùng (tiết kiệm lớn nhất)
 - một NAT gateway thay vì ba
-- loại máy hợp lệ với Free plan
 - S3 gateway endpoint (miễn phí) để traffic S3 không đi qua NAT
 - WireGuard thay vì dịch vụ VPN managed
 
-**Cảnh báo:** budget 100 USD/tháng gửi email ở mức 50 % và 100 %, lọc theo tag `project` để không lẫn với
-project khác trong cùng account.
+**Cảnh báo:** budget 100 USD/tháng gửi email ở mức 50% và 100%, lọc theo tag `project` để không lẫn với project khác
+trong cùng account.
 
-**8.2** **Ý chính:** bốn ràng buộc: account AWS Free plan, ngân sách credit có hạn, account dùng chung với
-project khác, và chỉ có một người vận hành.
+**8.2** **Ý chính:** năm ràng buộc: account AWS Free plan, credit có hạn, account dùng chung với project khác, một
+người vận hành, và không được cài gì lên laptop.
 
 | Ràng buộc | Ảnh hưởng tới thiết kế |
 |---|---|
 | **Free plan** chỉ cho chạy loại máy đủ điều kiện | Node `m7i-flex.large`, workstation `t3.small` kèm swap; không chuyển được domain sang Route 53 nên delegate DNS |
 | **Credit có hạn** | Chia stack để xoá cluster khi không dùng; một NAT gateway |
 | **Account dùng chung** | Tag `project` cho budget; đặt tên mọi thứ theo `medical-rag-*`; tự tạo VPC riêng vì VPC mặc định đã bị xoá subnet |
-| **Một người vận hành** | Chạy Terraform từ một workstation thay vì CI; nhiều bước có hướng dẫn và lệnh kiểm tra |
-| **Không cài gì lên laptop** | Mọi công cụ nằm trên ops workstation trong AWS, vào bằng Session Manager |
+| **Một người vận hành** | Chạy Terraform từ workstation thay vì CI; mỗi bước có hướng dẫn và lệnh kiểm tra |
+| **Không cài gì lên laptop** | Mọi công cụ nằm trên ops workstation trong AWS, vào bằng SSM |
 
 ---
 
 ## 9. Khó khăn và bài học
 
-**9.1** **Ý chính:** chọn một chuyện có nguyên nhân gốc được chứng minh bằng log. Dưới đây là hai chuyện như vậy;
-kể một, giữ chuyện kia nếu được hỏi thêm.
+**9.1** **Ý chính:** kể một chuyện mà nguyên nhân được chứng minh bằng log hoặc số đo. Chuyện 1 là lựa chọn chính;
+chuyện 2 và 3 để dành khi được hỏi thêm.
 
-**Chuyện 1: node không kết nối được Session Manager.**
-"Sau khi dựng cluster, lệnh ping của Ansible thành công trên node 1 và 3 nhưng node 2 báo `TargetNotConnected`.
-Máy vẫn chạy bình thường, nên tôi không khởi động lại ngay mà đi tìm bằng chứng. SSM không có bản ghi nào của
-node 2, tức agent chưa từng đăng ký. Tôi đọc log boot qua `get-console-output` và thấy agent báo không lấy được
-credential của IAM role, dù role đã được gắn. Nguyên nhân là role vừa được tạo cùng lúc với máy, và credential
-chưa kịp sẵn sàng khi agent khởi động; agent sau đó chờ rất lâu mới thử lại. Tôi reboot node để agent lấy lại
-credential. Để lỗi không lặp lại ngẫu nhiên ở lần dựng sau, cách sửa là một script lúc boot chờ tới khi có
-credential rồi khởi động lại agent."
+**Chuyện 1: Free plan chặn loại máy.**
+"Lần launch EC2 đầu tiên lỗi `not eligible for Free Tier` dù account còn credit. Đọc kỹ thì lỗi nói về *loại máy*
+chứ không phải credit. Account đang ở AWS Free plan, gói này chặn mọi loại máy không đủ điều kiện, bất kể credit.
+Tôi liệt kê các loại hợp lệ, chọn `m7i-flex.large` đủ 2 vCPU và 8 GB cho node, và ghi lại rủi ro mới: loại máy
+này không có metric CPU credit, nên phải cảnh báo theo mức dùng CPU."
 
-Lưu ý khi kể: script này mới là đề xuất, chưa có trong repo. Khi đã thêm và dựng lại thành công thì đổi câu cuối
-thành "tôi đã thêm…".
+**Chuyện 2: build Docker bị treo khi tải package.**
+"Build image cứ đứng ở bước tải từ PyPI. Tôi đo thử: cùng một file, tải qua IPv4 mất 11 đến 20 giây, qua IPv6 chỉ
+0.45 giây. Tuyến IPv4 tới CDN của PyPI trên mạng đó bị nghẽn. Container của Docker Desktop lại không có IPv6, và
+khi có địa chỉ IPv6 nội bộ thì hệ thống vẫn ưu tiên IPv4. Tôi cấu hình Docker Engine dùng một dải IPv6 chuẩn; sau
+đó cùng lượt tải trong bước build chỉ còn 0.41 giây."
 
-**Chuyện 2: Free plan chặn loại máy.**
-"Lần launch EC2 đầu tiên lỗi `not eligible for Free Tier` dù account còn credit. Tôi đọc kỹ thì lỗi nói về loại
-máy chứ không phải credit. Account đang ở AWS Free plan, gói này chặn mọi loại máy không đủ điều kiện, bất kể
-credit. Tôi liệt kê các loại hợp lệ, chọn `m7i-flex.large` đủ 2 vCPU và 8 GB cho node, và ghi lại rủi ro mới: loại
-máy này không có metric CPU credit, nên phải cảnh báo theo mức dùng CPU."
+**Chuyện 3: một node không vào được Session Manager.**
+"Ping của Ansible thành công trên node 1 và 3, nhưng node 2 báo `TargetNotConnected`. Máy vẫn chạy, nên tôi không
+restart ngay mà tìm bằng chứng. SSM không có bản ghi nào của node 2, tức agent chưa từng đăng ký. Log boot báo
+agent không lấy được credential từ instance profile, dù profile đã gắn. Giả thuyết của tôi là agent chạy trước khi
+credential sẵn sàng; tôi chưa chứng minh được, vì hai node còn lại tạo cùng lúc vẫn bình thường. Tôi reboot để khôi
+phục, và đề xuất một script lúc boot chờ có credential rồi mới restart agent."
 
-**Điểm chung để nhấn mạnh:** đọc đúng thông báo lỗi, tìm bằng chứng trước khi sửa, rồi sửa ở nguyên nhân gốc thay
-vì chỉ khởi động lại.
+> **Mẹo:** chuyện 3 chỉ kể như một ví dụ về cách tìm bằng chứng, và nói rõ đâu là giả thuyết. Script trong chuyện
+> 3 chưa có trong repo; khi đã thêm và dựng lại thành công thì cập nhật câu cuối.
 
-**9.2** **Ý chính:** ưu tiên sửa những điểm yếu đã biết về quyền và độ sẵn sàng, rồi mới thêm tự động hoá.
+**Điểm chung để nhấn mạnh:** đọc đúng thông báo lỗi, thu bằng chứng trước khi can thiệp, và nói rõ đâu là nguyên
+nhân đã chứng minh, đâu là giả thuyết.
 
-1. Tách quyền admin của workstation thành role plan và role apply.
-2. Cho mỗi workload quyền IAM riêng (IRSA) thay vì dùng chung quyền của node.
-3. Tách NAT gateway, WireGuard gateway và node 1 ra khỏi cùng một AZ.
-4. Giới hạn cổng 6443 của load balancer nội bộ theo security group của node thay vì cả VPC.
-5. Đưa Terraform vào CI: plan trên pull request, credential tạm thời qua OIDC, quét bằng tflint và Checkov.
-6. Thêm HTTPS cho app khi có domain.
+**9.2** **Ý chính:** làm xong các phase đã thiết kế, rồi sửa ba điểm yếu lớn nhất: quyền IAM dùng chung của node,
+quyền admin của workstation, và NAT gateway đơn. Chi tiết từng điểm ở 6.4.
 
-**9.3** **Ý chính:** kiến trúc giống, nhưng quy mô, quyền hạn và quy trình thì đơn giản hơn nhiều.
+Sau đó: bộ đánh giá chất lượng câu trả lời (3.7), load test để có con số scale thật (4.6), và đưa Terraform vào CI
+với credential tạm thời qua OIDC.
+
+**9.3** **Ý chính:** kiến trúc tương tự, nhưng quy mô, quyền hạn và quy trình đơn giản hơn nhiều.
 
 | Ở project này | Ở công ty |
 |---|---|
 | Một account AWS, dùng chung | Nhiều account tách theo môi trường, có chính sách chung toàn tổ chức |
 | Một người, apply từ workstation | Apply qua CI, có review, credential tạm thời |
 | Tự dựng Kubernetes | Nhiều khả năng dùng EKS |
-| Cluster xoá khi không dùng | Chạy liên tục, có SLO và trực sự cố |
+| Cluster xoá khi không dùng | Chạy liên tục, có SLO và on-call |
 | Một NAT gateway | Mỗi AZ một NAT gateway |
 | App qua HTTP | HTTPS, WAF |
 | VPN bằng key quản lý tay | Truy cập qua hệ thống định danh có MFA |
 
-Nói rõ những khác biệt này cho thấy mình biết đâu là lựa chọn cho lab, đâu là lựa chọn cho production.
-
 **9.4** **Ý chính:** ba bài học lớn.
 
-1. **Thiết kế theo vòng đời và theo ranh giới trách nhiệm.** Tách thứ cần giữ khỏi thứ có thể xoá, và mỗi công
-   cụ chỉ sở hữu một lớp, làm hệ thống dễ dựng lại và dễ sửa hơn rất nhiều.
-2. **Bằng chứng trước khi sửa.** Các lỗi khó nhất (Free plan, SSM agent, mạng chậm khi build Docker) đều được
-   giải quyết nhờ đọc log và đo đạc, không phải nhờ thử khởi động lại.
-3. **Ghi rõ đánh đổi.** Một NAT gateway, quyền dùng chung của node, VPN tự quản lý đều là lựa chọn có chủ đích.
-   Ghi lại lý do và cách sửa giúp người khác (và chính mình sau này) hiểu vì sao hệ thống như vậy.
+1. **Thiết kế theo vòng đời và theo ranh giới trách nhiệm.** Tách thứ cần giữ khỏi thứ có thể xoá, và mỗi công cụ
+   chỉ lo một lớp, làm hệ thống dễ dựng lại và dễ sửa hơn rất nhiều.
+2. **Bằng chứng trước khi sửa.** Lỗi Free plan và lỗi mạng khi build Docker đều được giải quyết nhờ đọc kỹ lỗi và
+   đo đạc, không phải nhờ thử mò.
+3. **Ghi rõ đánh đổi.** Một NAT gateway, quyền dùng chung của node, VPN tự quản lý đều là lựa chọn có chủ đích. Ghi
+   lại lý do và cách sửa giúp người khác, và chính mình sau này, hiểu vì sao hệ thống như vậy.

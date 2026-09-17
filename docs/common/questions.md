@@ -7,9 +7,8 @@ vậy, đã làm được gì và còn giới hạn gì. Câu hỏi không gói 
 Muốn đào sâu phần hạ tầng thì dùng bộ câu hỏi riêng của Terraform:
 [`../terraform/questions.md`](../terraform/questions.md).
 
-**Cách dùng.** Trả lời thành tiếng trong khoảng một phút mỗi câu, rồi so với đáp án. Người phỏng vấn thường
-hỏi theo thứ tự: giới thiệu → kiến trúc → một phần bạn nói là làm tốt → chuyện khó khăn → giới hạn. Các
-nhóm dưới đây đi theo đúng thứ tự đó.
+**Cách dùng.** Trả lời thành tiếng trong khoảng một phút mỗi câu, rồi so với đáp án. Các nhóm đi từ tổng quan
+tới chi tiết, cuối cùng là khó khăn và bài học. Người phỏng vấn có thể nhảy cóc, nên mỗi đáp án tự đứng được.
 
 ---
 
@@ -23,7 +22,11 @@ nhóm dưới đây đi theo đúng thứ tự đó.
 
 **1.4** Vì sao bạn làm project này, và bạn muốn chứng minh điều gì?
 
-**1.5** Project đang ở giai đoạn nào? Phần nào đã xong, phần nào chưa?
+**1.5** Project đang ở phase nào? Phần nào đã xong, phần nào chưa?
+
+**1.6** Bạn làm một mình hay theo nhóm? Mất bao lâu?
+
+**1.7** Phần code app có phải bạn viết từ đầu không?
 
 ## 2. Kiến trúc tổng thể
 
@@ -42,7 +45,7 @@ vậy?
 
 ## 3. Ứng dụng và dữ liệu
 
-**3.1** Trước khi bạn nâng cấp, app có những vấn đề vận hành nào?
+**3.1** Bản app ban đầu có những vấn đề gì khi đem ra chạy thật?
 
 **3.2** FAISS index được tạo và quản lý thế nào? Muốn quay về index cũ thì làm sao?
 
@@ -52,11 +55,17 @@ vậy?
 
 **3.5** Bạn đã làm gì với Docker image, và kết quả đo được là gì?
 
+**3.6** Vì sao dùng RAG mà không fine-tune model?
+
+**3.7** Làm sao biết câu trả lời của chatbot là đúng? Có đánh giá chất lượng không?
+
+**3.8** Dữ liệu y tế có vấn đề riêng tư không? Câu hỏi của người dùng có bị lưu hay gửi ra ngoài không?
+
 ## 4. Hạ tầng và cluster
 
 **4.1** Nói ngắn gọn: hạ tầng trên AWS gồm những gì?
 
-**4.2** Vì sao cluster bị xoá mỗi khi không dùng, và làm sao dựng lại nhanh được?
+**4.2** Vì sao bạn xoá cluster khi không dùng, và dựng lại nhanh bằng cách nào?
 
 **4.3** Bạn vào máy chủ và vào Kubernetes API bằng cách nào, khi không có SSH?
 
@@ -64,25 +73,31 @@ vậy?
 
 **4.5** Rancher được truy cập thế nào, và vì sao không mở nó ra internet?
 
+**4.6** Traffic tăng gấp 10 lần thì hệ thống chịu thế nào? Scale ở đâu, nghẽn ở đâu?
+
 ## 5. CI/CD và GitOps
 
 **5.1** Từ lúc push code tới lúc chạy trên prod, chuyện gì xảy ra?
 
 **5.2** Vì sao tách CI (Jenkins) và CD (Argo CD)? Sao Jenkins không `kubectl apply` luôn?
 
-**5.3** Đưa một bản lên prod thế nào, và rollback thế nào?
+**5.3** Bản mới trên prod bị lỗi thì rollback thế nào?
 
 **5.4** Vì sao image được ghi bằng digest chứ không chỉ bằng tag?
 
 **5.5** Jenkins chạy trong cluster thì build Docker image bằng cách nào?
 
-**5.6** Jenkins commit ngược vào Git. Làm sao nó không tự kích hoạt chính nó mãi mãi?
+**5.6** Jenkins commit ngược vào Git. Làm sao nó không tự chạy lại thành vòng lặp vô hạn?
+
+**5.7** Vì sao chọn Jenkins mà không phải GitHub Actions hay GitLab CI?
+
+**5.8** Đã có Argo CD và kubectl, sao còn cần Rancher?
 
 ## 6. Bảo mật
 
 **6.1** Secret như API key đi từ đâu tới pod, và làm sao nó không lọt vào Git?
 
-**6.2** Làm sao bạn chắc image đang chạy trên prod đúng là image đã được build, quét và duyệt?
+**6.2** Làm sao bạn chắc image đang chạy trên prod đúng là image đã được build, quét và ký?
 
 **6.3** Những gì đang mở ra internet, và nguyên tắc bảo mật chung của project là gì?
 
@@ -96,7 +111,9 @@ vậy?
 
 **7.3** Nâng cấp phiên bản Kubernetes thế nào mà không làm app ngừng?
 
-**7.4** Bạn chứng minh những gì mình nói bằng cách nào?
+**7.4** Làm sao chứng minh những gì bạn kể là đã chạy thật?
+
+**7.5** App lỗi lúc 2 giờ sáng thì bạn biết bằng cách nào? Có alert không?
 
 ## 8. Chi phí và ràng buộc
 

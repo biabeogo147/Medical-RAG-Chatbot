@@ -783,7 +783,7 @@ private mà Ansible sẽ biến thành cluster kubeadm HA, một internal NLB ch
 một WireGuard gateway nhỏ để vào Rancher riêng tư. Security group tham chiếu lẫn nhau thay vì dải IP, và
 inline policy của các role ghi đúng ARN.
 
-Bản cluster 65 resource destroy mất một phút rưỡi, dựng lại từ đầu mất ba phút rưỡi, và plan sau đó báo
+Bản cluster 65 resource destroy mất 1 phút 27 giây, dựng lại từ đầu mất 3 phút 19 giây, và plan sau đó báo
 không có thay đổi. Bản đầy đủ 84 resource có WireGuard đã dựng thành công, tôi chưa đo lại thời gian. Chạy
 cluster tốn khoảng nửa đô mỗi giờ.
 
