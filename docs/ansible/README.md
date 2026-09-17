@@ -192,6 +192,7 @@ earns that in its own way:
 | Component | Version | Why this one |
 |---|---|---|
 | Kubernetes | 1.36.4 (`1.36.4-1.1`) | Initial pin; any minor change must pass the Rancher compatibility gate (design §4.2.1) |
+| cri-tools (`crictl`) | 1.36.0 (`1.36.0-1.1`) | Released per Kubernetes minor; installed explicitly because `kubeadm` no longer depends on it |
 | containerd | 2.3.5, from the Docker repository | Newer than Ubuntu's, and it has a version string that can be pinned |
 | Calico | v3.32.2 | Installed through its operator, configured for VXLAN |
 | ecr-credential-provider | v1.37.0 | Published for this Kubernetes generation and speaks the stable v1 credential-provider API |

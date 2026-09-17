@@ -153,6 +153,9 @@ aws_region: ap-southeast-1
 kubernetes_minor: "v1.36"
 kubernetes_version: "1.36.4"
 kubernetes_apt_version: "1.36.4-1.1"
+# crictl, the command-line client for the container runtime. It is released per Kubernetes minor, so
+# its version follows the minor, not the patch.
+cri_tools_apt_version: "1.36.0-1.1"
 
 # containerd.io from the Docker repository: newer than the one in Ubuntu and with a version string
 # that can be pinned.
@@ -607,6 +610,15 @@ Create `infra/ansible/roles/kubernetes_packages/tasks/main.yml`:
     lock_timeout: 300
     allow_change_held_packages: true
 
+- name: Install crictl
+  # Needed to inspect containers when the kubelet or a static pod fails to start. The kubeadm package
+  # does not depend on it, so it has to be installed explicitly. Not held: it only talks to the
+  # runtime and restarts nothing when it changes.
+  ansible.builtin.apt:
+    name: "cri-tools={{ cri_tools_apt_version }}"
+    state: present
+    lock_timeout: 300
+
 - name: Hold the three packages
   # An unattended upgrade of the kubelet would restart every pod on the node, and an upgrade that
   # skips a minor version breaks the cluster. Upgrades are done deliberately, one node at a time,
@@ -636,6 +648,8 @@ Add `- kubernetes_packages` to the `roles:` list, below `- containerd`.
 - **Held packages.** An unattended upgrade that restarted the kubelet would restart every pod on the
   node; one that crossed a minor version could also make Rancher unschedulable. Upgrades are done
   deliberately, one node at a time, after that gate.
+- **`cri-tools` is installed explicitly.** The `kubeadm` package no longer depends on it, but
+  `crictl` is the tool for looking at containers when the kubelet or a static pod does not start.
 - **The kubelet is enabled but not started.** Until kubeadm writes its configuration the kubelet has
   nothing to do and restarts in a loop. That is normal, and `kubeadm init` fixes it in step 6.
 
@@ -652,9 +666,10 @@ ansible nodes -b $VARS -m command -a "kubeadm version -o short"
 ansible nodes -b $VARS -m shell -a "apt-mark showhold"
 ansible nodes -b $VARS -m shell -a "crictl -r unix:///run/containerd/containerd.sock info | grep -m1 SystemdCgroup"
 ```
-Expect `v1.36.4`, the three held packages, and `"SystemdCgroup": true` from every node. That last
-check is the one that asks the running runtime rather than a configuration file; `crictl` is
-installed as a dependency of `kubeadm`, which is why it could not be used in step 3.
+Expect `v1.36.4`; the held packages `containerd.io`, `kubeadm`, `kubectl` and `kubelet`; and
+`"SystemdCgroup": true` from every node. That last check asks the running runtime rather than a
+configuration file. `crictl` comes from the `cri-tools` package installed by this role, which is why
+it could not be used in step 3.
 
 **Commit:** `git add infra/ansible && git commit -m "Add the kubernetes_packages role"`
 

@@ -27,6 +27,15 @@
     lock_timeout: 300
     allow_change_held_packages: true
 
+- name: Install crictl
+  # Needed to inspect containers when the kubelet or a static pod fails to start. The kubeadm package
+  # does not depend on it, so it has to be installed explicitly. Not held: it only talks to the
+  # runtime and restarts nothing when it changes.
+  ansible.builtin.apt:
+    name: "cri-tools={{ cri_tools_apt_version }}"
+    state: present
+    lock_timeout: 300
+
 - name: Hold the three packages
   # An unattended upgrade of the kubelet would restart every pod on the node, and an upgrade that
   # skips a minor version breaks the cluster. Upgrades are done deliberately, one node at a time,

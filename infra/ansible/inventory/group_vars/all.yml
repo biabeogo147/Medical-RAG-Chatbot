@@ -10,6 +10,9 @@ aws_region: ap-southeast-1
 kubernetes_minor: "v1.36"
 kubernetes_version: "1.36.4"
 kubernetes_apt_version: "1.36.4-1.1"
+# crictl, the command-line client for the container runtime. It is released per Kubernetes minor, so
+# its version follows the minor, not the patch.
+cri_tools_apt_version: "1.36.0-1.1"
 
 # containerd.io from the Docker repository: newer than the one in Ubuntu and with a version string
 # that can be pinned.

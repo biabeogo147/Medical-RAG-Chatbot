@@ -1,7 +1,7 @@
 # Câu hỏi tổng quan về project
 
 Bộ câu hỏi để giải thích project cho người phỏng vấn ở mức tổng quan: project làm gì, vì sao thiết kế như
-vậy, đã làm được gì và còn giới hạn gì. Câu hỏi không gói trong một công cụ. Đáp án nằm ở
+vậy, kết quả ra sao và còn giới hạn gì. Câu hỏi không gói trong một công cụ. Đáp án nằm ở
 [`answers.md`](answers.md), cùng số thứ tự.
 
 Muốn đào sâu phần hạ tầng thì dùng bộ câu hỏi riêng của Terraform:
@@ -22,7 +22,7 @@ tới chi tiết, cuối cùng là khó khăn và bài học. Người phỏng v
 
 **1.4** Vì sao bạn làm project này, và bạn muốn chứng minh điều gì?
 
-**1.5** Project đang ở phase nào? Phần nào đã xong, phần nào chưa?
+**1.5** Project gồm những phase nào, và bạn làm theo thứ tự nào?
 
 **1.6** Bạn làm một mình hay theo nhóm? Mất bao lâu?
 
