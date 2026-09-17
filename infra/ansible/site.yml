@@ -52,3 +52,32 @@
     - cni_calico
     - untaint_control_plane
 
+- name: Put a kubeconfig on the workstation
+  hosts: first_node
+  become: true
+  tasks:
+    - name: Read admin.conf
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: Make sure ~/.kube exists on the workstation
+      # `copy` does not create the parent directory; it fails with "Destination directory does not
+      # exist".
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.kube"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+
+    - name: Write it to ~/.kube/config, pointing at the local end of the SSM tunnel
+      # `make tunnel` forwards 127.0.0.1:6443 to the internal load balancer. The API server
+      # certificate lists 127.0.0.1 as well, so no TLS verification has to be switched off.
+      ansible.builtin.copy:
+        content: "{{ admin_conf.content | b64decode | regex_replace('server: https://.*', 'server: https://127.0.0.1:6443') }}"
+        dest: "{{ lookup('env', 'HOME') }}/.kube/config"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+

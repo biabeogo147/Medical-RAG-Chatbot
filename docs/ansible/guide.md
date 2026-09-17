@@ -1187,11 +1187,16 @@ network works:
 make kubectl CMD="run netcheck --image=busybox:1.36 --restart=Never --command -- sleep 300"
 make kubectl CMD="wait --for=condition=Ready pod/netcheck --timeout=180s"
 make kubectl CMD="get pod netcheck -o wide"
-make kubectl CMD="exec netcheck -- nslookup kubernetes.default"
+make kubectl CMD="exec netcheck -- nslookup kubernetes.default.svc.cluster.local"
 make kubectl CMD="delete pod netcheck"
 ```
-`get pod` must show `Running` on one of the three nodes, and `nslookup` must resolve
-`kubernetes.default.svc.cluster.local` to an address inside `10.96.0.0/12`.
+`get pod` must show `Running` on one of the three nodes, and `nslookup` must answer from
+`10.96.0.10` (CoreDNS) with `Address: 10.96.0.1`, the API server's Service address inside
+`10.96.0.0/12`.
+
+Use the full name. busybox's `nslookup` ignores the `search` list in the pod's `/etc/resolv.conf`,
+so the short `kubernetes.default` comes back `NXDOMAIN` even when DNS works. An `NXDOMAIN` still
+proves the pod reached CoreDNS; a broken DNS path shows `connection timed out` instead.
 
 **Commit:** `git add infra/ansible && git commit -m "Add the Calico and untaint roles"`
 
