@@ -1,132 +1,278 @@
 # Câu hỏi tổng quan về project
 
-Bộ câu hỏi để giải thích project cho người phỏng vấn ở mức tổng quan: project làm gì, vì sao thiết kế như
-vậy, kết quả ra sao và còn giới hạn gì. Câu hỏi không gói trong một công cụ. Đáp án nằm ở
-[`answers.md`](answers.md), cùng số thứ tự.
+Bộ câu hỏi để giải thích project cho người phỏng vấn: project làm gì, vì sao thiết kế như vậy, kết quả ra sao và
+còn giới hạn gì. Câu hỏi không giới hạn trong một công cụ. Đáp án nằm ở [`answers.md`](answers.md), cùng số thứ
+tự.
 
-Muốn đào sâu phần hạ tầng thì dùng bộ câu hỏi riêng của Terraform:
-[`../terraform/questions.md`](../terraform/questions.md).
+| Phần | Kiểm tra điều gì |
+|---|---|
+| **A. Phỏng vấn** (ưu tiên) | Bạn kể được project làm gì, vì sao thiết kế như vậy, xử lý tình huống thế nào, kết quả và giới hạn |
+| **B. Chi tiết** | Bạn nắm các con số, luồng đi và cơ chế xuyên suốt project: port, CIDR, probe, pipeline, secret |
 
-**Cách dùng.** Trả lời thành tiếng trong khoảng một phút mỗi câu, rồi so với đáp án. Các nhóm đi từ tổng quan
-tới chi tiết, cuối cùng là khó khăn và bài học. Người phỏng vấn có thể nhảy cóc, nên mỗi đáp án tự đứng được.
+Các bộ câu hỏi chuyên sâu: [Terraform](../terraform/questions.md), [Ansible](../ansible/questions.md),
+[AWS và khác biệt với on-premises](../aws/questions.md).
+
+**Cách dùng.** Làm Phần A trước: trả lời thành tiếng trong khoảng một phút mỗi câu, rồi so với đáp án. Các nhóm
+đi từ tổng quan tới chi tiết, rồi tình huống, cuối cùng là bài học. Người phỏng vấn có thể nhảy cóc, nên mỗi đáp
+án tự đứng được. Phần B dùng để tự kiểm tra: không mở tài liệu, nói được con số và lý do.
 
 ---
 
-## 1. Giới thiệu
+## Phần A — Phỏng vấn
 
-**1.1** Giới thiệu project trong một phút.
+### A1. Giới thiệu
 
-**1.2** App này làm gì cho người dùng, và bên trong nó trả lời một câu hỏi như thế nào?
+**A1.1** Giới thiệu project trong một phút.
 
-**1.3** Phần việc chính của bạn trong project là gì?
+**A1.2** App này làm gì cho người dùng, và bên trong nó trả lời một câu hỏi như thế nào?
 
-**1.4** Vì sao bạn làm project này, và bạn muốn chứng minh điều gì?
+**A1.3** Phần việc chính của bạn trong project là gì?
 
-**1.5** Project gồm những phase nào, và bạn làm theo thứ tự nào?
+**A1.4** Vì sao bạn làm project này, và bạn muốn chứng minh điều gì?
 
-**1.6** Bạn làm một mình hay theo nhóm? Mất bao lâu?
+**A1.5** Project gồm những phase nào, và bạn làm theo thứ tự nào?
 
-**1.7** Phần code app có phải bạn viết từ đầu không?
+**A1.6** Bạn làm một mình hay theo nhóm? Mất bao lâu?
 
-## 2. Kiến trúc tổng thể
+**A1.7** Phần code app có phải bạn viết từ đầu không?
 
-**2.1** Mô tả kiến trúc tổng thể: có những thành phần nào và chúng nối với nhau ra sao?
+### A2. Kiến trúc tổng thể
 
-**2.2** Một người dùng gõ câu hỏi. Request đi qua những đâu cho tới khi có câu trả lời?
+**A2.1** Mô tả kiến trúc tổng thể: có những thành phần nào và chúng nối với nhau ra sao?
 
-**2.3** Terraform, Ansible, Argo CD và Jenkins mỗi công cụ lo phần nào? Vì sao phải chia ranh giới rõ như
+**A2.2** Một người dùng gõ câu hỏi. Request đi qua những đâu cho tới khi có câu trả lời?
+
+**A2.3** Terraform, Ansible, Argo CD và Jenkins mỗi công cụ lo phần nào? Vì sao phải chia ranh giới rõ như
 vậy?
 
-**2.4** Vì sao tự dựng Kubernetes bằng kubeadm trên EC2 mà không dùng EKS?
+**A2.4** Vì sao tự dựng Kubernetes bằng kubeadm trên EC2 mà không dùng EKS?
 
-**2.5** App nhỏ như vậy có cần Kubernetes không?
+**A2.5** App nhỏ như vậy có cần Kubernetes không?
 
-**2.6** Môi trường dev và prod được tách ra thế nào?
+**A2.6** Môi trường dev và prod được tách ra thế nào?
 
-## 3. Ứng dụng và dữ liệu
+### A3. Ứng dụng và dữ liệu
 
-**3.1** Bản app ban đầu có những vấn đề gì khi đem ra chạy thật?
+**A3.1** Bản app ban đầu có những vấn đề gì khi đem ra chạy thật?
 
-**3.2** FAISS index được tạo và quản lý thế nào? Muốn quay về index cũ thì làm sao?
+**A3.2** FAISS index được tạo và quản lý thế nào? Muốn quay về index cũ thì làm sao?
 
-**3.3** `/healthz` và `/readyz` khác nhau thế nào, và vì sao cần cả hai?
+**A3.3** `/healthz` và `/readyz` khác nhau thế nào, và vì sao cần cả hai?
 
-**3.4** App phụ thuộc Hugging Face và Gemini. Khi các API đó lỗi hoặc giới hạn tốc độ thì chuyện gì xảy ra?
+**A3.4** App phụ thuộc Hugging Face và Gemini. Khi các API đó lỗi hoặc giới hạn tốc độ thì chuyện gì xảy ra?
 
-**3.5** Bạn đã làm gì với Docker image, và kết quả đo được là gì?
+**A3.5** Bạn đã làm gì với Docker image, và kết quả đo được là gì?
 
-**3.6** Vì sao dùng RAG mà không fine-tune model?
+**A3.6** Vì sao dùng RAG mà không fine-tune model?
 
-**3.7** Làm sao biết câu trả lời của chatbot là đúng? Có đánh giá chất lượng không?
+**A3.7** Làm sao biết câu trả lời của chatbot là đúng? Có đánh giá chất lượng không?
 
-**3.8** Dữ liệu y tế có vấn đề riêng tư không? Câu hỏi của người dùng có bị lưu hay gửi ra ngoài không?
+**A3.8** Dữ liệu y tế có vấn đề riêng tư không? Câu hỏi của người dùng có bị lưu hay gửi ra ngoài không?
 
-## 4. Hạ tầng và cluster
+### A4. Hạ tầng và cluster
 
-**4.1** Nói ngắn gọn: hạ tầng trên AWS gồm những gì?
+**A4.1** Nói ngắn gọn: hạ tầng trên AWS gồm những gì?
 
-**4.2** Vì sao bạn xoá cluster khi không dùng, và dựng lại nhanh bằng cách nào?
+**A4.2** Vì sao bạn xoá cluster khi không dùng, và dựng lại nhanh bằng cách nào?
 
-**4.3** Bạn vào máy chủ và vào Kubernetes API bằng cách nào, khi không có SSH?
+**A4.3** Bạn vào máy chủ và vào Kubernetes API bằng cách nào, khi không có SSH?
 
-**4.4** Cluster chịu lỗi thế nào? Mất một node thì sao?
+**A4.4** Cluster chịu lỗi thế nào? Mất một node thì sao?
 
-**4.5** Rancher được truy cập thế nào, và vì sao không mở nó ra internet?
+**A4.5** Rancher được truy cập thế nào, và vì sao không mở nó ra internet?
 
-**4.6** Traffic tăng gấp 10 lần thì hệ thống chịu thế nào? Scale ở đâu, nghẽn ở đâu?
+**A4.6** Traffic tăng gấp 10 lần thì hệ thống chịu thế nào? Scale ở đâu, nghẽn ở đâu?
 
-## 5. CI/CD và GitOps
+### A5. CI/CD và GitOps
 
-**5.1** Từ lúc push code tới lúc chạy trên prod, chuyện gì xảy ra?
+**A5.1** Từ lúc push code tới lúc chạy trên prod, chuyện gì xảy ra?
 
-**5.2** Vì sao tách CI (Jenkins) và CD (Argo CD)? Sao Jenkins không `kubectl apply` luôn?
+**A5.2** Vì sao tách CI (Jenkins) và CD (Argo CD)? Sao Jenkins không `kubectl apply` luôn?
 
-**5.3** Bản mới trên prod bị lỗi thì rollback thế nào?
+**A5.3** Bản mới trên prod bị lỗi thì rollback thế nào?
 
-**5.4** Vì sao image được ghi bằng digest chứ không chỉ bằng tag?
+**A5.4** Vì sao image được ghi bằng digest chứ không chỉ bằng tag?
 
-**5.5** Jenkins chạy trong cluster thì build Docker image bằng cách nào?
+**A5.5** Jenkins chạy trong cluster thì build Docker image bằng cách nào?
 
-**5.6** Jenkins commit ngược vào Git. Làm sao nó không tự chạy lại thành vòng lặp vô hạn?
+**A5.6** Jenkins commit ngược vào Git. Làm sao nó không tự chạy lại thành vòng lặp vô hạn?
 
-**5.7** Vì sao chọn Jenkins mà không phải GitHub Actions hay GitLab CI?
+**A5.7** Vì sao chọn Jenkins mà không phải GitHub Actions hay GitLab CI?
 
-**5.8** Đã có Argo CD và kubectl, sao còn cần Rancher?
+**A5.8** Đã có Argo CD và kubectl, sao còn cần Rancher?
 
-## 6. Bảo mật
+### A6. Bảo mật
 
-**6.1** Secret như API key đi từ đâu tới pod, và làm sao nó không lọt vào Git?
+**A6.1** Secret như API key đi từ đâu tới pod, và làm sao nó không lọt vào Git?
 
-**6.2** Làm sao bạn chắc image đang chạy trên prod đúng là image đã được build, quét và ký?
+**A6.2** Làm sao bạn chắc image đang chạy trên prod đúng là image đã được build, quét và ký?
 
-**6.3** Những gì đang mở ra internet, và nguyên tắc bảo mật chung của project là gì?
+**A6.3** Những gì đang mở ra internet, và nguyên tắc bảo mật chung của project là gì?
 
-**6.4** Project còn những điểm yếu bảo mật nào mà bạn biết?
+**A6.4** Project còn những điểm yếu bảo mật nào mà bạn biết?
 
-## 7. Vận hành ngày 2 và quan sát
+### A7. Vận hành ngày 2 và quan sát
 
-**7.1** Bạn theo dõi app và cluster thế nào? App xuất ra những metric gì?
+**A7.1** Bạn theo dõi app và cluster thế nào? App xuất ra những metric gì?
 
-**7.2** Backup và khôi phục cluster thế nào?
+**A7.2** Backup và khôi phục cluster thế nào?
 
-**7.3** Nâng cấp phiên bản Kubernetes thế nào mà không làm app ngừng?
+**A7.3** Nâng cấp phiên bản Kubernetes thế nào mà không làm app ngừng?
 
-**7.4** Làm sao chứng minh những gì bạn kể là đã chạy thật?
+**A7.4** Làm sao chứng minh những gì bạn kể là đã chạy thật?
 
-**7.5** App lỗi lúc 2 giờ sáng thì bạn biết bằng cách nào? Có alert không?
+**A7.5** App lỗi lúc 2 giờ sáng thì bạn biết bằng cách nào? Có alert không?
 
-## 8. Chi phí và ràng buộc
+### A8. Chi phí và ràng buộc
 
-**8.1** Project tốn bao nhiêu tiền, và bạn kiểm soát chi phí thế nào?
+**A8.1** Project tốn bao nhiêu tiền, và bạn kiểm soát chi phí thế nào?
 
-**8.2** Những ràng buộc nào đã định hình thiết kế?
+**A8.2** Những ràng buộc nào đã định hình thiết kế?
 
-## 9. Khó khăn và bài học
+### A9. Tình huống
 
-**9.1** Kể về vấn đề khó nhất bạn gặp và cách bạn tìm ra nguyên nhân.
+**A9.1** Mọi người dùng đều nhận lỗi 502 hoặc 504. Bạn xử lý thế nào, từng bước?
 
-**9.2** Nếu làm lại hoặc có thêm thời gian, bạn sẽ thay đổi gì?
+**A9.2** Prod đang lỗi và cần hotfix gấp. Bạn có sửa thẳng trên cluster không? Còn khi đổi một secret, hoặc khi
+ai đó đã `kubectl edit` trên prod?
 
-**9.3** Project này khác gì so với một hệ thống production thật ở công ty?
+**A9.3** Đem nguyên hệ thống này ra chạy production thật, cái gì hỏng đầu tiên?
 
-**9.4** Bạn học được gì từ project này?
+**A9.4** Kẻ tấn công chiếm được một pod của app. Họ đi được tới đâu?
+
+**A9.5** Đổi model Gemini, sửa prompt hoặc đổi model embedding thì deploy và rollback thế nào? Bạn theo dõi
+token và độ trễ ra sao?
+
+**A9.6** Bạn đặt SLO gì cho app này?
+
+**A9.7** Chiến lược test của cả project là gì? Còn thiếu gì?
+
+**A9.8** Một người khác tiếp quản hệ thống. Họ đọc gì đầu tiên?
+
+**A9.9** Hệ thống này tốn bao nhiêu công vận hành mỗi tháng? Có đáng không?
+
+### A10. Khó khăn và bài học
+
+**A10.1** Kể về vấn đề khó nhất bạn gặp và cách bạn tìm ra nguyên nhân.
+
+**A10.2** Kể về một sai lầm của bạn trong project.
+
+**A10.3** Timebox chỉ có ba ngày. Bạn đã cắt gì, và vì sao?
+
+**A10.4** Phần nào bạn tự quyết định, phần nào tham khảo? Bạn có dùng AI không?
+
+**A10.5** Nếu làm lại hoặc có thêm thời gian, bạn sẽ thay đổi gì?
+
+**A10.6** Project này khác gì so với một hệ thống production thật ở công ty?
+
+**A10.7** Bạn học được gì từ project này?
+
+---
+
+## Phần B — Chi tiết
+
+### B1. Mạng và luồng request
+
+**B1.1** Pod CIDR và Service CIDR được chọn thế nào so với các dải của VPC? Có cặp dải nào đang trùng không?
+
+**B1.2** Một request của người dùng đi qua những port nào, từ NLB tới process trong container? ingress-nginx có
+thấy IP thật của người dùng không?
+
+**B1.3** Người vận hành mở Rancher. TLS được terminate ở đâu, và vì sao không ở load balancer?
+
+**B1.4** `kubectl` trên workstation tới Kubernetes API bằng đường nào? Vì sao certificate của API server phải
+có `127.0.0.1`?
+
+**B1.5** Không có domain cho app, dev và prod chia một NLB thế nào? App phải làm gì để chạy đúng dưới `/dev`, và
+probe cùng Prometheus gọi pod dev bằng path nào?
+
+**B1.6** NetworkPolicy của namespace app cho gì đi vào, gì đi ra? Pod nào trong namespace đó lại cần quyền AWS?
+
+### B2. App và index
+
+**B2.1** Version của index được tính từ những gì? Đổi tên file PDF mà không đổi nội dung thì version có đổi
+không?
+
+**B2.2** Job build index chạy lúc nào trong một lần sync của Argo CD, và làm sao lần sync thứ hai không embed
+lại?
+
+**B2.3** Pod lấy index vào bằng cách nào, index nằm ở đâu trong container, và vì sao values ghi version cụ thể
+chứ không dùng con trỏ `LATEST`?
+
+**B2.4** Lúc build index, embedding được gửi thế nào và thử lại ra sao? Lỗi nào không được thử lại?
+
+**B2.5** Mỗi worker gunicorn dựng RAG chain thế nào? Pod `Ready` có nghĩa là gì, và không có nghĩa là gì?
+
+**B2.6** Ba probe của pod app trỏ vào endpoint nào? Startup probe giới hạn 5 phút đánh đổi điều gì?
+
+**B2.7** Vì sao metric cần `PROMETHEUS_MULTIPROC_DIR`, vì sao `start.sh` xoá thư mục đó mỗi lần khởi động, và
+`child_exit` trong `gunicorn.conf.py` thực sự làm gì?
+
+**B2.8** Lịch sử chat nằm ở đâu, giữ bao nhiêu tin? Dev và prod chạy chung một host thì cookie session ra sao?
+
+**B2.9** Câu trả lời của Gemini được đưa vào HTML thế nào để không thành lỗ XSS?
+
+**B2.10** Ai tính `index.version` để ghi vào values, và file PDF tới Job build index bằng đường nào?
+
+### B3. Container và manifest
+
+**B3.1** Image runtime dựa trên gì, chạy bằng user nào, và những gì cố ý không có trong image?
+
+**B3.2** Root filesystem chỉ đọc. App còn phải ghi vào đâu, và những cài đặt nào đưa mọi thứ ghi vào đó?
+
+**B3.3** App dev chỉ có 1 replica. Nếu chart cũng tạo PodDisruptionBudget `minAvailable: 1` cho dev thì chuyện gì
+xảy ra khi nâng cấp node?
+
+**B3.4** Mất một node đột ngột khác drain một node thế nào? PodDisruptionBudget và `maxUnavailable: 0` giúp ở
+trường hợp nào?
+
+**B3.5** Values trỏ tới một version index chưa có trên S3. Kể từng bước chuyện gì xảy ra trong rolling update.
+
+**B3.6** Node pull image từ ECR mà không có `imagePullSecrets`. Cơ chế nào làm việc đó?
+
+### B4. CI/CD và supply chain
+
+**B4.1** Kể các stage của pipeline Jenkins theo thứ tự. Stage nào là cổng chặn có chủ đích?
+
+**B4.2** Trivy chặn pipeline với điều kiện chính xác nào? Muốn có số lỗ hổng HIGH trong báo cáo thì phải làm gì?
+
+**B4.3** Cosign ký cái gì, bằng key nào, và attest thêm gì? Jenkins lấy quyền dùng key từ đâu?
+
+**B4.4** Chữ ký cosign nằm ở đâu trong ECR, và điều đó ảnh hưởng thế nào tới lifecycle policy và rollback?
+
+**B4.5** Skip guard của pipeline kiểm tra điều kiện gì? Có trường hợp nào nó bỏ qua nhầm một build cần chạy?
+
+**B4.6** Dev và prod khác nhau thế nào ở sync policy của Argo CD và ở chế độ của Kyverno?
+
+**B4.7** Kyverno kiểm tra chữ ký của những image nào? Image nào chạy trong cluster mà không được kiểm tra?
+
+**B4.8** Rancher được cài theo sync wave nào, và vì sao không đặt `bootstrapPassword` trong values?
+
+### B5. Secret và quyền
+
+**B5.1** Năm secret trong Secrets Manager là gì, ai đọc được cái nào? Có secret nào của hệ thống chưa nằm trong
+năm cái đó không?
+
+**B5.2** Jenkins không có quyền deploy vào cluster. Vậy cụ thể nó có những quyền gì, trên AWS, trên Kubernetes
+và trên GitHub?
+
+**B5.3** Những pod nào được phép gọi metadata service? NetworkPolicy có thật sự chặn được mọi pod khác không?
+
+**B5.4** Snapshot etcd chứa những gì, và ai đọc được nó?
+
+### B6. Vận hành
+
+**B6.1** `make up` và `make down` chạy những gì theo thứ tự? `make down` có để lại EBS volume nào không?
+
+**B6.2** CronJob backup etcd chạy ở đâu, cần gì để nói chuyện với etcd, bao lâu một lần, và snapshot được giữ bao
+lâu? Khôi phục cần thêm gì ngoài snapshot?
+
+**B6.3** Trước khi đổi minor Kubernetes, bạn kiểm tra những gì và theo thứ tự nào?
+
+**B6.4** Cảnh báo CPU cho node `m7i-flex` dựa trên metric nào, và vì sao ngưỡng không nên là 80%?
+
+**B6.5** Ba node 8 GB chạy cả control plane, Jenkins, Prometheus, Rancher và app. Những cài đặt nào giữ cho
+chúng không hết bộ nhớ, và còn thiếu gì?
+
+**B6.6** Các addon như ingress-nginx, Calico, Kyverno cũng có ma trận phiên bản. Vì sao cổng kiểm tra trước khi
+nâng cấp không nên chỉ xét Rancher?

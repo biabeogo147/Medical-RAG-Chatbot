@@ -263,8 +263,8 @@ works out the order itself from the references between resources, so the split i
 
 `bootstrap/` is the exception twice over: its `backend.tf` is added only in step 6, once the bucket it
 creates exists, and it has no `main.tf` — its account lookup sits in `state.tf` and its AZ lookup in
-`workstation.tf`. The shared stack also retains the historical filenames `bugdets.tf` and
-`ouputs.tf`; Terraform loads them normally because every `.tf` file in the folder is equivalent.
+`workstation.tf`. The shared stack also retains the historical filename `bugdets.tf`; Terraform loads it normally
+because every `.tf` file in the folder is equivalent.
 
 ### `bootstrap/` — 18 resources
 
@@ -285,7 +285,7 @@ creates exists, and it has no `main.tf` — its account lookup sits in `state.tf
 | `secrets.tf` | Empty secrets `medical-rag/llm` and `medical-rag/github`. Values are set with the AWS CLI, never by Terraform | External Secrets syncs them into Kubernetes |
 | `bugdets.tf` | Monthly budget with email alerts at 50 % and 100 %, filtered to `project=medical-rag` | You |
 | `rancher.tf` | Route 53 zone plus empty `medical-rag/rancher`, `medical-rag/rancher-tls` and `medical-rag/wireguard` secrets | Rancher, External Secrets and the VPN gateway |
-| `ouputs.tf` | Registry, bucket, KMS and all five secret names; never secret values | Cluster stack and operator checks |
+| `outputs.tf` | Registry, bucket, KMS and all five secret names; never secret values | Cluster stack and operator checks |
 
 ### `cluster/` — 84 resources
 

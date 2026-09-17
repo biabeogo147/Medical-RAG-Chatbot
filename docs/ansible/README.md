@@ -4,6 +4,9 @@ What the Ansible code does to the three machines Terraform created, how the file
 what each role is responsible for. The build instructions are in [`guide.md`](guide.md). Every task
 file is commented, so the code itself explains what each task does and why.
 
+Self-check and interview questions (Vietnamese) are in [`questions.md`](questions.md), with answers in
+[`answers.md`](answers.md).
+
 ## 1. The picture
 
 Terraform stops at the machine. Ansible starts there: it installs the runtime and the Kubernetes
