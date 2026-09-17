@@ -1,0 +1,47 @@
+---
+# Creates the cluster on the first node. Runs once; every later run finds admin.conf and skips.
+
+- name: Check whether this node is already a control plane
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_admin_conf
+
+- name: Write the kubeadm configuration
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: /etc/kubernetes/kubeadm-config.yaml
+    mode: '0600'
+
+- name: Initialise the control plane
+  # --upload-certs stores the control-plane certificates in a Secret for two hours, which is how the
+  # other two nodes get them without any file being copied around.
+  ansible.builtin.command: kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs
+  when: not kubeadm_admin_conf.stat.exists
+  register: kubeadm_init_result
+  changed_when: kubeadm_init_result.rc == 0
+
+- name: Give root a kubeconfig
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    mode: '0700'
+
+- name: Copy admin.conf into place
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: true
+    mode: '0600'
+
+- name: Wait until the API server answers through the load balancer
+  # This proves three things at once: the API is up, the NLB has marked this node healthy, and the
+  # node can reach the NLB. /readyz is readable without credentials.
+  ansible.builtin.uri:
+    url: "https://{{ control_plane_endpoint }}:6443/readyz"
+    validate_certs: false
+    status_code: 200
+  register: kubeadm_readyz
+  retries: 30
+  delay: 10
+  until: kubeadm_readyz.status | default(0) == 200
+  changed_when: false

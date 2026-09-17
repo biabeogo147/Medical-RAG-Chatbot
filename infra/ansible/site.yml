@@ -26,3 +26,11 @@
     - containerd
     - kubernetes_packages
     - ecr_credential_provider
+
+- name: Create the cluster on the first node
+  hosts: first_node
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  roles:
+    - kubeadm_init
