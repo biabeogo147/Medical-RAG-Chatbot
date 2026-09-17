@@ -24,3 +24,4 @@
   roles:
     - common
     - containerd
+    - kubernetes_packages

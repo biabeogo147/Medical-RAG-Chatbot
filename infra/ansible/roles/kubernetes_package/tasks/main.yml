@@ -1,0 +1,47 @@
+---
+# kubelet, kubeadm and kubectl, pinned to one patch release and held there.
+
+- name: Add the Kubernetes signing key
+  # Every minor version has its own repository and its own key, so the URL contains the minor.
+  ansible.builtin.get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_minor }}/deb/Release.key"
+    dest: /etc/apt/keyrings/kubernetes.asc
+    mode: '0644'
+
+- name: Add the Kubernetes repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/etc/apt/keyrings/kubernetes.asc]
+      https://pkgs.k8s.io/core:/stable:/{{ kubernetes_minor }}/deb/ /
+    filename: kubernetes
+    state: present
+
+- name: Install the pinned kubelet, kubeadm and kubectl
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_apt_version }}"
+      - "kubeadm={{ kubernetes_apt_version }}"
+      - "kubectl={{ kubernetes_apt_version }}"
+    state: present
+    update_cache: true
+    lock_timeout: 300
+    allow_change_held_packages: true
+
+- name: Hold the three packages
+  # An unattended upgrade of the kubelet would restart every pod on the node, and an upgrade that
+  # skips a minor version breaks the cluster. Upgrades are done deliberately, one node at a time,
+  # by the upgrade.yml playbook of a later phase.
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Start the kubelet at boot
+  # Not started here: until kubeadm has written its configuration the kubelet has nothing to do and
+  # restarts in a loop. kubeadm starts it as part of `init` and `join`.
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
