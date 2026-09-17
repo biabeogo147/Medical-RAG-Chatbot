@@ -3,6 +3,8 @@
 What the Terraform code builds, how the files are organised, and what each one is responsible for.
 The build instructions are in [`guide.md`](guide.md). Every `.tf` file is commented, so the code
 itself explains what each block does and why.
+Self-check and interview questions (Vietnamese) are in [`questions.md`](questions.md), with answers in
+[`answers.md`](answers.md).
 
 ## 1. The picture
 
