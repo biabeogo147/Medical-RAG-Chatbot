@@ -100,7 +100,7 @@ The tunnel ran through node 1, so node 2 was the one stopped.
 
 | Action | Observed |
 |---|---|
-| `aws ec2 stop-instances` on node 2 (`i-0510a727d68f7a930`) | Instance went `running` → `stopping` |
+| `aws ec2 stop-instances` on node 2 (`i-0…`) | Instance went `running` → `stopping` |
 | `kubectl get nodes -w` | `medical-rag-node-2` turned `NotReady`; nodes 1 and 3 stayed `Ready` |
 | `kubectl get pods -A` while node 2 was down | **The API kept answering** through the internal NLB: 2 of 3 etcd members is still a quorum |
 | `aws ec2 start-instances` on node 2 | Instance went `stopped` → `pending` |

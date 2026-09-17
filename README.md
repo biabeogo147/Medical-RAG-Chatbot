@@ -1,184 +1,156 @@
-# Medical RAG Chatbot
+# Medical RAG Chatbot on self-managed Kubernetes
 
-A Retrieval Augmented Generation (RAG) assistant that answers medical questions from a curated PDF knowledge base. It combines a lightweight Flask UI, LangChain orchestration, FAISS vector search and the Gemini API to give grounded, concise answers. It runs on a **self-managed 3-node kubeadm cluster on EC2** (HA control plane, stacked etcd), delivered through GitOps.
+**Highly available Kubernetes on bare EC2: Terraform, Ansible over SSM, GitOps. A RAG chatbot is the workload.**
 
-> **Credits:** Adapted from [data-guru0/RAG-MEDICAL-CHATBOT](https://github.com/data-guru0/RAG-MEDICAL-CHATBOT) and extended with infrastructure, deployment, and observability improvements.
+![Kubernetes](https://img.shields.io/badge/Kubernetes-1.36_kubeadm_HA-326CE5?logo=kubernetes&logoColor=white)
+![Terraform](https://img.shields.io/badge/Terraform-3_stacks-7B42BC?logo=terraform&logoColor=white)
+![Ansible](https://img.shields.io/badge/Ansible-over_SSM-EE0000?logo=ansible&logoColor=white)
+![Argo CD](https://img.shields.io/badge/Argo_CD-app--of--apps-EF7B4D?logo=argo&logoColor=white)
+![SSH and AWS access keys](https://img.shields.io/badge/SSH_%26_AWS_access_keys-0-2EA44F)
 
-## ✨ Standout Capabilities
-- **Grounded answers:** documents are chunked, embedded with the Hugging Face Inference API and indexed in FAISS. Gemini answers in 2–3 lines from the retrieved text, or says "I don't know".
-- **Versioned index artifact:** the corpus is embedded once (batched, with retry on rate limits) and stored in S3 under a content hash. Pods pull a pinned version instead of re-embedding.
-- **Self-managed Kubernetes:** Terraform provisions the AWS resources. Ansible builds a kubeadm cluster with 3 control-plane nodes behind an internal load balancer.
-- **GitOps delivery:** Jenkins builds and tests, Argo CD deploys. Every commit reaches `dev` automatically; `prod` changes only through a reviewed pull request.
-- **Supply-chain security:** images are scanned with Trivy, get an SBOM, and are signed with Cosign using an AWS KMS key. Kyverno rejects unsigned images in `prod`.
-- **Observability:** health probes, Prometheus metrics aggregated across gunicorn workers, and Grafana.
-- **Private operations:** Rancher is reachable only through a WireGuard VPN; TLS with a Sectigo certificate ends at ingress-nginx inside the cluster.
+- **No SSH, no AWS access keys, nothing on the laptop but git, an editor and WireGuard.** Machines are
+  reached through SSM Session Manager, act with instance roles, and are operated from a workstation in AWS.
+- **Git is the control plane.** After bootstrap, every change inside the cluster is a commit, and every
+  admin UI is reachable only over WireGuard.
+- **Rebuilt in under 10 minutes, torn down after every session.** About 0.53 USD/hour while it runs.
 
-## 🧠 System Architecture
+## By the numbers
+
+- **Empty cluster stack → 3 Ready control planes in [9 m 57 s](docs/evidence/ansible.md#rebuild-from-nothing):**
+  84 AWS resources in 3 m 47 s, then the cluster in 6 m 10 s.
+- **Idempotent:** [`terraform plan` → No changes](docs/evidence/terraform.md#reproducibility) after apply; a
+  second Ansible run → [`changed=0` on every host](docs/evidence/ansible.md#rebuild-from-nothing) in 2 m 56 s.
+- **Loses a node, keeps the API:** a control plane stopped mid-session and the Kubernetes API
+  [kept answering](docs/evidence/ansible.md#ha-drill); the node rejoined on boot without a playbook run.
+- **Infrastructure destroyed in 2 m 15 s.** 0.53 USD/hour while up (cluster + VPN gateway), about 7 USD/month
+  kept for the registry, keys, DNS and the stopped workstation ([cost](docs/evidence/terraform.md#cost)).
+- **Container 926 → 483 MB (−48%)**, 22 tests, non-root with a read-only filesystem ([local evidence](docs/evidence/local.md)).
+- **7,079-chunk index with a content-hashed version**, identical in a container and on the host; an
+  unchanged corpus [skips the rebuild in < 1 s](docs/evidence/local.md#index-artifact).
+
+## Architecture
+
 ```mermaid
 flowchart LR
-    U[App user] --> NLB[Public NLB :80] --> ING[ingress-nginx]
-    ING -->|"/dev"| DEV[medical-rag dev]
-    ING -->|"/"| PROD[medical-rag prod]
-    OP[Operator + WireGuard client] -->|UDP 51820| VPN[WireGuard gateway]
-    VPN --> INLB[Internal NLB :443] --> ING
-    ING -->|rancher.recruitai.io.vn| RAN[Rancher]
-    PROD -->|query embedding| HF[Hugging Face Inference API]
-    PROD -->|generate answer| GM[Gemini API]
-    JOB[Index build Job] -->|FAISS index| S3[(S3 artifacts)]
-    S3 -->|pull pinned version| PROD
-    SM[Secrets Manager] -->|External Secrets| PROD
+    USER["App user"]
+    OP["Operator"]
 
-    subgraph CICD [CI/CD]
-      GIT[GitHub repo] --> JK[Jenkins] -->|signed image| ECR[(ECR)]
-      JK -->|bump values| GIT
-      GIT --> ARGO[Argo CD]
+    subgraph OPSVPC["Ops VPC"]
+        WS["Ops workstation"]
     end
 
-    ARGO --> DEV
-    ARGO --> PROD
+    subgraph VPC["Cluster VPC · 3 availability zones"]
+        PNLB["Public NLB"]
+        VPN["WireGuard gateway"]
+        INLB["Internal NLB"]
+        subgraph K8S["kubeadm cluster · 3 control-plane nodes"]
+            API["kube-apiserver × 3<br/>stacked etcd"]
+            ING["ingress-nginx"]
+            APP["medical-rag<br/>dev + prod"]
+            UIS["Grafana · Prometheus · Alertmanager<br/>Rancher · Argo CD UI"]
+            ARGO["Argo CD"]
+            ESO["External Secrets"]
+        end
+    end
+
+    subgraph DELIVERY["Delivery"]
+        GIT["GitHub"]
+        JK["Jenkins<br/>BuildKit · Trivy · Syft · Cosign"]
+        ECR[("ECR")]
+    end
+
+    SM[("Secrets Manager")]
+    KMS[("KMS signing key")]
+
+    USER -->|"HTTP"| PNLB --> ING
+    OP -->|"WireGuard"| VPN -->|":443 only"| INLB
+    OP -.->|"SSM, no SSH"| WS
+    INLB -->|":443"| ING
+    WS -.->|"SSM port-forward :6443"| INLB
+    INLB -->|":6443"| API
+    WS -->|"Terraform · Ansible over SSM"| K8S
+    ING --> APP
+    ING -->|"VPC sources only"| UIS
+    GIT --> JK -->|"signed image"| ECR
+    JK -->|"bump values, PR to prod"| GIT
+    KMS --> JK
+    GIT -->|"pull"| ARGO --> APP
+    ECR -.->|"pull"| APP
+    SM --> ESO -->|"Secrets"| APP
 ```
-The 3 EC2 nodes run the control plane and workloads together. The Kubernetes API sits behind an
-internal NLB, and operators reach the machines with SSM Session Manager (no SSH).
 
-## 🐳 Run locally with Docker
+Terraform builds the AWS side in three stacks split by lifetime, and Ansible turns three bare Ubuntu
+machines into the cluster over SSM. Argo CD installs everything else from Git. A commit becomes a
+tested, scanned and signed image that reaches `dev` automatically and `prod` through a reviewed pull
+request. Details: [design](docs/selfmanaged-k8s-ops-design.md#3-architecture).
 
-For working on the app itself, on any machine with Docker and the Compose plugin. The AWS deployment
-below does not use it.
+## Stack, and why
 
+| Layer | Choice | Why this, not the obvious alternative |
+|---|---|---|
+| Cluster | kubeadm on EC2, built by Ansible over SSM | Instead of EKS: etcd, the control plane and upgrades are ours to run and prove. Agentless, second run `changed=0` |
+| Access | SSM Session Manager; WireGuard, internal NLB and an ingress allowlist | No SSH keys, no bastion, no inbound ports; no admin UI has a public listener |
+| IaC | Terraform, 3 stacks by lifetime, S3 native lock | The cluster is destroyed after each session without touching images, keys or the index; no DynamoDB lock table |
+| Pod network | Calico VXLAN | The nodes sit in three subnets, one per zone; VXLAN crosses them unchanged over UDP 4789 |
+| Delivery | Argo CD, self-managed app-of-apps | Git is the record, drift is repaired, and Argo CD upgrades itself from a commit |
+| Secrets and TLS | External Secrets + Secrets Manager; cert-manager DNS-01 wildcard, backed up | No secret value in Git or state; certificates for private names that survive rebuilds within Let's Encrypt's weekly limit |
+| Observability | kube-prometheus-stack, Alertmanager email | Scrapes etcd and the control plane, which a managed service hides |
+| Supply chain | Jenkins, rootless BuildKit, Trivy, Syft, Cosign on KMS, Kyverno | Kaniko is archived; the key never leaves KMS; prod admits only signed images ([design](docs/selfmanaged-k8s-ops-design.md#45-ci-pipeline-jenkins-jenkinsfile)) |
+
+**Workload:** Flask on gunicorn, LangChain, FAISS and Gemini. The index is a versioned artifact in S3,
+and `/readyz` and `/metrics` feed Kubernetes and Prometheus.
+
+## Found and fixed
+
+- **One node never appeared in SSM** although its status checks were green. Its console output showed
+  the agent failing to get instance-role credentials at boot; a reboot registered it.
+  [→](docs/evidence/ansible.md#problems-found-and-fixed-during-this-phase)
+- **`crictl: not found` on every node.** `kubeadm` no longer depends on `cri-tools`, so the role now
+  pins and installs it explicitly. [→](docs/evidence/ansible.md#problems-found-and-fixed-during-this-phase)
+- **PyPI crawled inside Docker.** The IPv4 route to the CDN was congested (2.1 MB in 11–20 s vs 0.45 s
+  over IPv6), and containers had only ULA IPv6, which glibc ranks below IPv4. Giving Docker a
+  non-ULA IPv6 prefix brought it to 0.41 s. [→](docs/evidence/local.md#environment-issue-found-while-verifying-not-a-code-defect)
+
+## Trade-offs, on purpose
+
+- **One NAT gateway**, not three: a cost choice, documented as a single point of failure.
+- **Every pod shares its node's instance role.** A self-managed cluster has no IRSA, so each permission is scoped to exact resources.
+- **`m7i-flex` nodes**, forced by the AWS Free plan. Their CPU burst runs out silently, so an alert watches sustained CPU.
+- **ingress-nginx is retired upstream** and kept knowingly; a maintained controller can take over the same NodePorts.
+- **The ops workstation holds admin rights.** It has no inbound ports, requires IMDSv2 and is stopped when idle.
+
+All risks and decisions: [design §10](docs/selfmanaged-k8s-ops-design.md#10-risks) and [§11](docs/selfmanaged-k8s-ops-design.md#11-resolved-decisions).
+
+## Run it
+
+**The app, locally** (Docker with Compose):
 ```bash
-cp .env.example .env        # fill GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN, FLASK_SECRET_KEY
-docker compose up --build   # index-build runs once, then the app starts on http://localhost:8000
+cp .env.example .env        # GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN, FLASK_SECRET_KEY
+docker compose up --build   # builds the index once, then serves http://localhost:8000
 ```
 
-| Endpoint | Purpose |
-|---|---|
-| `/` | Chat UI |
-| `/healthz` | Liveness (process up) |
-| `/readyz` | Readiness (index loaded, chain built) |
-| `/metrics` | Prometheus metrics (aggregated across gunicorn workers) |
+**The cluster, on AWS** (from the ops workstation):
+```bash
+make shared                 # once: registry, signing key, secrets, DNS zone, budget
+make infra                  # network, nodes, load balancers, VPN gateway
+make ansible-deps           # once per workstation
+make cluster                # HA kubeadm cluster over SSM
+make tunnel                 # kubectl through SSM, in a second window
+```
+Argo CD, the release path and teardown with `make down` are in the **[runbook](docs/runbook.md)**.
 
-- Lint + tests in Docker: `docker build --target test .`
-- Re-running `docker compose up` skips embedding when the corpus, chunking and embedding model are unchanged.
-- The bundled PDF is Volume 2 (C–F) of the Gale Encyclopedia of Medicine; questions outside that range get "I don't know".
+## Docs
 
-## ☁️ Deploy to AWS
+| Area | Architecture | Step-by-step | Interview Q&A (Vietnamese) |
+|---|---|---|---|
+| AWS with Terraform | [README](docs/terraform/README.md) | [guide](docs/terraform/guide.md) | [questions](docs/terraform/questions.md) · [answers](docs/terraform/answers.md) |
+| Cluster with Ansible | [README](docs/ansible/README.md) | [guide](docs/ansible/guide.md) | [questions](docs/ansible/questions.md) · [answers](docs/ansible/answers.md) |
+| Platform with GitOps | [README](docs/gitops/README.md) | [guide](docs/gitops/guide.md) | |
+| AWS vs on-premises | | | [questions](docs/aws/questions.md) · [answers](docs/aws/answers.md) |
+| The whole project | [design](docs/selfmanaged-k8s-ops-design.md) | [runbook](docs/runbook.md) | [questions](docs/common/questions.md) · [answers](docs/common/answers.md) |
 
-Step-by-step Terraform instructions: [`docs/terraform/guide.md`](docs/terraform/guide.md), with the architecture and file-by-file explanation in [`docs/terraform/README.md`](docs/terraform/README.md).
+Measured results: [`docs/evidence/`](docs/evidence/). Keys and files on the ops workstation: [`docs/ops-workstation-files.md`](docs/ops-workstation-files.md).
 
-**Prerequisites:** an AWS account with an admin identity, a browser, git, a WireGuard client, the
-`recruitai.io.vn` domain, and a Sectigo certificate order for `rancher.recruitai.io.vn`. You also need
-a Hugging Face token with the *Inference Providers* permission, a Gemini API key, and a GitHub token
-that can push to this repo and open pull requests. Terraform, Ansible, kubectl, Helm and the AWS CLI
-run on the ops workstation in AWS, and application images are built by Jenkins, so the deployment
-needs nothing else on the laptop.
+---
 
-1. **Create the state bucket and the ops workstation** (once per account). Open **AWS CloudShell** in the console and run:
-   ```bash
-   git clone https://github.com/biabeogo147/Medical-RAG-Chatbot && cd Medical-RAG-Chatbot
-   ./infra/terraform/bootstrap/install-terraform.sh      # into ~/bin
-   terraform -chdir=infra/terraform/bootstrap init
-   terraform -chdir=infra/terraform/bootstrap apply
-   ```
-   The workstation is an EC2 Ubuntu instance with every ops tool preinstalled. Connect to it from **EC2 → Instances → Connect → Session Manager**:
-   ```bash
-   sudo su - ubuntu
-   git clone https://github.com/biabeogo147/Medical-RAG-Chatbot && cd Medical-RAG-Chatbot
-   ```
-   First finish [Terraform guide step 6](docs/terraform/guide.md) (laptop + CloudShell) to move the
-   bootstrap state into S3. Every later step runs on the workstation: edit code on your laptop, push,
-   and `git pull` there.
-2. **Create the long-lived services:** ECR, the index artifacts bucket, the cosign KMS key, Route 53
-   zone, empty secrets and the budget alarm. They are kept when the cluster is destroyed.
-   ```bash
-   cp infra/terraform/shared/terraform.tfvars.example infra/terraform/shared/terraform.tfvars   # set budget_email
-   make shared
-   ```
-3. **Prepare DNS and TLS.** Before changing nameservers, copy every existing DNS record to
-   Route 53. Then delegate the zone, create the Sectigo CSR outside the repo, and store the Rancher
-   password and TLS chain in Secrets Manager. Exact commands and checks are in
-   [Terraform guide step 17](docs/terraform/guide.md#step-17--migrate-dns-and-store-the-keys).
-4. **Create the WireGuard keys, then provision the cluster infrastructure:** VPC, 3 Kubernetes
-   nodes, the WireGuard gateway, load balancers, IAM roles and cluster buckets. The keys must be in
-   Secrets Manager before `make infra`, because the gateway reads them when it first boots.
-   [Terraform guide step 18](docs/terraform/guide.md#step-18--wireguard-and-the-private-rancher-entry-point)
-   has the key commands and the laptop's tunnel profile.
-   ```bash
-   make infra
-   ```
-5. **Store the application keys.** External Secrets syncs them into the cluster later.
-   ```bash
-   aws secretsmanager put-secret-value --secret-id medical-rag/llm \
-     --secret-string '{"GOOGLE_API_KEY":"...","HUGGINGFACEHUB_API_TOKEN":"...","FLASK_SECRET_KEY":"..."}'
-   aws secretsmanager put-secret-value --secret-id medical-rag/github \
-     --secret-string '{"token":"..."}'
-   ```
-6. **Build the Kubernetes cluster** with Ansible over SSM, then open a tunnel to the API server.
-   Step-by-step instructions: [`docs/ansible/guide.md`](docs/ansible/guide.md).
-   ```bash
-   make ansible-deps          # once per workstation
-   make cluster               # also writes the kubeconfig to the workstation
-   make tunnel                # SSM port-forward to the internal API; keep this window open
-   kubectl get nodes          # in a second window: 3 nodes, all Ready
-   ```
-7. **Connect WireGuard and bootstrap GitOps.** Activate the profile from step 4, confirm a recent
-   handshake, then install Argo CD. Argo CD installs ingress-nginx, External Secrets,
-   monitoring, Jenkins, Rancher and the app.
-   Step-by-step instructions: [`docs/gitops/guide.md`](docs/gitops/guide.md).
-   ```bash
-   make bootstrap
-   kubectl -n argocd get applications   # all Synced / Healthy
-   ```
-   `https://rancher.recruitai.io.vn` works only while the VPN is connected.
-8. **Ship a change.** Push to `main`. Jenkins polls the repository every 2 minutes, then:
-   1. runs lint and tests
-   2. builds the image and pushes it to ECR
-   3. scans it with Trivy and generates the SBOM
-   4. signs it with Cosign (KMS key)
-   5. updates `deploy/envs/dev/values.yaml`, and Argo CD rolls out `dev`
-   6. opens a pull request with the same change for `prod`
-
-   Merge the pull request to release to `prod`.
-9. **Verify the release:**
-   ```bash
-   NLB=$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)
-   curl http://$NLB/readyz            # prod
-   curl http://$NLB/dev/readyz        # dev
-   IMAGE_REPO=$(yq .image.repository deploy/envs/prod/values.yaml)
-   IMAGE_TAG=$(yq .image.tag deploy/envs/prod/values.yaml) # tag@sha256:...
-   IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
-   cosign verify --key awskms:///alias/medical-rag-cosign "$IMAGE"
-   # Grafana, Prometheus, Alertmanager and Argo CD: https://<name>.recruitai.io.vn, with the VPN on
-   ```
-10. **Tear down** when idle, then stop the workstation (EC2 → Instances → Instance state → Stop):
-    ```bash
-    make cost    # hours up × hourly estimate
-    make down    # removes Argo CD apps first, then destroys the cluster stack
-    ```
-
-## 🧩 End-to-End MLOps Blueprint
-
-| Lifecycle Stage | Capabilities | Tooling & Artifacts |
-| --- | --- | --- |
-| **Data Management** | Content-hashed index versions | `python -m app.index`, S3 artifacts bucket |
-| **Infrastructure** | Reproducible, idempotent cluster build | `infra/terraform/{bootstrap,shared,cluster}`, `infra/ansible` |
-| **CI** | Gated build → signed image | `Jenkinsfile`, BuildKit, Trivy, Syft, Cosign + KMS, ECR |
-| **Continuous Delivery** | Git as source of truth, digest-pinned images | `deploy/charts/medical-rag`, `deploy/envs/{dev,prod}`, Argo CD |
-| **Security** | Hardened pods, secrets outside Git | Kyverno, NetworkPolicies, External Secrets, Secrets Manager |
-| **Observability** | Probes, latency and index metrics | `/healthz`, `/readyz`, `/metrics`, kube-prometheus-stack |
-| **Operations** | Private cluster UI behind a VPN | Rancher, WireGuard, Route 53, Sectigo TLS |
-
-## 🔄 Model & Data Operations
-- **Index refresh:** changing the PDF, chunk settings or embedding model produces a new index version. An Argo CD PreSync Job builds it before the pods roll, and skips the build if that version already exists.
-- **Index rollback:** revert `index.version` in `deploy/envs/<env>/values.yaml`. Argo CD syncs the previous index back.
-- **Retrieval & model tuning:** set `RETRIEVER_K` or `MODEL_NAME` in the env values and promote through `dev` → `prod`. Changing `EMBEDDING_MODEL_NAME` also produces a new `index.version`, so promote both together.
-- **Cluster day-2:** etcd is snapshotted to S3 every 6 hours. Kubernetes is upgraded one node at a
-  time, only after the [Rancher compatibility gate](docs/selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate) passes.
-
-## 📚 Docs
-- Design: [`docs/selfmanaged-k8s-ops-design.md`](docs/selfmanaged-k8s-ops-design.md)
-- Infrastructure: [`docs/terraform/`](docs/terraform/) — architecture, a step-by-step build guide, and self-check / interview questions with answers
-- Cluster: [`docs/ansible/`](docs/ansible/) — architecture, a step-by-step build guide, and self-check / interview questions with answers
-- Platform on the cluster: [`docs/gitops/`](docs/gitops/) — Argo CD and the addons it installs: architecture and a step-by-step guide
-- Ops workstation: [`docs/ops-workstation-files.md`](docs/ops-workstation-files.md) — the keys, configs and caches that live on it, and how to audit them
-- Interview prep (Vietnamese): [`docs/common/`](docs/common/) for the whole project, [`docs/aws/`](docs/aws/) for AWS and how it differs from on-premises; each has interview questions first, then detail questions
-- Measured results: [`docs/evidence/`](docs/evidence/)
+Application code adapted from [data-guru0/RAG-MEDICAL-CHATBOT](https://github.com/data-guru0/RAG-MEDICAL-CHATBOT).

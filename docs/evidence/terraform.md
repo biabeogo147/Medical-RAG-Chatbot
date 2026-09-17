@@ -1,6 +1,6 @@
 # Terraform phase — 2026-09-16
 
-AWS account 242834061265, region `ap-southeast-1`. Terraform 1.16.2, AWS provider 6.64.0,
+AWS account `<account-id>`, region `ap-southeast-1`. Terraform 1.16.2, AWS provider 6.64.0,
 `terraform-aws-modules/vpc` 6.7. Everything was applied from the ops workstation over SSM Session
 Manager, except the bootstrap stack, which was applied once from AWS CloudShell.
 
@@ -59,8 +59,8 @@ Only one inbound rule is open to the internet: TCP 80 on the public NLB.
 
 | Name | Scheme | State | DNS |
 |---|---|---|---|
-| medical-rag-api | internal | active | `medical-rag-api-692fbe8f621d8ef9.elb.ap-southeast-1.amazonaws.com` |
-| medical-rag-ingress | internet-facing | active | `medical-rag-ingress-1a82ae897541e4db.elb.ap-southeast-1.amazonaws.com` |
+| medical-rag-api | internal | active | `medical-rag-api-<id>.elb.ap-southeast-1.amazonaws.com` |
+| medical-rag-ingress | internet-facing | active | `medical-rag-ingress-<id>.elb.ap-southeast-1.amazonaws.com` |
 
 Targets are registered and `unhealthy`, as expected: Kubernetes and ingress-nginx are not installed yet.
 
@@ -68,7 +68,7 @@ Targets are registered and `unhealthy`, as expected: Kubernetes and ingress-ngin
 
 | Resource | Verified value |
 |---|---|
-| ECR | `242834061265.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag`, `IMMUTABLE_WITH_EXCLUSION`, scan on push enabled |
+| ECR | `<account-id>.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag`, `IMMUTABLE_WITH_EXCLUSION`, scan on push enabled |
 | KMS | `SIGN_VERIFY` / `ECC_NIST_P256`, enabled, alias `alias/medical-rag-cosign` |
 | Secrets Manager | `medical-rag/llm`, `medical-rag/github`; from step 16 also `medical-rag/rancher`, `medical-rag/rancher-tls`, `medical-rag/wireguard` |
 | Route 53 | Public hosted zone `recruitai.io.vn` (from step 16), `prevent_destroy` |
