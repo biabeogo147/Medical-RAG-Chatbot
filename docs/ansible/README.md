@@ -54,7 +54,7 @@ Three properties fall out of this picture:
 |---|---|---|
 | Terraform | Network, machines, load balancers, IAM, buckets, registry | `infra/terraform/` |
 | **Ansible** | **The operating system, containerd, the Kubernetes packages, `kubeadm`, the pod network** | `infra/ansible/` |
-| Argo CD | Everything running in the cluster: ingress, monitoring, Jenkins, the app | `deploy/` |
+| Argo CD | Everything running in the cluster: ingress, monitoring, Jenkins, the app ([`docs/gitops/`](../gitops/README.md)) | `deploy/` |
 
 **What Ansible deliberately does not do**
 
@@ -82,7 +82,7 @@ flowchart TB
 | `containerd` | all | containerd 2.3.5 from the Docker repository, held, with the systemd cgroup driver |
 | `kubernetes_packages` | all | kubelet, kubeadm and kubectl 1.36.4, held, kubelet enabled |
 | `ecr_credential_provider` | all | The credential plugin, its configuration, and the kubelet flags in `/etc/default/kubelet` |
-| `kubeadm_init` | node-1 | The cluster: etcd, API server, controller manager, scheduler, and `/etc/kubernetes/admin.conf` |
+| `kubeadm_init` | node-1 | The cluster: etcd, API server, controller manager, scheduler, and `/etc/kubernetes/admin.conf`. Control-plane metrics listen on the node address so Prometheus can scrape them |
 | `kubeadm_join` | node-2, node-3 | Two more control planes and two more etcd members |
 | `cni_calico` | node-1 | The Calico operator and an `Installation` using VXLAN on `192.168.0.0/16` |
 | `untaint_control_plane` | node-1 | The `NoSchedule` taint removed, so all three machines run workloads |
