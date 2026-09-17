@@ -76,14 +76,23 @@ confirmation prompt. Raw logs stay on the workstation under `~/evidence/2026-09-
 | 2 | `make plan` after; `state list \| wc -l` | `No changes. Your infrastructure matches the configuration.`; **101** state entries |
 | 3 | `make ping` | 3 × `SUCCESS` (`"ping": "pong"`) |
 | 4 | `time make cluster` on the fresh nodes | **6 m 10 s** (`real 6m10.428s`) |
-| 5 | `make cluster` again | `grep -A4 "PLAY RECAP" \| grep -vE 'changed=0 +unreachable=0 +failed=0'` printed only the `PLAY RECAP` header: **every host `changed=0 unreachable=0 failed=0`** |
+| 5 | `time make cluster` again | **`changed=0` on every host** in **2 m 56 s** (`real 2m55.927s`); recap below |
 | 6 | `kubectl get nodes -o wide`, `get pods -A` | See [Cluster](#cluster) |
 | 7 | `etcdctl member list`, `endpoint status` | See [etcd](#etcd) |
 | 8 | `time make infra-destroy` | `Destroy complete! Resources: 84 destroyed.` in **2 m 15 s** (`real 2m15.500s`) |
 
+`PLAY RECAP` of the second run:
+
+```
+localhost                  : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+medical-rag-node-1         : ok=50   changed=0    unreachable=0    failed=0    skipped=2    rescued=0    ignored=0
+medical-rag-node-2         : ok=34   changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0
+medical-rag-node-3         : ok=34   changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0
+```
+
 From an empty cluster stack to three `Ready` control-plane nodes: **9 m 57 s** of measured command time
 (3 m 47 s `make infra` + 6 m 10 s `make cluster`). The wait for the SSM agents to register before
-`make ping` was not timed. A second `make cluster` run reported no changes on any host.
+`make ping` was not timed. A second `make cluster` run changed nothing on any host and took 2 m 56 s, less than half the first run.
 
 ## HA drill
 
