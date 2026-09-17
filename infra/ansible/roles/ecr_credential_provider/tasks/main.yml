@@ -1,0 +1,36 @@
+---
+# Lets the kubelet pull from ECR using the node's IAM role. Without it every namespace would need an
+# imagePullSecret holding a token that expires after 12 hours.
+
+- name: Create the credential provider directory
+  ansible.builtin.file:
+    path: "{{ ecr_credential_provider_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Download ecr-credential-provider and verify its published checksum
+  # The checksum file sits next to the binary upstream; get_url fetches it and refuses to install a
+  # binary that does not match.
+  ansible.builtin.get_url:
+    url: "{{ ecr_credential_provider_url }}"
+    dest: "{{ ecr_credential_provider_dir }}/ecr-credential-provider"
+    checksum: "sha256:{{ ecr_credential_provider_url }}.sha256"
+    mode: '0755'
+
+- name: Install the credential provider configuration
+  # Tells the kubelet which registries to call the plugin for.
+  ansible.builtin.copy:
+    src: credential-provider-config.yaml
+    dest: "{{ ecr_credential_provider_dir }}/config.yaml"
+    mode: '0644'
+  notify: Restart kubelet
+
+- name: Point the kubelet at the plugin
+  # kubeadm's own unit file reads /etc/default/kubelet, so these flags survive `init`, `join` and
+  # every later upgrade.
+  ansible.builtin.copy:
+    dest: /etc/default/kubelet
+    content: |
+      KUBELET_EXTRA_ARGS=--image-credential-provider-bin-dir={{ ecr_credential_provider_dir }} --image-credential-provider-config={{ ecr_credential_provider_dir }}/config.yaml
+    mode: '0644'
+  notify: Restart kubelet

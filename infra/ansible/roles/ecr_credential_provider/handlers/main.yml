@@ -1,0 +1,8 @@
+---
+- name: Restart kubelet
+  # Before kubeadm has run, the kubelet has no configuration and goes straight back to restarting.
+  # That is expected and harmless: `kubeadm init` starts it properly a few tasks later.
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
