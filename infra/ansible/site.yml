@@ -1,0 +1,25 @@
+---
+# Turns three bare Ubuntu machines into an HA Kubernetes cluster. Run it with `make cluster`, which
+# supplies control_plane_endpoint and aws_account_id from Terraform.
+#
+# It is safe to run again at any time: every role checks the state of the machine first, so a second
+# run reports changed=0.
+
+- name: Check that the variables the Makefile passes are present
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Fail early rather than half-way through a cluster build
+      ansible.builtin.assert:
+        that:
+          - control_plane_endpoint is defined
+          - aws_account_id is defined
+        fail_msg: >-
+          Run this with `make cluster`, or pass -e control_plane_endpoint=<api NLB DNS>
+          -e aws_account_id=<account id>.
+
+- name: Prepare every node
+  hosts: nodes
+  become: true
+  roles:
+    - common

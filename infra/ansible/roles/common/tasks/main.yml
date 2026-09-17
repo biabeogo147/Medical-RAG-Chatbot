@@ -1,0 +1,102 @@
+---
+# Everything a machine needs before the first Kubernetes package is installed.
+
+- name: Install the tools the apt repositories need
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gpg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    # On a fresh boot unattended-upgrades holds the dpkg lock for a minute or two. Without this the
+    # first run of the playbook fails on a locked lock file.
+    lock_timeout: 300
+
+# --- identity ----------------------------------------------------------------------------------
+# kubeadm registers a node under the machine's hostname, and the AMI takes that from instance
+# metadata: ip-10-10-1-23, which says nothing about which node it is. Use the Name tag that Ansible
+# already found the machine by. This has to happen before kubeadm runs: renaming a node afterwards
+# means deleting it from the cluster and joining it again.
+
+- name: Name the machine after its Name tag
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Stop cloud-init restoring the old name on the next boot
+  # Without this, a node that is stopped and started again comes back as ip-10-10-1-23 while its
+  # Node object still says medical-rag-node-1.
+  ansible.builtin.copy:
+    dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+    content: "preserve_hostname: true\n"
+    mode: '0644'
+
+- name: Make the new name resolvable
+  # Otherwise every sudo call prints "unable to resolve host".
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    line: "127.0.1.1 {{ inventory_hostname }}"
+
+# --- swap --------------------------------------------------------------------------------------
+# The kubelet refuses to start while swap is on, because the scheduler's memory accounting assumes
+# it is off. The Ubuntu AMI has none, so both tasks usually report ok.
+
+- name: Turn swap off now
+  ansible.builtin.command: swapoff -a
+  when: ansible_swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Keep swap off after a reboot
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+# --- kernel ------------------------------------------------------------------------------------
+
+- name: Load the kernel modules the runtime and the pod network need at every boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: '0644'
+
+- name: Load them in the running kernel as well
+  ansible.builtin.command: "modprobe {{ item }}"
+  loop:
+    - overlay
+    - br_netfilter
+  # modprobe is a no-op if the module is already loaded, so this never really changes anything.
+  changed_when: false
+
+- name: Let bridged traffic reach iptables, and allow forwarding between pods
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+    mode: '0644'
+  notify: Reload sysctl
+
+# --- clock -------------------------------------------------------------------------------------
+
+- name: Check that the clock is in sync
+  # Certificates and etcd elections both break on a drifting clock. Checking the result rather than
+  # a service name works whether the image syncs with chrony or with systemd-timesyncd, and a node
+  # that has just booted is given a minute to get there.
+  ansible.builtin.command: timedatectl show --property=NTPSynchronized --value
+  register: ntp_synchronised
+  until: ntp_synchronised.stdout == 'yes'
+  retries: 12
+  delay: 5
+  changed_when: false
+
+# Handlers normally wait until the end of the play. The next role starts a container runtime that
+# reads these sysctls, so apply them now.
+- name: Apply the pending handlers before the next role
+  ansible.builtin.meta: flush_handlers
