@@ -123,6 +123,7 @@ needs nothing else on the laptop.
 7. **Connect WireGuard and bootstrap GitOps.** Activate the profile from step 4, confirm a recent
    handshake, then install Argo CD. Argo CD installs ingress-nginx, External Secrets,
    monitoring, Jenkins, Rancher and the app.
+   Step-by-step instructions: [`docs/gitops/guide.md`](docs/gitops/guide.md).
    ```bash
    make bootstrap
    kubectl -n argocd get applications   # all Synced / Healthy
@@ -146,7 +147,7 @@ needs nothing else on the laptop.
    IMAGE_TAG=$(yq .image.tag deploy/envs/prod/values.yaml) # tag@sha256:...
    IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
    cosign verify --key awskms:///alias/medical-rag-cosign "$IMAGE"
-   kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+   # Grafana, Prometheus, Alertmanager and Argo CD: https://<name>.recruitai.io.vn, with the VPN on
    ```
 10. **Tear down** when idle, then stop the workstation (EC2 → Instances → Instance state → Stop):
     ```bash
@@ -177,6 +178,7 @@ needs nothing else on the laptop.
 - Design: [`docs/selfmanaged-k8s-ops-design.md`](docs/selfmanaged-k8s-ops-design.md)
 - Infrastructure: [`docs/terraform/`](docs/terraform/) — architecture, a step-by-step build guide, and self-check / interview questions with answers
 - Cluster: [`docs/ansible/`](docs/ansible/) — architecture, a step-by-step build guide, and self-check / interview questions with answers
+- Platform on the cluster: [`docs/gitops/`](docs/gitops/) — Argo CD and the addons it installs: architecture and a step-by-step guide
 - Ops workstation: [`docs/ops-workstation-files.md`](docs/ops-workstation-files.md) — the keys, configs and caches that live on it, and how to audit them
 - Interview prep (Vietnamese): [`docs/common/`](docs/common/) for the whole project, [`docs/aws/`](docs/aws/) for AWS and how it differs from on-premises; each has interview questions first, then detail questions
 - Measured results: [`docs/evidence/`](docs/evidence/)

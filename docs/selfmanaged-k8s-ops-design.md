@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-15
 - **Timebox:** Days 1–3 of a 7-day plan shared with Anime-Recommender (EKS)
-- **Budget envelope:** about 0.53 USD/hour while the cluster and WireGuard gateway run, plus about 0.03 USD/hour for the ops workstation; roughly 6.90 USD/month remains with the cluster destroyed (KMS key, 5 secrets, Route 53, buckets and the stopped workstation disk). Domain and Sectigo renewal are yearly costs outside AWS.
+- **Budget envelope:** about 0.53 USD/hour while the cluster and WireGuard gateway run, plus about 0.03 USD/hour for the ops workstation; roughly 7.70 USD/month remains with the cluster destroyed (KMS key, 7 secrets, Route 53, buckets and the stopped workstation disk). Domain and Sectigo renewal are yearly costs outside AWS.
 - **Target role:** DevOps / Platform / SRE (LLMOps as a bonus)
 
 ## 1. Goal
@@ -81,15 +81,18 @@ flowchart TB
 ```
 
 ### In-cluster components
-All components except Argo CD are installed **by Argo CD** from `deploy/argocd/`:
+All components except Argo CD are installed **by Argo CD** from `deploy/argocd/`. **Every internal UI is
+reachable only through the VPN:** its name resolves to the internal NLB, and its Ingress allows only VPC
+source addresses. Architecture and build steps: `docs/gitops/`.
 
 | Component | Purpose |
 |---|---|
-| Argo CD | GitOps controller. Bootstrapped once by `make bootstrap`, then self-managed. |
-| ingress-nginx | NodePort 30080 from the public NLB and 30443 from the internal NLB |
+| Argo CD | GitOps controller. Bootstrapped once by `make bootstrap`, then self-managed. UI at `argocd.recruitai.io.vn`, VPN only. |
+| ingress-nginx | NodePort 30080 from the public NLB and 30443 from the internal NLB. DaemonSet with `externalTrafficPolicy: Local`, so internal Ingresses can allow only `10.10.0.0/16`. Serves the Let's Encrypt wildcard as its default certificate |
+| cert-manager | Let's Encrypt wildcard `*.recruitai.io.vn` through DNS-01 on Route 53 (instance-profile auth, one TXT record). The certificate is backed up to and restored from Secrets Manager, because Let's Encrypt issues at most 5 per identical name set per 7 days |
 | aws-ebs-csi-driver | PersistentVolumes for Jenkins and Prometheus (IAM via instance profile) |
 | external-secrets | Syncs Secrets Manager into K8s Secrets (instance-profile auth) |
-| kube-prometheus-stack | Cluster and app metrics, Grafana (reached by port-forward only) |
+| kube-prometheus-stack | Cluster, control-plane (etcd, scheduler, controller manager, kube-proxy) and app metrics; Alertmanager sends email over SMTP; Grafana, Prometheus and Alertmanager UIs at internal names, VPN only |
 | Jenkins (Helm, JCasC) | CI controller. Agents are ephemeral pods. |
 | medical-rag (Helm chart) | The app, as 2 Argo CD Applications: `medical-rag-dev`, `medical-rag-prod` |
 | kyverno (P1) | Image signature verification + baseline pod policies |
@@ -157,11 +160,17 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   - ECR `medical-rag` with scan on push and a lifecycle policy keeping the last 20 images.
   - S3 buckets `*-artifacts` (versioned), `*-etcd-backups` (lifecycle 14 days) and `*-ssm-transfer`, all with Block Public Access and TLS-only policies.
   - KMS asymmetric key `ECC_NIST_P256` / `SIGN_VERIFY`, alias `alias/medical-rag-cosign`.
-- **Secrets Manager:** five empty secrets: `medical-rag/llm`, `medical-rag/github`,
-  `medical-rag/rancher`, `medical-rag/rancher-tls` and `medical-rag/wireguard`. Values are set with
-  the AWS CLI, never in Terraform. Nodes can read the first four. Of the cluster machines, only the
-  gateway can read `medical-rag/wireguard`; admin identities, including the workstation role, can
-  read all five.
+- **Internal UI names and certificate (Terraform guide step 19):** `argocd`, `grafana`, `prometheus` and
+  `alertmanager` alias records to the internal NLB. The node role may change only the TXT record
+  `_acme-challenge.recruitai.io.vn` (IAM conditions on record name and type), plus read-only Route 53
+  lookups, for cert-manager's DNS-01.
+- **Secrets Manager:** seven empty secrets: `medical-rag/llm`, `medical-rag/github`,
+  `medical-rag/rancher`, `medical-rag/rancher-tls`, `medical-rag/wireguard`, `medical-rag/alertmanager`
+  (SMTP settings) and `medical-rag/wildcard-tls` (certificate backup, tagged `managed-by=external-secrets`,
+  the only secret the node role may write). Values are set with
+  the AWS CLI (or, for `wildcard-tls`, by External Secrets), never in Terraform. Nodes can read the six
+  that are not `medical-rag/wireguard`. Of the cluster machines, only the gateway can read
+  `medical-rag/wireguard`; admin identities, including the workstation role, can read all seven.
 - **Budgets:** alarms at 50 and 100 USD.
 - **Tagging:** default tags `project`, `env`, `owner`, `managed-by=terraform`.
 - **Inputs:** `shared/terraform.tfvars` (from the `.example`): budget email. Everything else has defaults.
@@ -192,7 +201,7 @@ These roles replace the `MLops-Common` bash scripts and must be idempotent: a se
       (`artifacts.k8s.io`), verified against its published SHA256.
     - Sets kubelet `--image-credential-provider-config`.
     - Result: nodes pull from ECR with the instance profile and no imagePullSecrets.
-  - `kubeadm_init`: first node, with a `kubeadm-config.yaml` (v1beta4) setting `controlPlaneEndpoint = internal NLB DNS:6443` and `--upload-certs`. `apiServer.certSANs` also lists `127.0.0.1`, because kubectl reaches the API through an SSM port-forward.
+  - `kubeadm_init`: first node, with a `kubeadm-config.yaml` (v1beta4) setting `controlPlaneEndpoint = internal NLB DNS:6443` and `--upload-certs`. `apiServer.certSANs` also lists `127.0.0.1`, because kubectl reaches the API through an SSM port-forward. Controller manager and scheduler `bind-address`, etcd `listen-metrics-urls` (port 2381) and kube-proxy `metricsBindAddress` use `0.0.0.0`, so Prometheus can scrape them; the node security group admits these ports only from other nodes.
   - `kubeadm_join`: the remaining control planes, with the join token and certificate key passed via facts, never written to the repo.
   - `cni_calico`: operator install (v3.32.2), **VXLAN** encapsulation to match the UDP 4789 rule in the node security group, pod CIDR `192.168.0.0/16` so it overlaps neither VPC nor the Service range.
   - `untaint_control_plane`: all 3 nodes schedule workloads, matching the current design.
@@ -350,7 +359,8 @@ Each P0 item is done only when its check passes and the evidence is saved under 
 | 2 | Ansible | `site.yml` builds the cluster; a second run gives `changed=0` | playbook recap, cluster build time |
 | 3 | HA API | Stop node-1: `kubectl get nodes` still works through the NLB | terminal capture |
 | 4 | Private Rancher | No public 443 rule; without VPN the URL times out; with VPN the Sectigo chain verifies and the UI loads; the public NLB answers the Rancher host only with a 308 redirect | SG query, `wg show`, TLS check, `curl -I` |
-| 5 | Argo CD bootstrap | All addon apps Synced and Healthy | screenshot |
+| 5 | Argo CD bootstrap | All addon apps Synced and Healthy; after a rebuild, no new certificate request | Argo CD UI screenshot through the VPN, `certificaterequests` empty |
+| 5a | Monitoring and alerting | Every Prometheus target up, including etcd and the control plane; a test alert arrives by email; Grafana, Prometheus and Alertmanager load only with the VPN | target list, email screenshot, Grafana etcd dashboard |
 | 6 | Index artifact | First Job embeds 7,079 chunks; a second sync skips the build | Job logs, build duration |
 | 7 | App readiness | Pod Ready in N seconds (vs rebuild-at-start before) | before/after startup time |
 | 8 | Pipeline | Commit → dev running | end-to-end minutes, stage durations |
@@ -407,13 +417,17 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Account credits run out or expire, which may suspend the account | Track the live balance and expiry in `docs/evidence/`. The state bucket has `prevent_destroy`, and the cosign KMS key cannot be recreated without invalidating every signature. P1: copy the state bucket and record the key ARN off-account before expiry. |
 | Node memory pressure (Jenkins + Prometheus + builds) | Resource requests on all addons; Prometheus retention 24h; at most 1 concurrent Jenkins build. |
 | No domain for the app's ingress | Path-based routing on the public NLB DNS; TLS for app traffic is out of scope. Rancher uses its own private hostname and certificate. |
-| The Sectigo certificate is a Domain Validation certificate with a fixed expiry, and nothing renews it automatically | Calendar reminder before expiry, and the replacement goes in with one `put-secret-value`; External Secrets pushes it to the cluster without a redeploy. If manual renewal becomes a nuisance, switch to cert-manager with a Let's Encrypt DNS-01 issuer, which the Route 53 zone already makes possible. |
+| The Sectigo certificate is a Domain Validation certificate with a fixed expiry, and nothing renews it automatically | Calendar reminder before expiry, and the replacement goes in with one `put-secret-value`; External Secrets pushes it to the cluster without a redeploy. If manual renewal becomes a nuisance, move Rancher to the cert-manager wildcard that already serves the other internal UIs. |
 | Delegating the whole domain can interrupt existing web or mail records | Lower TTLs early, copy every record except the apex SOA and NS, compare answers from both providers, and remove any parent DS record before changing name servers. Keep the old provider for at least 48 hours; enable Route 53 signing and publish a new DS only after the unsigned delegation is stable. |
 | WireGuard exposes UDP 51820 to the internet | WireGuard silently drops unauthenticated packets; the gateway has no SSH key, no application permissions, and reads only its own secret. If a client is lost, replace its public key in Secrets Manager and replace the gateway instance (or let the next rebuild pick it up), then verify only the new peer handshakes. |
 | Rancher controls the whole cluster | TCP 443 exists only on the internal NLB, open to the whole cluster VPC because Rancher's own agents connect to it from inside. From outside the VPC, access requires a valid WireGuard peer and Rancher credentials. Configure an MFA-enforcing external identity provider before treating MFA as a control. Disconnect the VPN and destroy the cluster when idle. |
 | A Kubernetes minor exceeds Rancher's chart constraint | The §4.2.1 gate: keep 1.36.4 until a candidate chart accepts the target, upgrade Rancher first, and require Argo CD health. |
 | The internal NLB is open to the whole VPC, including the Kubernetes API on 6443, and the VPN peer arrives with a VPC address | The gateway firewall forwards only DNS to the VPC resolver and TCP 443 from the tunnel, drops everything else, and blocks connections from the VPC towards the client. The API stays reachable only through the SSM tunnel from the workstation. |
 | **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | IMDSv2 hop limit 2 is required for pods today. NetworkPolicy egress deny to `169.254.169.254/32` for all app namespaces, allowed only for external-secrets, ebs-csi and Jenkins agents. Documented as a known limitation; P2 is self-hosted IRSA (pod-identity-webhook + S3-hosted OIDC discovery). |
+| ingress-nginx was retired upstream in March 2026: no further releases or security fixes, and Kubernetes 1.36 postdates its last release | Kept because the NodePorts and Rancher's `ingressClassName` depend on it; traffic reaching it is the demo app or a VPN user. Migrate to a maintained controller or Gateway API; the NodePorts stay the same. |
+| Let's Encrypt allows 5 certificates per identical name set per 7 days, and the cluster is rebuilt more often | The wildcard certificate is pushed to `medical-rag/wildcard-tls` and restored in wave -1, before its `Certificate` exists; cert-manager keeps a valid restored certificate. Test changes against the staging issuer. |
+| Prometheus and Alertmanager UIs have no authentication | VPN-only names plus a VPC-only allowlist on their Ingresses; single VPN peer. P2: an OAuth proxy in front of all internal UIs. |
+| Alert email relies on one mailbox's app password | Stored only in Secrets Manager and rendered into Alertmanager's config by External Secrets. Amazon SES is not used because its SMTP credentials derive from an IAM user access key. |
 | Day 1–3 overrun | Cut order: P1 items → prod PR automation (promote manually) → SBOM attestation. Never cut scan + sign + GitOps. |
 
 ## 11. Resolved decisions
@@ -434,3 +448,7 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Rancher access | WireGuard gateway EC2 → internal NLB TCP 443 → ingress-nginx NodePort 30443 |
 | Ansible runtime | Native on the ops workstation |
 | Kubernetes version | Start at 1.36.4; change minor only after the Rancher compatibility gate passes |
+| Internal UIs | Argo CD, Grafana, Prometheus, Alertmanager and Rancher only through WireGuard, each at its own name under `recruitai.io.vn` |
+| TLS for other internal UIs | cert-manager + Let's Encrypt wildcard via DNS-01, backed up in Secrets Manager |
+| Alert delivery | Alertmanager email over SMTP with an app password (not SES) |
+| Control-plane metrics | Exposed on node addresses by the kubeadm config and scraped |

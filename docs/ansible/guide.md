@@ -8,8 +8,8 @@ with a check, and the next step assumes it passed.
 ## How this guide works
 
 **Start here when Terraform guide steps 1–15 are done:** `make infra` applied, and all three nodes
-`Online` in SSM (step 13 of [`../terraform/guide.md`](../terraform/guide.md)). Part D of that guide is
-needed before `make bootstrap`, not before Ansible.
+`Online` in SSM (step 13 of [`../terraform/guide.md`](../terraform/guide.md)). Parts D and E of that
+guide (steps 16–19) are needed before `make bootstrap`, not before Ansible.
 
 **Where commands run.** No ops tool is installed on your laptop, and CloudShell is not used in this
 phase.
@@ -52,6 +52,7 @@ Region `ap-southeast-1`.
 | 8 | Roles `cni_calico` + `untaint_control_plane` | 3 nodes `Ready`, a test pod runs |
 | 9 | Kubeconfig on the workstation, `make tunnel` | `kubectl get nodes` works from the workstation |
 | 10 | Idempotency, HA drill, evidence | `changed=0`; the API survives losing a node |
+| 11 | Control-plane metrics on the node address (for the GitOps phase) | A pod reads etcd metrics from another node |
 
 ## The loop for every step
 
@@ -1365,7 +1366,7 @@ time make cluster
 ```
 Every node must report `changed=0`. Anything that still changes is worth fixing before moving on.
 
-**The HA drill.** It uses `kubectl` on the workstation, so open a second window, run `make tunnel`
+**The HA drill.** It uses `kubectl` on the workstation, so open tmux window 1 (`Ctrl-b c`), run `make tunnel`
 there and leave it open for the whole drill. Stop node 2 — never node 1, because the tunnel runs
 through it:
 ```bash
@@ -1392,6 +1393,119 @@ make infra-destroy    # the cluster stack; the shared stack and the workstation 
 ```
 Then stop the workstation (EC2 → Instances → Instance state → Stop). Next time, `make infra` followed
 by `make cluster` rebuilds everything from these files.
+
+---
+
+## Step 11 — Let Prometheus reach the control-plane metrics
+
+**Goal:** etcd, the scheduler, the controller manager and kube-proxy serve their metrics on the node's
+address, so Prometheus (GitOps phase) can collect them.
+
+**Why this is needed.** kubeadm makes these four components listen for metrics on `127.0.0.1` only.
+Prometheus runs in a pod, and a pod has its own network namespace: for it, `127.0.0.1` is the pod
+itself, not the node. The monitoring chart expects all four, so left as they are they show as four
+targets that are always `down`, and the chart's alerts for them (`etcdMembersDown`,
+`KubeSchedulerDown`, …) fire all day although nothing is broken. For a cluster you run yourself, etcd is
+also the one component whose health you most need to see.
+
+| Component | Port | Protocol | Before | After |
+|---|---|---|---|---|
+| etcd | 2381 | HTTP, metrics only | `127.0.0.1` | `0.0.0.0` |
+| kube-controller-manager | 10257 | HTTPS, needs a token | `127.0.0.1` | `0.0.0.0` |
+| kube-scheduler | 10259 | HTTPS, needs a token | `127.0.0.1` | `0.0.0.0` |
+| kube-proxy | 10249 | HTTP, metrics only | `127.0.0.1` | `0.0.0.0` |
+
+**Who can reach them afterwards.** The node security group admits these ports only from the other
+nodes (`nodes_from_nodes` in `infra/terraform/cluster/security.tf`), which includes every pod. Port 2381
+serves metrics only, not etcd's data, which stays on 2379 with client certificates. The controller
+manager and the scheduler still require an authorised token on their metrics endpoint.
+
+**Laptop.** In `infra/ansible/roles/kubeadm_init/templates/kubeadm-config.yaml.j2`, add this at the end
+of the `ClusterConfiguration` document, after `networking:`:
+```yaml
+
+# Metrics on the node's address instead of 127.0.0.1, so Prometheus in a pod can scrape them. The joining
+# control planes read this same ClusterConfiguration, so all three nodes get it.
+controllerManager:
+  extraArgs:
+    - name: bind-address
+      value: "0.0.0.0"
+scheduler:
+  extraArgs:
+    - name: bind-address
+      value: "0.0.0.0"
+etcd:
+  local:
+    extraArgs:
+      # Only the metrics listener moves; client traffic stays on 2379 with TLS.
+      - name: listen-metrics-urls
+        value: "http://0.0.0.0:2381"
+```
+Then add a third document at the very end of the file:
+```yaml
+---
+# kube-proxy runs as a DaemonSet with one shared configuration, which kubeadm creates from this.
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+metricsBindAddress: "0.0.0.0:10249"
+```
+
+**Why:**
+
+- **`extraArgs` is a list of `name`/`value` pairs** in kubeadm v1beta4. The older map form
+  (`bind-address: "0.0.0.0"`) belongs to v1beta3 and is rejected.
+- **kubeadm reads this file only during `kubeadm init`.** A running cluster keeps its old settings, and
+  the role skips `init` once `admin.conf` exists. The change takes effect on the next rebuild, which is
+  how this project changes a cluster anyway.
+
+**Commit and push** (`git add infra/ansible`, message `Expose control-plane metrics`), `git pull` on the workstation.
+
+**Run** a rebuild (the tunnel window must be closed first, since node 1 is replaced):
+```bash
+make infra-destroy
+make infra
+make cluster
+```
+Open the tunnel again in tmux window 1 (`Ctrl-b 1` if it exists, otherwise `Ctrl-b c`) with `make tunnel`.
+
+**Verify** in window 0 (`Ctrl-b 0`). Each command prints one line per node, with the command line the
+component was started with. First the scheduler:
+```bash
+CMDS='{range .items[*]}{.spec.nodeName}{"  "}{.spec.containers[0].command}{"\n"}{end}'
+kubectl -n kube-system get pods -l component=kube-scheduler -o jsonpath="$CMDS"
+```
+Three lines, each containing `"--bind-address=0.0.0.0"`. The controller manager:
+```bash
+kubectl -n kube-system get pods -l component=kube-controller-manager -o jsonpath="$CMDS"
+```
+The same. And etcd:
+```bash
+kubectl -n kube-system get pods -l component=etcd -o jsonpath="$CMDS"
+```
+Three lines, each containing `"--listen-metrics-urls=http://0.0.0.0:2381"`.
+
+kube-proxy:
+```bash
+kubectl -n kube-system get configmap kube-proxy \
+  -o jsonpath='{.data.config\.conf}' > /tmp/kube-proxy.conf
+grep metricsBindAddress /tmp/kube-proxy.conf
+```
+`metricsBindAddress: 0.0.0.0:10249`.
+
+Finally, from inside the cluster, the way Prometheus will ask. A throwaway pod fetches etcd's metrics
+from node 2's address:
+```bash
+NODE2_IP=$(kubectl get node medical-rag-node-2 \
+  -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+kubectl run metricscheck \
+  --rm -i --restart=Never \
+  --image=busybox:1.36 \
+  -- wget -qO- "http://$NODE2_IP:2381/metrics" > /tmp/etcd-metrics.txt
+grep -c '^etcd_server_has_leader' /tmp/etcd-metrics.txt
+```
+`1`. A pod reached etcd's metrics on another node.
+
+A second `make cluster` still reports `changed=0` on every node.
 
 ---
 

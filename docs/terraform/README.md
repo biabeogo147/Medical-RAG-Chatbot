@@ -95,7 +95,7 @@ flowchart TB
         WS["Ops workstation<br/>EC2 t3.small"]
     end
     subgraph SHARED["shared/ · 17 resources · kept"]
-        SH["ECR · artifacts bucket · KMS key<br/>5 secrets · Route 53 zone · budget"]
+        SH["ECR · artifacts bucket · KMS key<br/>7 secrets · Route 53 zone · budget"]
     end
     subgraph CLUSTER["cluster/ · 84 resources · destroyed when idle"]
         CL["VPC · 3 nodes · 2 NLBs · WireGuard gateway<br/>security groups · IAM roles · 2 buckets"]
@@ -282,10 +282,10 @@ because every `.tf` file in the folder is equivalent.
 | `registry.tf` | ECR repository `medical-rag`: scan on push, immutable release tags, keep the last 20 tagged images | Jenkins pushes, nodes pull |
 | `storage.tf` | Bucket `medical-rag-artifacts-<account>`: versioned, encrypted, private, TLS-only, old versions expire after 30 days | The index build Job writes the FAISS index; pods pull the pinned version |
 | `kms.tf` | Asymmetric signing key (`ECC_NIST_P256`) + alias `alias/medical-rag-cosign` | Jenkins signs images; Kyverno verifies them |
-| `secrets.tf` | Empty secrets `medical-rag/llm` and `medical-rag/github`. Values are set with the AWS CLI, never by Terraform | External Secrets syncs them into Kubernetes |
+| `secrets.tf` | Empty secrets `medical-rag/llm`, `medical-rag/github`, `medical-rag/alertmanager` (SMTP settings) and `medical-rag/wildcard-tls` (certificate backup, tagged `managed-by=external-secrets`). Values are set with the AWS CLI or by External Secrets, never by Terraform | External Secrets syncs them into Kubernetes; only `wildcard-tls` is written back |
 | `bugdets.tf` | Monthly budget with email alerts at 50 % and 100 %, filtered to `project=medical-rag` | You |
 | `rancher.tf` | Route 53 zone plus empty `medical-rag/rancher`, `medical-rag/rancher-tls` and `medical-rag/wireguard` secrets | Rancher, External Secrets and the VPN gateway |
-| `outputs.tf` | Registry, bucket, KMS and all five secret names; never secret values | Cluster stack and operator checks |
+| `outputs.tf` | Registry, bucket, KMS and all seven secret names; never secret values | Cluster stack and operator checks |
 
 ### `cluster/` — 84 resources
 
@@ -298,6 +298,7 @@ because every `.tf` file in the folder is equivalent.
 | `compute.tf` | 3 × `m7i-flex.large` Ubuntu 24.04, one per AZ, no public IP, no key pair, IMDSv2 required | Tagged `k8s-cluster=medical-rag`, which is how Ansible finds them |
 | `loadbalancers.tf` | Internal NLB :6443 and public NLB :80, with their target groups, listeners and 3 attachments each | The internal one is kubeadm's `controlPlaneEndpoint` |
 | `rancher.tf` | Internal NLB :443 target group/listener, 3 attachments, 3 firewall rules and the `rancher.<domain>` alias | Nine resources. The target group disables client-IP preservation to support Rancher agent hairpin connections |
+| `internal-ui.tf` | `argocd`, `grafana`, `prometheus` and `alertmanager` alias records to the internal NLB | Four resources. The internal UIs are VPN-only, like Rancher. `iam.tf` lets cert-manager change only the `_acme-challenge` TXT record for their wildcard certificate |
 | `wireguard.tf` | Gateway SG, minimal IAM role/profile, EIP, `t3.small` instance and `vpn.<domain>` record | Ten resources. No SSH; only UDP 51820 is public. The gateway's own firewall lets the tunnel reach only DNS and TCP 443, not the API on 6443 |
 | `main.tf` | Also holds the `data` lookups of the shared stack | A missing shared stack fails the plan here |
 
@@ -313,7 +314,7 @@ because every `.tf` file in the folder is equivalent.
 | **S3** | 4 buckets: tfstate, artifacts, etcd-backups, ssm-transfer | State, the FAISS index, backups, and Ansible's file transfer over SSM |
 | **ECR** | 1 repository + lifecycle policy | Signed application images |
 | **KMS** | 1 signing key + alias | Cosign signs images with a key that never leaves AWS |
-| **Secrets Manager** | 5 secrets | App keys, GitHub token, Rancher password/TLS and WireGuard keys |
+| **Secrets Manager** | 7 secrets | App keys, GitHub token, Rancher password/TLS, WireGuard keys, alert email settings and the wildcard certificate backup |
 | **Route 53** | 1 hosted zone, Rancher alias and VPN A record | Private Rancher name follows the internal NLB; VPN name follows the gateway EIP |
 | **Budgets** | 1 budget | Email at 50 and 100 USD |
 | **SSM** | Nothing to create | Session Manager works through the IAM role and the agent that ships with Ubuntu |
@@ -362,7 +363,7 @@ flowchart LR
 | Workstation | `t3.small`, 30 GB + 2 GB swap | Enough for Terraform, Ansible and kubectl; application images are built by Jenkins in the cluster |
 | WireGuard | `t3.small`, 8 GB gp3 + one public IPv4 | Free-tier eligible, like the workstation; destroyed with the cluster |
 | Cluster total | **≈ 0.53 USD/hour** | Destroyed with `make infra-destroy` when idle |
-| Kept always | ≈ 4.00 USD/month, plus 2.90 USD/month for the stopped workstation disk | KMS key, 5 secrets, Route 53, buckets and images |
+| Kept always | ≈ 4.80 USD/month, plus 2.90 USD/month for the stopped workstation disk | KMS key, 7 secrets, Route 53, buckets and images |
 | Domain + Sectigo DV | Yearly, outside AWS | Record the invoice amount; do not mix it into AWS hourly estimates |
 
 **AWS Free plan.** This account runs on the Free plan, which refuses to launch any instance type
