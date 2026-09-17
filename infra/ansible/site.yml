@@ -34,3 +34,11 @@
     KUBECONFIG: /etc/kubernetes/admin.conf
   roles:
     - kubeadm_init
+
+- name: Add the other control planes, one at a time
+  hosts: other_nodes
+  become: true
+  # etcd accepts one membership change at a time; two joins at once can lose quorum.
+  serial: 1
+  roles:
+    - kubeadm_join

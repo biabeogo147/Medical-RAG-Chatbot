@@ -1,0 +1,65 @@
+---
+# Adds the other two nodes as control planes. The play runs them one at a time (serial: 1), because
+# each join adds an etcd member and etcd only tolerates one membership change at a time.
+
+- name: Check whether this node is already a working control plane
+  # kubelet.conf appears half-way through the join; the etcd manifest only once the machine has been
+  # added to the etcd cluster. Using the later marker means a join that died in between is retried,
+  # instead of being skipped for ever on a node that is not really a control plane.
+  ansible.builtin.stat:
+    path: /etc/kubernetes/manifests/etcd.yaml
+  register: kubeadm_joined
+
+- name: Create a short-lived join token on the first node
+  # Made per joining node and valid for 15 minutes, so nothing long-lived is left behind.
+  ansible.builtin.command: kubeadm token create --ttl 15m --print-join-command
+  delegate_to: "{{ first_control_plane }}"
+  register: kubeadm_join_command
+  when: not kubeadm_joined.stat.exists
+  changed_when: false
+  no_log: true
+
+- name: Re-upload the control-plane certificates and read the certificate key
+  # The Secret from `init --upload-certs` expires after two hours, so it is refreshed here. The last
+  # line of the output is the key that decrypts it.
+  ansible.builtin.command: kubeadm init phase upload-certs --upload-certs
+  delegate_to: "{{ first_control_plane }}"
+  register: kubeadm_certificate_key
+  when: not kubeadm_joined.stat.exists
+  changed_when: false
+  no_log: true
+
+- name: Stage the join command in a root-only file
+  # Keeping the token and the certificate key off the command line means the join task itself does
+  # not need no_log, so when a join fails you can actually read why.
+  ansible.builtin.copy:
+    content: |
+      {{ kubeadm_join_command.stdout }} --control-plane --certificate-key {{ kubeadm_certificate_key.stdout_lines[-1] | trim }}
+    dest: /root/kubeadm-join.sh
+    mode: '0700'
+  when: not kubeadm_joined.stat.exists
+  no_log: true
+
+- name: Join as an additional control plane
+  ansible.builtin.command: /bin/bash /root/kubeadm-join.sh
+  when: not kubeadm_joined.stat.exists
+  register: kubeadm_join_result
+  changed_when: kubeadm_join_result.rc == 0
+
+- name: Remove the staged join command
+  ansible.builtin.file:
+    path: /root/kubeadm-join.sh
+    state: absent
+
+- name: Give root a kubeconfig here too
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    mode: '0700'
+
+- name: Copy admin.conf into place
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: true
+    mode: '0600'
