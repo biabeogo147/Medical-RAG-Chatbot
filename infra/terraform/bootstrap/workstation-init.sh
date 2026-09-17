@@ -11,7 +11,7 @@ export DEBIAN_FRONTEND=noninteractive # apt never stops to ask: nobody is here t
 
 # Pinned versions: rebuilding this machine installs exactly the same tools.
 TERRAFORM_VERSION=1.16.2
-KUBECTL_VERSION=v1.35.8
+KUBECTL_VERSION=v1.36.4
 HELM_VERSION=v4.3.0
 COSIGN_VERSION=v3.1.3
 YQ_VERSION=v4.53.6

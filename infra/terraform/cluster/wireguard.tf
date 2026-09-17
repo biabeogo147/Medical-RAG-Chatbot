@@ -86,6 +86,9 @@ resource "aws_instance" "wireguard" {
     vpc_cidr       = var.vpc_cidr
     vpc_resolver   = cidrhost(var.vpc_cidr, 2) # the Route 53 Resolver sits at the VPC range plus two
   })
+  # A changed script or address must reach the gateway. Without this, AWS would stop the instance, swap
+  # the user data and start it again, but cloud-init runs the script only on the first boot.
+  user_data_replace_on_change = true
 
   metadata_options {
     http_endpoint               = "enabled"
