@@ -21,7 +21,7 @@ commands here are the short form.
 
 ## 1. Once per account: state bucket and ops workstation
 
-In **AWS CloudShell** ([Terraform guide, Part A](terraform/guide.md#part-a--bootstrap)):
+In **AWS CloudShell** ([Terraform guide, part 1](terraform/guide/1-bootstrap.md)):
 ```bash
 git clone https://github.com/biabeogo147/Medical-RAG-Chatbot
 cd Medical-RAG-Chatbot
@@ -29,7 +29,7 @@ cd Medical-RAG-Chatbot
 terraform -chdir=infra/terraform/bootstrap init
 terraform -chdir=infra/terraform/bootstrap apply
 ```
-Then finish [Terraform guide step 6](terraform/guide.md#step-6--move-the-bootstrap-state-into-s3-laptop--cloudshell)
+Then finish [Terraform guide step 6](terraform/guide/1-bootstrap.md#step-6--move-the-bootstrap-state-into-s3-laptop--cloudshell)
 (laptop + CloudShell), which moves the bootstrap state into S3.
 
 Every later step runs on the **ops workstation**, opened from **EC2 → Instances → Connect → Session
@@ -44,7 +44,7 @@ Edit on the laptop, push, and `git pull` on the workstation.
 ## 2. Once: long-lived services
 
 ECR, the index artifacts bucket, the cosign KMS key, the Route 53 zone, empty secrets and the budget
-alarm ([Terraform guide, Part B](terraform/guide.md#part-b--shared-stack-kept)). They survive every
+alarm ([Terraform guide, part 2](terraform/guide/2-shared-stack.md)). They survive every
 cluster teardown.
 ```bash
 cp infra/terraform/shared/terraform.tfvars.example infra/terraform/shared/terraform.tfvars   # set budget_email
@@ -56,11 +56,11 @@ make shared
 - **Before changing the name servers, copy every existing DNS record to Route 53**, or the domain's
   web and mail records go dark. Then delegate the zone, create the Sectigo CSR outside the repository,
   and store the Rancher password and certificate chain:
-  [Terraform guide step 17](terraform/guide.md#step-17--migrate-dns-and-store-the-keys).
-- Create the WireGuard keys: [step 18](terraform/guide.md#step-18--wireguard-and-the-private-rancher-entry-point).
+  [Terraform guide step 17](terraform/guide/5-domain-certificate-and-secrets.md#step-17--migrate-dns-and-store-the-keys).
+- Create the WireGuard keys: [step 18](terraform/guide/6-wireguard-and-private-rancher.md#step-18--wireguard-and-the-private-rancher-entry-point).
   **The keys must be in Secrets Manager before the first `make infra`**, because the gateway reads them
   once, when it first boots.
-- Store the SMTP settings for alert email: [step 19](terraform/guide.md#step-19--internal-ui-names-dns-permission-for-cert-manager-two-secrets).
+- Store the SMTP settings for alert email: [step 19](terraform/guide/7-internal-uis.md#step-19--internal-ui-names-dns-permission-for-cert-manager-two-secrets).
 - Store the application keys:
   ```bash
   aws secretsmanager put-secret-value --secret-id medical-rag/llm \
@@ -88,8 +88,8 @@ make bootstrap             # Argo CD, which then installs everything in deploy/a
 make apps                  # every Application Synced and Healthy
 ```
 `make bootstrap` and `make apps` are added to the Makefile in
-[GitOps guide step 3](gitops/guide.md#step-3--the-root-application-and-argo-cd-managing-itself), `make down` in
-[step 12](gitops/guide.md#step-12--make-down).
+[GitOps guide step 3](gitops/guide/1-argocd.md#step-3--the-root-application-and-argo-cd-managing-itself), `make down` in
+[step 12](gitops/guide/5-teardown-and-rebuild.md#step-12--make-down).
 
 The very first time, finish the laptop's tunnel profile and verify the handshake after this
 `make infra` (Terraform guide steps 18.4 and 18.5). After every rebuild, deactivate and activate the
