@@ -12,12 +12,8 @@
 
 ## Step 1 — Cluster up, tunnel open, secrets present
 
-**Where you are:** Terraform built the nodes, the ops workstation and the WireGuard gateway; Ansible turned the three nodes into an HA cluster; the DNS names and the secrets exist.
-
 **Goal:** a running cluster, kubectl working from the workstation, and the two Rancher secrets filled
 in, before anything is installed.
-
-**Still missing after this step:** the cluster runs only Kubernetes itself, Calico and CoreDNS. The API load balancer works, which is how `make tunnel` reaches it, but both ingress target groups have nothing behind their NodePorts.
 
 No files in this step.
 
@@ -72,11 +68,7 @@ Nothing to commit.
 
 ## Step 2 — Install Argo CD by hand
 
-**Where you are:** a running cluster with kubectl on the workstation, and no workload of your own.
-
 **Goal:** understand what `make bootstrap` will do, by doing it once yourself.
-
-**Still missing after this step:** Argo CD runs but manages nothing: no Application exists, and the installation still belongs to Helm alone.
 
 Create `deploy/argocd/values/argocd.yaml`:
 ```yaml
@@ -206,12 +198,8 @@ internal name.
 
 ## Step 3 — The root Application, and Argo CD managing itself
 
-**Where you are:** Argo CD runs, installed by hand with Helm, and nothing yet reads the repository.
-
 **Goal:** Argo CD reads `deploy/argocd/apps/` from Git, and its own installation is one of the files
 in there.
-
-**Still missing after this step:** no addon is installed yet, so both load balancers still have unhealthy targets and no secret reaches the cluster.
 
 Create `deploy/argocd/root.yaml`:
 ```yaml
