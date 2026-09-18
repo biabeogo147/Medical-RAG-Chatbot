@@ -16,4 +16,4 @@ spec:
     group: cert-manager.io
     kind: ClusterIssuer
     # Start with staging. Change to letsencrypt-production once the staging certificate is Ready.
-    name: letsencrypt-production
+    name: letsencrypt-staging
