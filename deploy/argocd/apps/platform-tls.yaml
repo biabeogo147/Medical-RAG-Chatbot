@@ -8,6 +8,8 @@ metadata:
     # After cert-manager and External Secrets (their CRDs), and after platform-secrets (step 8 puts
     # the restored certificate there).
     argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    
 spec:
   project: default
   source:
