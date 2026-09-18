@@ -125,8 +125,11 @@ flowchart TB
     ROOT --> W3 --> W2 --> W1 --> W0
 ```
 
-A wave starts only when every Application in the previous wave is **Healthy**. The order matters in
-these places:
+A wave starts only when every Application in the previous wave is **Healthy** and **Synced**. Both
+halves are needed, and `Synced` is the one that does the work: Argo CD deliberately leaves a resource
+that does not exist yet out of an Application's health total, so an Application halfway through
+applying its manifests still reports `Healthy`. `status.sync` stays `OutOfSync` until every resource
+exists. The order matters in these places:
 
 | Must come first | Before | Because |
 |---|---|---|
@@ -142,6 +145,23 @@ is installed.
 Argo CD stopped judging the health of an *Application* resource in version 1.8, so by default waves
 between Applications do not wait for anything. The Argo CD values file adds the small health check that
 restores this; without it, all waves would start at once.
+
+This is not theoretical. The first rebuild, on 2026-09-18, ran a version of that check that read
+health alone. Every child Application reported `Healthy` the moment it was created, `root` walked
+through all four waves in seconds, `platform-secrets` and `platform-tls` ran in parallel, and
+cert-manager reconciled the `Certificate` and found no Secret about 48 seconds before the restored
+Secret existed — so it ordered a new certificate. The whole bootstrap took 194 seconds, which looks
+far too short for five charts installed one wave after another. The measurement, and how that 48 s is
+derived, is in [docs/evidence/gitops.md](../evidence/gitops.md).
+
+The check has been corrected, **and has not yet been through a rebuild**. Until one ends with no
+`CertificateRequest`, the ordering described here is reasoned from the Argo CD source, not
+demonstrated.
+
+Two limits of this gate are worth knowing. It decides only **when a child Application is created**;
+after that each child syncs on its own `automated` policy, not on `root`'s clock. And `Synced` means
+the manifests were applied, not that what they ask for has happened — for the resources here that gap
+is covered because Argo CD ships health checks for `external-secrets.io` and cert-manager resources.
 
 ## 5. Traffic into the cluster, and the internal UIs
 
@@ -218,6 +238,32 @@ flowchart LR
 cert-manager keeps a Secret it finds if the certificate is valid for the requested names and carries
 annotations naming the same issuer, so the restore writes those annotations too. A renewal changes the
 Secret, and the PushSecret backs up the new certificate.
+
+**The restore has to win a race, and only the wave gate makes it win.** cert-manager does not wait for
+External Secrets; it acts on the first reconcile of the `Certificate`. If the Secret is not there by
+then, it orders. Section 4 is therefore what this design rests on, and a weak health check is what
+broke it the first time. That the corrected check holds the order is not yet proven on AWS.
+
+**It must degrade, never block.** `platform-secrets` sits in wave -1, so anything that makes it
+`Degraded` also stops monitoring, Rancher and the issuers in wave 0. The backup is seeded once with a
+deliberately invalid placeholder so the restore always has something to read:
+
+| Backup holds | What happens | What you see |
+|---|---|---|
+| A valid certificate for these names | cert-manager keeps it, orders nothing | Nothing; the UIs are trusted |
+| The `placeholder.invalid` seed | The names do not match, so cert-manager issues over it | A browser warning for the length of one DNS-01 order |
+| A certificate near expiry | cert-manager renews it | A browser warning only if it had already expired |
+| Nothing at all | The `ExternalSecret` fails and wave 0 never starts | Argo CD shows `platform-secrets` `Degraded`; seed it, per guide step 8.3 |
+
+The placeholder is deliberately wrong because it cannot be made annotation-free: the restore's
+template stamps the four `cert-manager.io/*` annotations onto whatever bytes come back, and the
+`PushSecret` copies only `tls.crt` and `tls.key`. A plausible-looking self-signed certificate for
+`*.recruitai.io.vn` would pass every check, be adopted, be served on every internal UI, and be pushed
+back over the real backup ten minutes later.
+
+**`--enable-certificate-owner-ref` stays off**, which is cert-manager's default. It would make the
+certificate Secret a child of the `Certificate` object, and `platform-tls` runs with `prune: true`; one
+bad prune would then delete the live certificate and the PushSecret's source in a single step.
 
 ## 7. Secrets flow
 

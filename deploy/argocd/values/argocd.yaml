@@ -16,22 +16,50 @@ notifications:
 
 configs:
   cm:
-    # Argo CD 1.8 stopped computing the health of Application resources. Without this check, an
-    # Application is "healthy" the moment it is created, so the sync waves in deploy/argocd/apps/
-    # would not wait for each other and Rancher could start before its certificate exists.
-    # The Lua below copies each child Application's own health status.
+    # Argo CD 1.8 stopped computing the health of Application resources, so by default one wave of
+    # Applications does not wait for the previous one. The Lua below puts that back.
+    #
+    # It has to look at sync as well as health. Argo CD leaves a resource that does not exist yet out
+    # of an Application's health total, on purpose - controller/health.go says "Missing resources
+    # should not affect parent app health - the OutOfSync status already indicates resources are
+    # missing". So an Application that has applied half of its manifests still reports Healthy. On
+    # 2026-09-18 a health-only version of this check let root start wave 0 while platform-secrets was
+    # still applying: the Certificate was created before the restored Secret, and cert-manager spent
+    # one of the five Let's Encrypt issuances allowed that week. status.sync stays OutOfSync until
+    # every resource exists, so it is the condition that actually orders the waves.
+    #
+    # Degraded is passed through, or a child that has failed would report Progressing and root would
+    # wait for ever without saying why. An empty resource list is Degraded for the same reason: it
+    # means the Application rendered nothing at all - a wrong `path:` - which would otherwise read
+    # Healthy and Synced immediately and let root walk through every wave in one second.
+    #
+    # Two cases still leave root waiting with no explanation: a child that stays Healthy but
+    # OutOfSync, and a child that reports Suspended. Neither has come up here.
     resource.customizations.health.argoproj.io_Application: |
       hs = {}
       hs.status = "Progressing"
       hs.message = "waiting for the child Application"
-      if obj.status ~= nil then
-        if obj.status.health ~= nil and obj.status.sync ~= nil then
-          if obj.status.health.status == "Healthy" and obj.status.sync.status == "Synced" then
-            hs.status = "Healthy"
-            hs.message = obj.status.health.message or ""
-          end
-        end
+
+      if obj.status == nil or obj.status.health == nil or obj.status.sync == nil then
+        return hs
       end
+
+      if obj.status.health.status == "Degraded" then
+        hs.status = "Degraded"
+        hs.message = obj.status.health.message or "child Application is Degraded"
+        return hs
+      end
+
+      if obj.status.health.status == "Healthy" and obj.status.sync.status == "Synced" then
+        if obj.status.resources == nil or #obj.status.resources == 0 then
+          hs.status = "Degraded"
+          hs.message = "child Application reports no resources: check its source path"
+          return hs
+        end
+        hs.status = "Healthy"
+        hs.message = obj.status.health.message or "child Application is ready"
+      end
+
       return hs
   # NEW (step 9)
   params:

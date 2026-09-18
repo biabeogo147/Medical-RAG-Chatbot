@@ -282,6 +282,18 @@ flowchart LR
 Two objects, in two Applications, because they must run at different times: the restore before the
 `Certificate` exists (wave -1), the backup after it is issued (wave 0).
 
+**What actually holds that order.** Nothing inside cert-manager waits for External Secrets; the two
+controllers react to whatever they find. The restore has to be complete before the `Certificate`
+object exists, and the only thing enforcing that is the Application health check from
+[step 2](1-argocd.md#step-2--install-argo-cd-by-hand): `root` starts wave 0 only when every wave -1
+Application is `Healthy` **and** `Synced`. The `Synced` half is the one that matters, for the reason
+given in that step. On 2026-09-18, with a health-only version of that check, `root` released wave 0
+early: cert-manager reconciled the `Certificate` and found no Secret roughly 48 seconds before the
+restored Secret existed, so it ordered, and the rebuild spent one of the five issuances. The
+measurement, and how that number is derived, is in
+[docs/evidence/gitops.md](../../evidence/gitops.md). The corrected check has not been through a
+rebuild yet, so treat the ordering as reasoned, not demonstrated.
+
 ### 8.1 The backup
 
 Create `deploy/argocd/manifests/platform-tls/wildcard-tls-backup.yaml`:
@@ -397,7 +409,76 @@ kubectl -n ingress-nginx get certificate wildcard-recruitai
 `platform-secrets` `Healthy`; the ExternalSecret `SecretSynced`; the certificate still `READY True`. On
 this cluster the restore only rewrote the same certificate. The real proof comes in [step 13](5-teardown-and-rebuild.md#step-13--rebuild-from-nothing-and-the-evidence): after a
 rebuild, `kubectl -n ingress-nginx get certificaterequests` finds **no** request, because nothing was
-ordered.
+ordered. That has not happened yet — the first rebuild raced, as described above — so treat the
+mechanism as unproven until a rebuild prints `No resources found`.
+
+After Rancher is installed, `kubectl -n argocd get app …` resolves to Rancher's
+`apps.catalog.cattle.io` instead of Argo CD. Write `kubectl -n argocd get applications.argoproj.io`
+in anything you intend to keep.
+
+### 8.3 On a fresh account: seed the backup so the restore cannot fail
+
+**Skip this while you are following the guide.** You have just created the restore object, and
+step 8.1 has already filled the backup, so there is nothing to seed. This section is for the other
+case: deploying this finished repository to a **new AWS account**, where `platform-secrets` carries
+the restore from the very first sync and the backup is still empty.
+
+Why it matters there. `platform-secrets` is wave -1, so an `ExternalSecret` that goes `Degraded`
+stops wave 0 — `platform-tls`, monitoring and Rancher. A certificate problem should degrade the
+platform, not block it. An empty backup is the one failure of this kind you can remove in advance;
+the others (a denied IAM call, an unreachable secret store, a value that is not JSON) are real
+outages you would want to see.
+
+Check first. If the secret already holds a certificate, stop here:
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id medical-rag/wildcard-tls \
+  --query SecretString --output text | head -c 30
+```
+`{"tls.crt":"-----BEGIN CERTIFI` means it is filled — the `PushSecret` stores the PEM text as it is,
+with no base64 and no space after the colon. `ResourceNotFoundException` means the secret exists but
+has no value yet, which is what you are fixing. (`head -c` closes the pipe early, so the AWS CLI may
+print a broken-pipe message after the output; ignore it.)
+
+Only if it is empty, on the ops workstation:
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -keyout /tmp/ph.key -out /tmp/ph.crt \
+  -subj "/CN=placeholder.invalid" \
+  -addext "subjectAltName=DNS:placeholder.invalid"
+```
+```bash
+jq -n --arg crt "$(cat /tmp/ph.crt)" --arg key "$(cat /tmp/ph.key)" \
+  '{"tls.crt":$crt,"tls.key":$key}' > /tmp/ph.json
+```
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id medical-rag/wildcard-tls \
+  --secret-string file:///tmp/ph.json
+```
+```bash
+rm -f /tmp/ph.key /tmp/ph.crt /tmp/ph.json
+```
+
+**Why the placeholder is deliberately wrong:**
+
+- **It cannot be un-annotated.** The four `cert-manager.io/*` annotations live in the restore
+  `ExternalSecret`'s template, not in Secrets Manager — the `PushSecret` copies `tls.crt` and
+  `tls.key` and nothing else. So the restore stamps *correct* issuer annotations onto whatever bytes
+  it finds, including a placeholder.
+- **Which means a plausible placeholder would be adopted.** A self-signed certificate for
+  `*.recruitai.io.vn` would pass every check cert-manager makes: right names, matching key, matching
+  issuer annotations, not expired. cert-manager would keep it, ingress-nginx would serve a self-signed
+  certificate on every internal UI, and the `PushSecret` would copy it back over the backup ten
+  minutes later. The placeholder would become permanent.
+- **A name that cannot match fixes it.** `placeholder.invalid` is not one of the `Certificate`'s
+  `dnsNames`, so cert-manager replaces it on its first reconcile. The one-day lifetime is a second,
+  independent reason it would be replaced; it does **not** remove the placeholder, because nothing
+  deletes a Secret. If issuance keeps failing — the rate limit this whole section exists to avoid —
+  what ingress-nginx serves is an expired placeholder, which is loud rather than silent.
+- **What you see meanwhile.** For the length of one DNS-01 order, the internal UIs answer with the
+  placeholder and the browser warns. They are behind the VPN, and the warning is the honest signal
+  that no certificate has been issued yet.
 
 ---
 
@@ -437,22 +518,50 @@ notifications:
 
 configs:
   cm:
-    # Argo CD 1.8 stopped computing the health of Application resources. Without this check, an
-    # Application is "healthy" the moment it is created, so the sync waves in deploy/argocd/apps/
-    # would not wait for each other and Rancher could start before its certificate exists.
-    # The Lua below copies each child Application's own health status.
+    # Argo CD 1.8 stopped computing the health of Application resources, so by default one wave of
+    # Applications does not wait for the previous one. The Lua below puts that back.
+    #
+    # It has to look at sync as well as health. Argo CD leaves a resource that does not exist yet out
+    # of an Application's health total, on purpose - controller/health.go says "Missing resources
+    # should not affect parent app health - the OutOfSync status already indicates resources are
+    # missing". So an Application that has applied half of its manifests still reports Healthy. On
+    # 2026-09-18 a health-only version of this check let root start wave 0 while platform-secrets was
+    # still applying: the Certificate was created before the restored Secret, and cert-manager spent
+    # one of the five Let's Encrypt issuances allowed that week. status.sync stays OutOfSync until
+    # every resource exists, so it is the condition that actually orders the waves.
+    #
+    # Degraded is passed through, or a child that has failed would report Progressing and root would
+    # wait for ever without saying why. An empty resource list is Degraded for the same reason: it
+    # means the Application rendered nothing at all - a wrong `path:` - which would otherwise read
+    # Healthy and Synced immediately and let root walk through every wave in one second.
+    #
+    # Two cases still leave root waiting with no explanation: a child that stays Healthy but
+    # OutOfSync, and a child that reports Suspended. Neither has come up here.
     resource.customizations.health.argoproj.io_Application: |
       hs = {}
       hs.status = "Progressing"
-      hs.message = ""
-      if obj.status ~= nil then
-        if obj.status.health ~= nil then
-          hs.status = obj.status.health.status
-          if obj.status.health.message ~= nil then
-            hs.message = obj.status.health.message
-          end
-        end
+      hs.message = "waiting for the child Application"
+
+      if obj.status == nil or obj.status.health == nil or obj.status.sync == nil then
+        return hs
       end
+
+      if obj.status.health.status == "Degraded" then
+        hs.status = "Degraded"
+        hs.message = obj.status.health.message or "child Application is Degraded"
+        return hs
+      end
+
+      if obj.status.health.status == "Healthy" and obj.status.sync.status == "Synced" then
+        if obj.status.resources == nil or #obj.status.resources == 0 then
+          hs.status = "Degraded"
+          hs.message = "child Application reports no resources: check its source path"
+          return hs
+        end
+        hs.status = "Healthy"
+        hs.message = obj.status.health.message or "child Application is ready"
+      end
+
       return hs
   # NEW (step 9)
   params:

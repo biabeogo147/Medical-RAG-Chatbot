@@ -214,8 +214,19 @@ rm alertmanager.json
 unset SMTP_PASS
 ```
 
-Leave `medical-rag/wildcard-tls` **empty**. External Secrets fills it after the first certificate is
-issued (GitOps guide step 8).
+Leave `medical-rag/wildcard-tls` **empty** for now. External Secrets fills it after the first
+certificate is issued (GitOps guide step 8).
+
+Empty is right while you are following these guides: the object that reads it does not exist until
+GitOps guide step 8.2, and GitOps step 8.1 fills the secret before then.
+
+It is **not** right when the finished repository is deployed to a new AWS account. There
+`platform-secrets` carries the restore from the first sync, that Application sits in wave -1, and an
+`ExternalSecret` it cannot satisfy should be expected to stop every Application in wave 0 —
+monitoring, Rancher and the TLS issuers. GitOps guide
+[step 8.3](../../gitops/guide/3-certificates-and-argocd-ui.md#83-on-a-fresh-account-seed-the-backup-so-the-restore-cannot-fail)
+seeds the secret once with a deliberately invalid placeholder so the restore always has something to
+read. This has not been exercised on a fresh account yet.
 
 **Verify:**
 ```bash

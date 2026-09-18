@@ -61,6 +61,10 @@ back to [Terraform guide step 17](../../terraform/guide/5-domain-certificate-and
 two Rancher secrets, or [Terraform guide step 19](../../terraform/guide/7-internal-uis.md#step-19--internal-ui-names-dns-permission-for-cert-manager-two-secrets) for `alertmanager`.
 
 `medical-rag/wildcard-tls` is expected to be **empty** the very first time; [step 8](3-certificates-and-argocd-ui.md#step-8--keep-the-certificate-across-rebuilds) fills it.
+That is fine here, because nothing reads it yet: the object that restores from it does not exist until
+step 8.2. It is only a problem when the finished repository is deployed to a new account, where the
+restore is present from the first sync — [step 8.3](3-certificates-and-argocd-ui.md#83-on-a-fresh-account-seed-the-backup-so-the-restore-cannot-fail)
+covers that.
 
 Nothing to commit.
 
@@ -86,22 +90,50 @@ notifications:
 
 configs:
   cm:
-    # Argo CD 1.8 stopped computing the health of Application resources. Without this check, an
-    # Application is "healthy" the moment it is created, so the sync waves in deploy/argocd/apps/
-    # would not wait for each other and Rancher could start before its certificate exists.
-    # The Lua below copies each child Application's own health status.
+    # Argo CD 1.8 stopped computing the health of Application resources, so by default one wave of
+    # Applications does not wait for the previous one. The Lua below puts that back.
+    #
+    # It has to look at sync as well as health. Argo CD leaves a resource that does not exist yet out
+    # of an Application's health total, on purpose - controller/health.go says "Missing resources
+    # should not affect parent app health - the OutOfSync status already indicates resources are
+    # missing". So an Application that has applied half of its manifests still reports Healthy. On
+    # 2026-09-18 a health-only version of this check let root start wave 0 while platform-secrets was
+    # still applying: the Certificate was created before the restored Secret, and cert-manager spent
+    # one of the five Let's Encrypt issuances allowed that week. status.sync stays OutOfSync until
+    # every resource exists, so it is the condition that actually orders the waves.
+    #
+    # Degraded is passed through, or a child that has failed would report Progressing and root would
+    # wait for ever without saying why. An empty resource list is Degraded for the same reason: it
+    # means the Application rendered nothing at all - a wrong `path:` - which would otherwise read
+    # Healthy and Synced immediately and let root walk through every wave in one second.
+    #
+    # Two cases still leave root waiting with no explanation: a child that stays Healthy but
+    # OutOfSync, and a child that reports Suspended. Neither has come up here.
     resource.customizations.health.argoproj.io_Application: |
       hs = {}
       hs.status = "Progressing"
-      hs.message = ""
-      if obj.status ~= nil then
-        if obj.status.health ~= nil then
-          hs.status = obj.status.health.status
-          if obj.status.health.message ~= nil then
-            hs.message = obj.status.health.message
-          end
-        end
+      hs.message = "waiting for the child Application"
+
+      if obj.status == nil or obj.status.health == nil or obj.status.sync == nil then
+        return hs
       end
+
+      if obj.status.health.status == "Degraded" then
+        hs.status = "Degraded"
+        hs.message = obj.status.health.message or "child Application is Degraded"
+        return hs
+      end
+
+      if obj.status.health.status == "Healthy" and obj.status.sync.status == "Synced" then
+        if obj.status.resources == nil or #obj.status.resources == 0 then
+          hs.status = "Degraded"
+          hs.message = "child Application reports no resources: check its source path"
+          return hs
+        end
+        hs.status = "Healthy"
+        hs.message = obj.status.health.message or "child Application is ready"
+      end
+
       return hs
 
 # Requests reserve room on the 8 GB nodes; limits stop one component from starving the others. These
@@ -152,9 +184,19 @@ applicationSet:
 - **Helm, not `kubectl apply` of the upstream manifest.** The chart takes a values file, and Argo CD
   can later install the exact same chart with the exact same file. That is what lets Argo CD take over
   its own installation without changing anything.
-- **The health check.** Every later step depends on waves waiting for each other. Without these
-  lines the problem is silent: everything starts at once, and a few Applications fail and retry until
+- **The health check.** Every later step depends on waves waiting for each other, and when it does
+  not work the failure is silent: everything starts at once, and Applications fail and retry until
   their dependencies happen to be ready.
+- **Why it checks `sync` and not only `health`.** This is the part that does the work. Argo CD leaves
+  a resource that does not exist yet out of an Application's health total, deliberately, because
+  `OutOfSync` already says the resource is missing. So an Application halfway through applying its
+  manifests still reports `Healthy`. `status.sync` stays `OutOfSync` until every resource exists,
+  which is why it, not health, is what orders the waves. A version of this check that read health
+  alone is what let the certificate restore in
+  [step 8](3-certificates-and-argocd-ui.md#step-8--keep-the-certificate-across-rebuilds) lose its
+  race and spend a Let's Encrypt issuance. **This is reasoned from the Argo CD source and from what
+  was measured on the failure, not from a rebuild with the check in place** — see
+  [the evidence](../../evidence/gitops.md).
 
 **Commit and push** (the loop, message `Add the Argo CD values`), then `git pull` on the workstation.
 
