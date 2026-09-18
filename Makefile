@@ -99,3 +99,25 @@ bootstrap:
 # Sync and health of everything Argo CD manages.
 apps:
 	kubectl -n argocd get applications
+
+
+# The CSI volumes that still exist. Terraform does not know them, so they are found by the tags the
+# driver adds (ebs.csi.aws.com/cluster) and the one from values/aws-ebs-csi-driver.yaml (project).
+CSI_VOLUMES = aws ec2 describe-volumes --region $(REGION) --query 'length(Volumes)' --output text \
+  --filters Name=tag:project,Values=$(PROJECT) Name=tag-key,Values=ebs.csi.aws.com/cluster
+
+# Release the EBS volumes the cluster created, then destroy the cluster stack. Needs `make tunnel`.
+# The order matters: the CSI driver must still be running while the volumes are deleted.
+down: init
+	@# The leading "-" lets make continue when root does not exist, e.g. after a failed bootstrap.
+	-kubectl -n argocd patch application root --type merge --patch '{"spec":{"syncPolicy":{"automated":null}}}'
+	kubectl -n argocd delete applications --selector medical-rag/volumes=true --timeout=10m
+	kubectl delete pvc --all --all-namespaces --timeout=15m
+	@for i in $$(seq 30); do \
+	  n=$$($(CSI_VOLUMES)) || exit 1; \
+	  test "$$n" = 0 && break; \
+	  echo "$$n EBS volume(s) still exist, waiting"; \
+	  sleep 10; \
+	done
+	@test "$$($(CSI_VOLUMES))" = 0 || { echo "EBS volumes remain; not destroying the cluster"; exit 1; }
+	$(MAKE) infra-destroy
