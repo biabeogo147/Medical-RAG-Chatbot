@@ -1,0 +1,39 @@
+# Prometheus, Alertmanager, the Prometheus Operator, node-exporter, kube-state-metrics and Grafana.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"   # after the gp3 StorageClass and the two Secrets above
+  labels:
+    # This Application owns an EBS volume. `make down` deletes Applications with this label before
+    # destroying the cluster, so the volume is released instead of left behind (step 12).
+    medical-rag/volumes: "true"
+  finalizers:
+    # Deleting this Application also deletes what it installed. Only the volume-owning Applications
+    # have it, because only they need to be removed on purpose during teardown.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: 91.4.1
+      helm:
+        releaseName: kube-prometheus-stack
+        valueFiles:
+          - $values/deploy/argocd/values/kube-prometheus-stack.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring   # created by platform-secrets
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # Required here: the Prometheus Operator CRDs are far larger than a client-side apply allows.
+      - ServerSideApply=true

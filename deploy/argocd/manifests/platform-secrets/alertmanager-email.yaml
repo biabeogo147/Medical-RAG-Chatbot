@@ -1,0 +1,63 @@
+# Alertmanager's whole configuration, rendered by External Secrets. The structure is here in Git; the
+# SMTP account, its app password and the recipient come from medical-rag/alertmanager
+# (Terraform guide step 19). Each {{ .name }} is replaced with that key of the secret.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: alertmanager-email
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # A changed app password or recipient reaches Alertmanager within an hour, without a commit.
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  target:
+    name: alertmanager-email   # values/kube-prometheus-stack.yaml points Alertmanager at this Secret
+    template:
+      data:
+        alertmanager.yaml: |
+          global:
+            smtp_smarthost: '{{ .smtp_smarthost }}'
+            smtp_from: '{{ .smtp_from }}'
+            smtp_auth_username: '{{ .smtp_username }}'
+            smtp_auth_password: '{{ .smtp_password }}'
+            smtp_require_tls: true
+            # An alert that stops being sent is considered resolved after this long.
+            resolve_timeout: 5m
+
+          route:
+            receiver: email
+            # One email per alert name and namespace, not one per pod.
+            group_by: ["alertname", "namespace"]
+            group_wait: 30s        # wait for related alerts before the first email
+            group_interval: 5m     # new alerts joining an existing group
+            repeat_interval: 4h    # remind while it is still firing
+            routes:
+              # Watchdog always fires, on purpose: it proves the alert pipeline is alive. It is not news.
+              - receiver: "null"
+                matchers: ['alertname = "Watchdog"']
+              # InfoInhibitor exists only to mute info-level alerts, never to be read.
+              - receiver: "null"
+                matchers: ['alertname = "InfoInhibitor"']
+
+          # When a critical alert fires, the warning with the same name in the same namespace is noise.
+          inhibit_rules:
+            - source_matchers: ['severity = "critical"']
+              target_matchers: ['severity =~ "warning|info"']
+              equal: ["namespace", "alertname"]
+            - source_matchers: ['severity = "warning"']
+              target_matchers: ['severity = "info"']
+              equal: ["namespace", "alertname"]
+
+          receivers:
+            - name: "null"
+            - name: email
+              email_configs:
+                - to: '{{ .email_to }}'
+                  send_resolved: true
+  dataFrom:
+    - extract:
+        key: medical-rag/alertmanager

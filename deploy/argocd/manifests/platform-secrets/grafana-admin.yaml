@@ -1,0 +1,38 @@
+# Grafana's admin password, generated inside the cluster. It is not in Git, not in Secrets Manager,
+# and not typed by anyone. A rebuilt cluster gets a new one; step 10 shows how to read it.
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: grafana-admin
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  length: 32
+  digits: 6
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: grafana-admin
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # "0" means generate once and never refresh. Any other interval would change the password every time.
+  refreshInterval: "0"
+  target:
+    name: grafana-admin
+    template:
+      data:
+        admin-user: admin
+        admin-password: "{{ .password }}"
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: grafana-admin

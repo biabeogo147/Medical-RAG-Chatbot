@@ -1,0 +1,121 @@
+# --- Alertmanager ------------------------------------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    # Use the Secret External Secrets renders (manifests/platform-secrets/alertmanager-email.yaml)
+    # instead of a configuration written in this file, which would have to contain the SMTP password.
+    useExistingSecret: true
+    configSecret: alertmanager-email
+    # Links in the emails point here.
+    externalUrl: https://alertmanager.recruitai.io.vn
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/allowlist-source-range: "10.10.0.0/16"
+    hosts:
+      - alertmanager.recruitai.io.vn
+    # No secretName: ingress-nginx serves the wildcard as its default certificate.
+    tls:
+      - hosts:
+          - alertmanager.recruitai.io.vn
+
+# --- The control plane --------------------------------------------------------------------------------
+# Scraped on the node addresses since Ansible guide step 11. The chart finds the static pods by their
+# `component` label, so nothing else needs configuring.
+kubeControllerManager:
+  enabled: true
+kubeScheduler:
+  enabled: true
+kubeEtcd:
+  enabled: true
+kubeProxy:
+  enabled: true
+
+# --- Prometheus -------------------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    externalUrl: https://prometheus.recruitai.io.vn
+    # Enough to look at a working session; keeps the volume and the memory small.
+    retention: 24h
+    # By default Prometheus only picks up ServiceMonitors labelled for this Helm release. The app's
+    # chart adds its own ServiceMonitor later, so select all of them.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/allowlist-source-range: "10.10.0.0/16"
+    hosts:
+      - prometheus.recruitai.io.vn
+    tls:
+      - hosts:
+          - prometheus.recruitai.io.vn
+
+# --- A rule of this project's own ---------------------------------------------------------------------
+# m7i-flex instances publish no CPU credit metric, so running out of burst capacity is silent (design
+# §10). Sustained high CPU is the earliest visible sign.
+additionalPrometheusRulesMap:
+  medical-rag-nodes:
+    groups:
+      - name: medical-rag.nodes
+        rules:
+          - alert: NodeCpuHighSustained
+            expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.8
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "CPU above 80% for 15 minutes on {{ $labels.instance }}"
+              description: "m7i-flex nodes throttle silently when their burst capacity runs out."
+
+# --- Grafana ----------------------------------------------------------------------------------------
+grafana:
+  # The password comes from the generated Secret instead of the chart's well-known default.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  grafana.ini:
+    server:
+      root_url: https://grafana.recruitai.io.vn
+  # Dashboards come from the chart on every start; there is nothing worth a volume.
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/allowlist-source-range: "10.10.0.0/16"
+    hosts:
+      - grafana.recruitai.io.vn
+    tls:
+      - hosts:
+          - grafana.recruitai.io.vn
