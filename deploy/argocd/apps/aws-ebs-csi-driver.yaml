@@ -1,0 +1,32 @@
+# The EBS CSI driver creates, attaches and deletes EBS volumes for PersistentVolumeClaims.
+# Its AWS permissions come from the node's instance profile (AmazonEBSCSIDriverPolicy, attached by
+# Terraform in infra/terraform/cluster/iam.tf); no credential is configured here.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-ebs-csi-driver
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  project: default
+  sources:
+    - repoURL: https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+      chart: aws-ebs-csi-driver
+      targetRevision: 2.66.0
+      helm:
+        releaseName: aws-ebs-csi-driver
+        valueFiles:
+          - $values/deploy/argocd/values/aws-ebs-csi-driver.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

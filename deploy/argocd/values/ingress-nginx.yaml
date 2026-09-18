@@ -1,0 +1,34 @@
+controller:
+  # One controller on every node. The load balancers send traffic to all three nodes, and each
+  # node's health check passes only if something answers on its NodePort.
+  kind: DaemonSet
+
+  service:
+    # The cluster has no AWS cloud controller, so a LoadBalancer Service would stay Pending forever.
+    # Terraform created the load balancers instead and pointed them at these fixed ports.
+    type: NodePort
+    nodePorts:
+      http: 30080    # public NLB, port 80   (infra/terraform/cluster/loadbalancers.tf)
+      https: 30443   # internal NLB, port 443 (infra/terraform/cluster/rancher.tf)
+    # Deliver each connection to the controller on the node it arrived at, keeping the caller's real
+    # address. With the default ("Cluster"), kube-proxy replaces the source of every such connection
+    # with a node's VPC address, and the VPC-only allowlist on the internal UIs (step 9)
+    # would let internet traffic through. With one controller per node, every node has one to deliver to.
+    externalTrafficPolicy: Local
+
+  extraArgs:
+    # The certificate served when an Ingress lists a TLS host without its own Secret: the wildcard
+    # *.recruitai.io.vn from step 7. Until it exists, nginx serves a self-signed placeholder.
+    default-ssl-certificate: ingress-nginx/wildcard-recruitai-tls
+
+  ingressClassResource:
+    name: nginx
+    # Ingresses that name no class use this one.
+    default: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

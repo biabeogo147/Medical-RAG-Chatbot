@@ -320,14 +320,20 @@ ARGOCD_VERSION  = $(shell yq '.spec.sources[0].targetRevision' $(ARGOCD_APP))
 .PHONY: bootstrap apps
 
 # Install Argo CD and hand it the root Application. Needs `make tunnel` open in another window.
-# Safe to run again: same chart, same version, same values.
+# Safe to run again: the helm step is skipped once Argo CD manages itself.
 bootstrap:
 	helm repo add argo https://argoproj.github.io/argo-helm --force-update
-	helm upgrade --install argocd argo/argo-cd \
-	  --namespace argocd --create-namespace \
-	  --version $(ARGOCD_VERSION) \
-	  --values $(ARGOCD_VALUES) \
-	  --wait --timeout 10m
+	@# Only the first bootstrap installs the chart. Once the argocd Application exists, Argo CD owns
+	@# these objects through server-side apply, and a second `helm upgrade` fails on field conflicts.
+	@if kubectl -n argocd get application argocd >/dev/null 2>&1; then \
+	  echo "Argo CD already manages itself; skipping helm and applying root.yaml only"; \
+	else \
+	  helm upgrade --install argocd argo/argo-cd \
+	    --namespace argocd --create-namespace \
+	    --version $(ARGOCD_VERSION) \
+	    --values $(ARGOCD_VALUES) \
+	    --wait --timeout 10m; \
+	fi
 	kubectl apply -f deploy/argocd/root.yaml
 
 # Sync and health of everything Argo CD manages.
@@ -347,12 +353,20 @@ git push
 make -n bootstrap
 ```
 `-n` prints the commands instead of running them. The `helm upgrade` line must contain
-`--version 10.9.2`. Then run it for real; it is harmless on a cluster that already has Argo CD:
+`--version 10.9.2`. Then run it for real:
 ```bash
 make bootstrap
 make apps
 ```
-Still `argocd` and `root`, both `Synced` and `Healthy`.
+It prints `Argo CD already manages itself; skipping helm and applying root.yaml only`, and both
+`argocd` and `root` stay `Synced` and `Healthy`.
+
+**Why the target skips Helm here.** On a fresh cluster the first `make bootstrap` installs the chart.
+After the takeover, Argo CD owns those objects with server-side apply under its own field manager, and
+Helm 4 also applies server-side: a second `helm upgrade` then fails with
+`Apply failed with 1 conflict: conflict with "argocd-controller"`. Nothing is broken when that happens;
+the cluster still runs the same Argo CD. From here on, Argo CD is changed through Git, and
+`make bootstrap` is for rebuilds.
 
 ---
 

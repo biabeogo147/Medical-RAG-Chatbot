@@ -1,0 +1,22 @@
+controller:
+  # Set the region directly instead of reading it from instance metadata at start-up.
+  region: ap-southeast-1
+  # Added to every EBS volume the driver creates. Terraform does not know these volumes, so this tag
+  # is how teardown (step 12) and the bill find them.
+  extraVolumeTags:
+    project: medical-rag
+
+storageClasses:
+  - name: gp3
+    annotations:
+      # PVCs that name no StorageClass get this one.
+      storageclass.kubernetes.io/is-default-class: "true"
+    # Create the volume only once the pod is scheduled, in that pod's availability zone. An EBS volume
+    # can be attached only in its own zone; "Immediate" would pick a zone first and could strand the pod.
+    volumeBindingMode: WaitForFirstConsumer
+    # Deleting the PVC deletes the EBS volume. Teardown relies on this.
+    reclaimPolicy: Delete
+    allowVolumeExpansion: true
+    parameters:
+      type: gp3
+      encrypted: "true"

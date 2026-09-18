@@ -1,0 +1,16 @@
+# Created here, not by the Rancher or monitoring charts, because the Secrets below must exist in these
+# namespaces before those charts are installed. Waves inside one Application work like waves between
+# Applications: lowest first.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-system   # the namespace the Rancher chart requires
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"

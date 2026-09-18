@@ -86,7 +86,13 @@ sequenceDiagram
 The takeover is safe because both installs render the same manifests from the same chart version and
 the same values file. The only change Argo CD makes is to add its tracking annotation to each object,
 so no pod restarts. `make bootstrap` reads the version from `apps/argocd.yaml` instead of repeating it,
-so the two cannot drift apart. Running `make bootstrap` again later is harmless for the same reason.
+so the two cannot drift apart.
+
+After the takeover, Argo CD owns its own objects through server-side apply. Helm 4 applies server-side
+too, so a second `helm upgrade` would collide with Argo CD's field manager. `make bootstrap` therefore
+installs the chart only while the `argocd` Application does not exist yet, and otherwise just applies
+`root.yaml`. On a rebuilt cluster that makes it the single command again; on a running cluster it is a
+no-op, and Argo CD is upgraded by editing `apps/argocd.yaml`.
 
 ## 4. App-of-apps and sync waves
 
