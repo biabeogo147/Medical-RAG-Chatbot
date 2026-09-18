@@ -1,0 +1,37 @@
+# Values from design §4.2.1.
+
+# Rancher serves only this name. It resolves to the internal NLB's private addresses.
+hostname: rancher.recruitai.io.vn
+
+# The chart defaults to 3; three 8 GB nodes also run Prometheus and, later, Jenkins.
+replicas: 1
+
+ingress:
+  ingressClassName: nginx
+  tls:
+    # Use the Secret named tls-rancher-ingress (created by platform-secrets), not cert-manager.
+    source: secret
+  # The same VPC-only rule as every internal UI (step 9). Rancher's own agents connect through the
+  # internal load balancer, which presents a VPC address, so they are allowed.
+  extraAnnotations:
+    nginx.ingress.kubernetes.io/allowlist-source-range: "10.10.0.0/16"
+
+# The default, "strict", makes agents trust only the CA in Rancher's own settings. A certificate from a
+# public CA like Sectigo is checked against the system trust store instead.
+agentTLSMode: system-store
+
+# The first-login password, from the bootstrap-secret that External Secrets created.
+extraEnv:
+  - name: CATTLE_BOOTSTRAP_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: bootstrap-secret
+        key: bootstrapPassword
+
+# Do NOT set `bootstrapPassword`. In chart 2.15.1 that value renders a second bootstrap-secret and a
+# second CATTLE_BOOTSTRAP_PASSWORD, and Argo CD and External Secrets would overwrite each other forever.
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi

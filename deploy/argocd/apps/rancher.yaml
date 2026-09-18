@@ -1,0 +1,33 @@
+# Rancher, the private management UI.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rancher
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"   # after platform-secrets: the certificate and password exist
+spec:
+  project: default
+  sources:
+    - repoURL: https://releases.rancher.com/server-charts/stable
+      chart: rancher
+      # This chart declares kubeVersion "< 1.37.0-0". Argo CD passes the cluster's version to Helm, so
+      # after a Kubernetes upgrade to 1.37 this Application would fail to render: the compatibility
+      # gate in design §4.2.1, enforced by the chart itself.
+      targetRevision: 2.15.1
+      helm:
+        releaseName: rancher
+        valueFiles:
+          - $values/deploy/argocd/values/rancher.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cattle-system   # created by platform-secrets
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
