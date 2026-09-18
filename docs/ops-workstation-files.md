@@ -22,7 +22,7 @@ The audit in section 6 confirms them.
 
 | Path | What it is | Why it matters | If it is lost |
 |---|---|---|---|
-| 🔴 `~/tls/rancher.recruitai.io.vn/rancher.key` | Private key of the Rancher certificate ([Terraform guide 17.2](terraform/guide.md#step-17--migrate-dns-and-store-the-keys)) | Anyone with it can impersonate `rancher.recruitai.io.vn` until the certificate expires | Restore it from Secrets Manager (section 7). **Do not re-run 17.2**: a new key does not match the issued certificate |
+| 🔴 `~/tls/rancher.recruitai.io.vn/rancher.key` | Private key of the Rancher certificate ([Terraform guide 17.2](terraform/guide/5-domain-certificate-and-secrets.md#step-17--migrate-dns-and-store-the-keys)) | Anyone with it can impersonate `rancher.recruitai.io.vn` until the certificate expires | Restore it from Secrets Manager (section 7). **Do not re-run 17.2**: a new key does not match the issued certificate |
 | 🔴 `~/.kube/config` | Cluster-admin kubeconfig, written by `make cluster` ([Ansible guide](ansible/guide.md)) | Full control of the cluster while that cluster exists | `make cluster` writes it again |
 | 🔴 `~/.config/gh/hosts.yml` *(default location)* | The GitHub token from `gh auth login` ([Terraform guide step 7](terraform/guide.md)) | Push access to this repo until the token expires (30 days) | Create a new token on GitHub, log in again |
 | 🔴 `~/.bash_history` | Every command you typed | Holds any secret that was typed inside a command (section 5, risk 1) | Nothing to recover; clean it instead |

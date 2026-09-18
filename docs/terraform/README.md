@@ -112,7 +112,7 @@ flowchart TB
 | | `bootstrap/` | `shared/` | `cluster/` |
 |---|---|---|---|
 | Job | The state bucket and the machine you work from | What must survive a teardown | The Kubernetes machines, their network and entry points |
-| Applied from | AWS CloudShell ([guide step 4](guide.md#step-4--apply-the-bootstrap-stack-cloudshell)) | Ops workstation, `make shared` | Ops workstation, `make infra` |
+| Applied from | AWS CloudShell ([guide step 4](guide/1-bootstrap.md#step-4--apply-the-bootstrap-stack-cloudshell)) | Ops workstation, `make shared` | Ops workstation, `make infra` |
 | State key | `bootstrap/terraform.tfstate` | `shared/terraform.tfstate` | `cluster/terraform.tfstate` |
 | Resources | 18 | 17 | 84 |
 | Lifetime | Kept | Kept | **Destroyed when idle** (`make infra-destroy`) |
