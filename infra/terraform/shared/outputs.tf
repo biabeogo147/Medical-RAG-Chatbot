@@ -21,5 +21,6 @@ output "secret_names" {
   value = concat(
     [for s in aws_secretsmanager_secret.app : s.name],
     [for s in aws_secretsmanager_secret.rancher : s.name],
+    [aws_secretsmanager_secret.alertmanager.name, aws_secretsmanager_secret.wildcard_tls.name],
   )
 }

@@ -11,3 +11,24 @@ resource "aws_secretsmanager_secret" "app" {
   # immediately after a destroy.
   recovery_window_in_days = 7
 }
+
+# SMTP settings Alertmanager sends alert email with. Filled in once with put-secret-value (below).
+resource "aws_secretsmanager_secret" "alertmanager" {
+  name                    = "${var.project}/alertmanager"
+  recovery_window_in_days = 7
+}
+
+# A backup of the wildcard certificate cert-manager obtains from Let's Encrypt. Let's Encrypt issues at
+# most 5 certificates for the same set of names in 7 days, and this cluster is rebuilt more often than
+# that. So External Secrets writes the certificate here after it is issued, and puts it back into a
+# rebuilt cluster before cert-manager would ask for a new one.
+resource "aws_secretsmanager_secret" "wildcard_tls" {
+  name                    = "${var.project}/wildcard-tls"
+  recovery_window_in_days = 7
+
+  # External Secrets writes only to secrets carrying this tag, so that it never overwrites a secret it
+  # does not own. A resource tag replaces the provider's default tag with the same key.
+  tags = {
+    managed-by = "external-secrets"
+  }
+}

@@ -75,6 +75,54 @@ data "aws_iam_policy_document" "nodes" {
     resources = [for s in data.aws_secretsmanager_secret.app : s.arn]
   }
 
+  # External Secrets backs up the wildcard certificate (see shared/secrets.tf). Only this one secret
+  # can be written; the other five stay read-only.
+  # External Secrets also calls DeleteResourcePolicy on every push (it removes any resource policy the
+  # PushSecret does not ask for), and fails without it.
+  statement {
+    sid       = "BackupWildcardCertificate"
+    actions   = ["secretsmanager:PutSecretValue", "secretsmanager:DeleteResourcePolicy"]
+    resources = [data.aws_secretsmanager_secret.app["wildcard-tls"].arn]
+  }
+
+  # cert-manager proves domain ownership to Let's Encrypt (DNS-01) by creating one TXT record,
+  # _acme-challenge.<domain>, and deleting it afterwards. The conditions limit the change permission to
+  # exactly that name and type, so a pod using this role cannot change any other record in the zone.
+  statement {
+    sid       = "AcmeChallengeRecord"
+    actions   = ["route53:ChangeResourceRecordSets"]
+    resources = [data.aws_route53_zone.main.arn]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
+      values   = ["_acme-challenge.${var.domain}"]
+    }
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "route53:ChangeResourceRecordSetsRecordTypes"
+      values   = ["TXT"]
+    }
+  }
+
+  # Read-only lookups cert-manager needs: find the zone by name, list its records, and poll until
+  # a change has reached every Route 53 server.
+  statement {
+    sid       = "AcmeZoneLookup"
+    actions   = ["route53:ListResourceRecordSets"]
+    resources = [data.aws_route53_zone.main.arn]
+  }
+  statement {
+    sid       = "AcmeChangeStatus"
+    actions   = ["route53:GetChange"]
+    resources = ["arn:aws:route53:::change/*"]
+  }
+  statement {
+    sid       = "AcmeFindZone"
+    actions   = ["route53:ListHostedZonesByName"]
+    resources = ["*"]
+  }
+
   # Sign, not decrypt: the CI pipeline asks KMS to sign image digests with the cosign key.
   statement {
     sid       = "CosignSign"
