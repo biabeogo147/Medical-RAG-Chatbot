@@ -1,0 +1,32 @@
+# cert-manager: obtains and renews certificates. Its AWS permission (the one TXT record) comes from the
+# node's instance profile; a ClusterIssuer may use those "ambient" credentials by default.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: default
+  sources:
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      targetRevision: v1.21.2
+      helm:
+        releaseName: cert-manager
+        valueFiles:
+          - $values/deploy/argocd/values/cert-manager.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
