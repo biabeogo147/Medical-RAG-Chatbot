@@ -1,0 +1,39 @@
+# Argo CD managing its own chart. Same chart, same version, same values file as the first install,
+# so adopting the running installation changes only Argo CD's tracking annotation. To upgrade Argo CD
+# later, change targetRevision here and push; `make bootstrap` also reads the version from this line.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    # The foundation starts first. Waves run from the lowest number up.
+    argocd.argoproj.io/sync-wave: "-3"
+  # No resources-finalizer: deleting this Application must never uninstall Argo CD.
+spec:
+  project: default
+  # Two sources: the chart from its Helm repository, and the values file from this Git repository.
+  sources:
+    - repoURL: https://argoproj.github.io/argo-helm
+      chart: argo-cd
+      targetRevision: 10.9.2
+      helm:
+        releaseName: argocd   # the name used by `helm install`; resource names depend on it
+        valueFiles:
+          - $values/deploy/argocd/values/argocd.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values   # makes `$values` above mean "the root of this repository"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      # Not pruned automatically: a mistake in this chart's values could otherwise delete the
+      # controller that is running the sync. Removals here are applied by hand, after a look.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # The Argo CD CRDs are too large for a client-side apply, which stores the whole object in an
+      # annotation limited to 262 KB. Server-side apply has no such annotation.
+      - ServerSideApply=true

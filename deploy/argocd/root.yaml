@@ -1,0 +1,24 @@
+# The app-of-apps. Its only job is to create one Application for each file in deploy/argocd/apps/.
+# It is applied once, by `make bootstrap`; everything else arrives by committing a file.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  # No resources-finalizer on purpose. With one, deleting `root` would also delete every child
+  # Application, and with them whatever those Applications cascade-delete. Without it, deleting
+  # `root` deletes only `root`.
+spec:
+  project: default
+  source:
+    # The repository is public, so Argo CD reads it without any credential.
+    repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+    targetRevision: main
+    path: deploy/argocd/apps
+  destination:
+    server: https://kubernetes.default.svc   # this cluster
+    namespace: argocd                        # Application resources live next to Argo CD
+  syncPolicy:
+    automated:
+      prune: true      # a file removed from apps/ removes its Application
+      selfHeal: true   # an Application edited by hand is put back to what Git says

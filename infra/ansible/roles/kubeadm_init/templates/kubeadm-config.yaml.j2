@@ -24,3 +24,27 @@ apiServer:
 networking:
   podSubnet: "{{ pod_cidr }}"
   serviceSubnet: "{{ service_cidr }}"
+
+# Metrics on the node's address instead of 127.0.0.1, so Prometheus in a pod can scrape them. The joining
+# control planes read this same ClusterConfiguration, so all three nodes get it.
+controllerManager:
+  extraArgs:
+    - name: bind-address
+      value: "0.0.0.0"
+scheduler:
+  extraArgs:
+    - name: bind-address
+      value: "0.0.0.0"
+etcd:
+  local:
+    extraArgs:
+      # Only the metrics listener moves; client traffic stays on 2379 with TLS.
+      - name: listen-metrics-urls
+        value: "http://0.0.0.0:2381"
+
+---
+# kube-proxy runs as a DaemonSet with one shared configuration, which kubeadm creates from this.
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+metricsBindAddress: "0.0.0.0:10249"
+

@@ -69,3 +69,27 @@ kubectl:
 tunnel:
 	aws ssm start-session --target $(NODE_1) --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=$(API_ENDPOINT),portNumber=6443,localPortNumber=6443
 
+
+# --- GitOps: Argo CD, then everything Argo CD installs from deploy/argocd/ ----------------------
+ARGOCD_APP     := deploy/argocd/apps/argocd.yaml
+ARGOCD_VALUES  := deploy/argocd/values/argocd.yaml
+# The chart version is written once, in the Application Argo CD uses to manage itself. Reading it
+# here means the first install and the self-managed one can never disagree.
+ARGOCD_VERSION  = $(shell yq '.spec.sources[0].targetRevision' $(ARGOCD_APP))
+
+.PHONY: bootstrap apps
+
+# Install Argo CD and hand it the root Application. Needs `make tunnel` open in another window.
+# Safe to run again: same chart, same version, same values.
+bootstrap:
+	helm repo add argo https://argoproj.github.io/argo-helm --force-update
+	helm upgrade --install argocd argo/argo-cd \
+	  --namespace argocd --create-namespace \
+	  --version $(ARGOCD_VERSION) \
+	  --values $(ARGOCD_VALUES) \
+	  --wait --timeout 10m
+	kubectl apply -f deploy/argocd/root.yaml
+
+# Sync and health of everything Argo CD manages.
+apps:
+	kubectl -n argocd get applications
