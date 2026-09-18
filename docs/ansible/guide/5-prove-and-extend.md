@@ -158,7 +158,21 @@ kubectl run metricscheck \
   -- wget -qO- "http://$NODE2_IP:2381/metrics" > /tmp/etcd-metrics.txt
 grep -c '^etcd_server_has_leader' /tmp/etcd-metrics.txt
 ```
-`1`. A pod reached etcd's metrics on another node.
+**1 or more.** Any number above `0` means the pod reached etcd's metrics on another node, which is the
+whole point of this check. Two normal surprises:
+
+- **`warning: couldn't attach to pod/metricscheck, falling back to streaming logs`.** The container ran
+  `wget` and exited before kubectl could attach, so kubectl read its log instead. Harmless, but it can
+  write the output twice, which is the usual reason the count is `2`.
+- Look at the lines themselves if you want to know which it was:
+  ```bash
+  grep '^etcd_server_has_leader' /tmp/etcd-metrics.txt
+  ```
+  `etcd_server_has_leader 1` means that member can see a leader. Two identical lines mean the output was
+  written twice.
+
+A `0`, or a command that hangs and then fails, means this cluster was built before the template change:
+rebuild it.
 
 A second `make cluster` still reports `changed=0` on every node.
 
