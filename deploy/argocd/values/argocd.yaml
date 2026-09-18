@@ -2,7 +2,11 @@
 # later `make bootstrap`), and by the argocd Application that makes Argo CD manage itself (step 3).
 # Keeping one file is what lets that takeover leave the running pods alone.
 
-# Single sign-on is not used; kubectl and the admin account are enough for one operator.
+# NEW (step 9): the internal name of the UI and API.
+global:
+  domain: argocd.recruitai.io.vn
+
+# Single sign-on is not used; the admin account is enough for one operator.
 dex:
   enabled: false
 
@@ -29,6 +33,11 @@ configs:
         end
       end
       return hs
+  # NEW (step 9)
+  params:
+    # TLS ends at ingress-nginx, which talks to argocd-server over plain HTTP inside the cluster.
+    # Without this, argocd-server would redirect that plain HTTP to HTTPS, and every request would loop.
+    server.insecure: true
 
 # Requests reserve room on the 8 GB nodes; limits stop one component from starving the others. These
 # are starting points for a small cluster, not measured values.
@@ -47,6 +56,17 @@ server:
       memory: 128Mi
     limits:
       memory: 256Mi
+  # NEW (step 9): the UI and API through ingress-nginx, VPN only.
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/allowlist-source-range: "10.10.0.0/16"
+    # A TLS entry with no secretName: ingress-nginx serves its default certificate, the wildcard.
+    # Listing the host here is still what turns on the HTTP-to-HTTPS redirect.
+    extraTls:
+      - hosts:
+          - argocd.recruitai.io.vn
 
 repoServer:
   resources:

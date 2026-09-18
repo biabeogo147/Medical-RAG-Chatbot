@@ -1,0 +1,24 @@
+# Plain manifests: the issuers, the wildcard certificate, and (step 8) its backup.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-tls
+  namespace: argocd
+  annotations:
+    # After cert-manager and External Secrets (their CRDs), and after platform-secrets (step 8 puts
+    # the restored certificate there).
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+    targetRevision: main
+    path: deploy/argocd/manifests/platform-tls
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

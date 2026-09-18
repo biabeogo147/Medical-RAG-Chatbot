@@ -1,0 +1,29 @@
+# Copies the certificate Secret to Secrets Manager whenever it changes, so a renewal is backed up too.
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: wildcard-recruitai-tls-backup
+  namespace: ingress-nginx
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"   # after the Certificate is Ready
+spec:
+  refreshInterval: 10m
+  # Deleting this object, or the whole cluster, must never delete the backup.
+  deletionPolicy: None
+  secretStoreRefs:
+    - kind: ClusterSecretStore
+      name: aws-secrets-manager
+  selector:
+    secret:
+      name: wildcard-recruitai-tls
+  data:
+    # No secretKey: push the whole Secret as one JSON object {"tls.crt": ..., "tls.key": ...}.
+    - match:
+        remoteRef:
+          remoteKey: medical-rag/wildcard-tls
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          # Store it as readable text (SecretString), which the restore below reads.
+          secretPushFormat: string

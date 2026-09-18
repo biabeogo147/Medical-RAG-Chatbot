@@ -1,0 +1,42 @@
+# Two issuers for the same Let's Encrypt account type. Staging issues certificates browsers do not
+# trust, but with far higher limits: use it to prove the setup works. Production issues trusted
+# certificates, at most 5 for the same names in 7 days.
+#
+# No email is set: Let's Encrypt no longer sends expiry mail, and cert-manager renews on its own.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-account   # the ACME account key, created by cert-manager
+    solvers:
+      - dns01:
+          route53:
+            region: ap-southeast-1   # Route 53 is global, but the AWS SDK still needs a region
+        selector:
+          dnsZones:
+            - recruitai.io.vn
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-production-account
+    solvers:
+      - dns01:
+          route53:
+            region: ap-southeast-1
+        selector:
+          dnsZones:
+            - recruitai.io.vn

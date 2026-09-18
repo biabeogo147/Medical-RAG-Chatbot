@@ -1,0 +1,38 @@
+# Puts the backed-up certificate into a new cluster before the Certificate object exists.
+#
+# cert-manager keeps a Secret it finds when the certificate inside is valid, matches the requested
+# names and key type, and carries annotations naming the same issuer. So the annotations below are what
+# stop it from ordering a new certificate.
+#
+# Add this file only after the backup exists in Secrets Manager. Against an empty secret it would fail,
+# and platform-secrets would stay Degraded.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: wildcard-recruitai-tls-restore
+  namespace: ingress-nginx
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # Create the Secret only if it does not exist, and never update it afterwards. cert-manager owns it
+  # from then on; any later copy would overwrite a renewed certificate with the older backup.
+  refreshPolicy: CreatedOnce
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  target:
+    name: wildcard-recruitai-tls
+    # Orphan: External Secrets creates the Secret but does not own it, so deleting this object never
+    # deletes the certificate.
+    creationPolicy: Orphan
+    template:
+      type: kubernetes.io/tls
+      metadata:
+        annotations:
+          cert-manager.io/certificate-name: wildcard-recruitai
+          cert-manager.io/issuer-name: letsencrypt-production
+          cert-manager.io/issuer-kind: ClusterIssuer
+          cert-manager.io/issuer-group: cert-manager.io
+  dataFrom:
+    - extract:
+        key: medical-rag/wildcard-tls
