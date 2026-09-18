@@ -84,18 +84,30 @@ machines into the cluster over SSM. Argo CD installs everything else from Git. A
 tested, scanned and signed image that reaches `dev` automatically and `prod` through a reviewed pull
 request. Details: [design](docs/selfmanaged-k8s-ops-design.md#3-architecture).
 
-## Stack, and why
+## The stack, in the order it was built
 
-| Layer | Choice | Why this, not the obvious alternative |
-|---|---|---|
-| Cluster | kubeadm on EC2, built by Ansible over SSM | Instead of EKS: etcd, the control plane and upgrades are ours to run and prove. Agentless, second run `changed=0` |
-| Access | SSM Session Manager; WireGuard, internal NLB and an ingress allowlist | No SSH keys, no bastion, no inbound ports; no admin UI has a public listener |
-| IaC | Terraform, 3 stacks by lifetime, S3 native lock | The cluster is destroyed after each session without touching images, keys or the index; no DynamoDB lock table |
-| Pod network | Calico VXLAN | The nodes sit in three subnets, one per zone; VXLAN crosses them unchanged over UDP 4789 |
-| Delivery | Argo CD, self-managed app-of-apps | Git is the record, drift is repaired, and Argo CD upgrades itself from a commit |
-| Secrets and TLS | External Secrets + Secrets Manager; cert-manager DNS-01 wildcard, backed up | No secret value in Git or state; certificates for private names that survive rebuilds within Let's Encrypt's weekly limit |
-| Observability | kube-prometheus-stack, Alertmanager email | Scrapes etcd and the control plane, which a managed service hides |
-| Supply chain | Jenkins, rootless BuildKit, Trivy, Syft, Cosign on KMS, Kyverno | Kaniko is archived; the key never leaves KMS; prod admits only signed images ([design](docs/selfmanaged-k8s-ops-design.md#45-ci-pipeline-jenkins-jenkinsfile)) |
+Each tool exists because of what the one before it left unsolved. Read the last column of a row and
+you have the reason for the next one.
+
+| # | Tool | The problem before it | What it solved | What it did not solve |
+|---|---|---|---|---|
+| 1 | **Docker, multi-stage** | A 926 MB image carrying the build toolchain, the PDF and `.git` | 483 MB, non-root, read-only filesystem, 22 tests inside the build | Every start still re-embedded the whole corpus before it could answer |
+| 2 | **Content-hashed FAISS index** | Re-embedding 7,079 chunks on every start, against a rate-limited API | Build once, store it in S3 under a hash, skip an unchanged corpus in < 1 s | An artifact with no cluster to serve it |
+| 3 | **Terraform, 3 stacks by lifetime** | Bash scripts and fixed IPs: nobody could rebuild the same thing twice | 84 resources from nothing — network, nodes, load balancers, VPN gateway — and a clean `plan` after | It stops at the machine: three blank Ubuntu hosts |
+| 4 | **SSM Session Manager** | Reaching a machine would mean an SSH key, a bastion and an open port | A shell and file transfer over an outbound connection; no key exists anywhere | Getting in is not the same as configuring what is inside |
+| 5 | **Ansible + kubeadm + containerd** | Blank hosts, and no managed control plane to hide etcd or upgrades behind | An HA control plane, and a second run that reports `changed=0` on every host | Pods cannot talk across zones, and the cluster is empty |
+| 6 | **Calico VXLAN** | The nodes sit in three different subnets; pod addresses do not route between them | Pod traffic wrapped in node addresses, with no BGP and no route table to edit | Every change inside the cluster is still a manual `kubectl apply` |
+| 7 | **Argo CD, self-managed** | Nobody could say what the cluster was running, or put it back | Git is the record; drift is repaired; Argo CD upgrades itself from a commit | Traffic still has no way into the cluster |
+| 8 | **ingress-nginx on fixed NodePorts** | No cloud controller, so a `LoadBalancer` Service would stay `Pending` forever | One entry point for every hostname, behind the load balancers Terraform made | A pod that keeps data has nowhere to put it: a claim stays `Pending` |
+| 9 | **EBS CSI + gp3 StorageClass** | Anything that kept data would lose it as soon as a pod moved | Encrypted volumes created in the pod's own zone, and deleted with the claim | Passwords and keys still have to come from somewhere outside Git |
+| 10 | **External Secrets + Secrets Manager** | Keys and passwords would have to sit in Git or in Terraform state | Values arrive from AWS through the node's role; Git holds only their names | nginx still serves a self-signed certificate, so every UI opens behind a warning |
+| 11 | **cert-manager, DNS-01 wildcard** | Private names cannot pass an HTTP challenge, so no public CA would sign them | A trusted `*.recruitai.io.vn`, renewed automatically and backed up for rebuilds | A trusted certificate does not stop the public load balancer answering for those names |
+| 12 | **Internal NLB + VPC-only Ingress** | Any UI added to the cluster would answer on the public load balancer, to anyone | Admin names resolve to private addresses, accepted only from inside the VPC, over the VPN | Nothing measures the cluster, and nobody is told when it breaks |
+| 13 | **kube-prometheus-stack + Alertmanager** | No metrics from the nodes, the kubelets, etcd or the control plane | Dashboards for all four, alert rules, and email when one of them fires | kubectl is still the only way to look at the cluster |
+| 14 | **Rancher, VPN only** | Reading cluster state meant remembering the right kubectl command | A management UI on its private name, with the purchased certificate | Rolling out the app itself is still a hand-written manifest |
+| 15 | **Helm chart + Argo CD Applications** | One `k8s.yaml` for every environment, edited by hand for each release | `dev` and `prod` from one chart, with the image digest pinned in Git | Images are built by hand, unscanned and unsigned |
+| 16 | **Jenkins, BuildKit, Trivy, Syft, Cosign on KMS** | Whoever could build could ship, and nobody could say what was inside an image | Commit → test → build → scan → SBOM → sign → `dev`; `prod` through a reviewed PR | The cluster would still accept an image that nobody signed |
+| 17 | **Kyverno + etcd snapshots** | A signature nothing checks, and a cluster with no way back after a bad day | `prod` admits only signed images; etcd snapshots are copied to S3 on a schedule | The restore drill and the gated upgrade drill, both marked P1 in the design |
 
 **Workload:** Flask on gunicorn, LangChain, FAISS and Gemini. The index is a versioned artifact in S3,
 and `/readyz` and `/metrics` feed Kubernetes and Prometheus.
