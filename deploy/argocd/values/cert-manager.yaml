@@ -1,32 +1,33 @@
-# cert-manager: obtains and renews certificates. Its AWS permission (the one TXT record) comes from the
-# node's instance profile; a ClusterIssuer may use those "ambient" credentials by default.
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: cert-manager
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-spec:
-  project: default
-  sources:
-    - repoURL: https://charts.jetstack.io
-      chart: cert-manager
-      targetRevision: v1.21.2
-      helm:
-        releaseName: cert-manager
-        valueFiles:
-          - $values/deploy/argocd/values/cert-manager.yaml
-    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
-      targetRevision: main
-      ref: values
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: cert-manager
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+# The chart installs its CRDs (Certificate, ClusterIssuer), which is why the Application runs a wave
+# before the manifests that use them.
+crds:
+  enabled: true
+
+# Before telling Let's Encrypt "check now", cert-manager looks the TXT record up itself. Asking public
+# resolvers, not the VPC's, means it sees what Let's Encrypt will see.
+extraArgs:
+  - --dns01-recursive-nameservers-only
+  - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 96Mi
+  limits:
+    memory: 256Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 96Mi
+
+cainjector:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
