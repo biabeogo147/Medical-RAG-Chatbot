@@ -30,59 +30,139 @@
 
 ## Architecture
 
+Three pictures: what AWS holds, what runs inside the cluster, and what happens to a commit. The colour
+of a box says which tool created it — **Terraform**, **Ansible**, **Argo CD**, **Jenkins** — and grey is
+what we did not build.
+
+### 1. On AWS
+
 ```mermaid
 flowchart LR
+    OP["Operator laptop"]
     USER["App user"]
-    OP["Operator"]
+    SSM["SSM Session Manager"]
 
-    subgraph OPSVPC["Ops VPC"]
-        WS["Ops workstation"]
+    subgraph OPSVPC["Ops VPC 10.20.0.0/24"]
+        WS["Ops workstation<br/>every ops tool"]
     end
 
-    subgraph VPC["Cluster VPC · 3 availability zones"]
-        PNLB["Public NLB"]
-        VPN["WireGuard gateway"]
-        INLB["Internal NLB"]
-        subgraph K8S["kubeadm cluster · 3 control-plane nodes"]
-            API["kube-apiserver × 3<br/>stacked etcd"]
-            ING["ingress-nginx"]
-            APP["medical-rag<br/>dev + prod"]
-            UIS["Grafana · Prometheus · Alertmanager<br/>Rancher · Argo CD UI"]
-            ARGO["Argo CD"]
-            ESO["External Secrets"]
+    subgraph VPC["Cluster VPC 10.10.0.0/16 · 3 zones"]
+        subgraph PUB["Public subnets"]
+            PNLB["Public NLB :80"]
+            VPN["WireGuard gateway<br/>UDP 51820"]
+            NAT["NAT gateway"]
+        end
+        subgraph PRIV["Private subnets"]
+            NODES["3 nodes<br/>one per zone"]
+            INLB["Internal NLB<br/>:6443 · :443"]
         end
     end
 
-    subgraph DELIVERY["Delivery"]
-        GIT["GitHub"]
-        JK["Jenkins<br/>BuildKit · Trivy · Syft · Cosign"]
-        ECR[("ECR")]
-    end
+    R53["Route 53 zone"]
+    ECR[("ECR")]
+    KMS["KMS cosign key"]
+    SM["Secrets Manager<br/>7 secrets"]
+    S3[("S3 · 4 buckets")]
+    EXT["Hugging Face · Gemini<br/>GitHub · Let's Encrypt · SMTP"]
 
-    SM[("Secrets Manager")]
-    KMS[("KMS signing key")]
+    USER -->|"HTTP"| PNLB -->|"NodePort 30080"| NODES
+    OP -->|"WireGuard"| VPN -->|"private VPC route"| INLB
+    OP -.-> SSM
+    WS -.-> SSM -.->|"Ansible · kubectl tunnel"| NODES
+    INLB -->|":6443 API · :443 → 30443"| NODES
+    NODES --> NAT --> EXT
+    NODES -->|"instance role"| ECR
+    NODES --> SM
+    NODES -->|"gateway endpoint"| S3
+    NODES --> KMS
+    VPN --> SM
+    R53 -->|"public alias → private IP"| INLB
+    R53 -->|"vpn record"| VPN
 
-    USER -->|"HTTP"| PNLB --> ING
-    OP -->|"WireGuard"| VPN -->|":443 only"| INLB
-    OP -.->|"SSM, no SSH"| WS
-    INLB -->|":443"| ING
-    WS -.->|"SSM port-forward :6443"| INLB
-    INLB -->|":6443"| API
-    WS -->|"Terraform · Ansible over SSM"| K8S
-    ING --> APP
-    ING -->|"VPC sources only"| UIS
-    GIT --> JK -->|"signed image"| ECR
-    JK -->|"bump values, PR to prod"| GIT
-    KMS --> JK
-    GIT -->|"pull"| ARGO --> APP
-    ECR -.->|"pull"| APP
-    SM --> ESO -->|"Secrets"| APP
+    classDef tf fill:#ded7f5,stroke:#5b43a8,color:#1b1430;
+    classDef ext fill:#eceff3,stroke:#6b7684,color:#1b1430;
+    class WS,PNLB,INLB,VPN,NAT,NODES,R53,ECR,KMS,SM,S3 tf
+    class OP,USER,SSM,EXT ext
 ```
 
-Terraform builds the AWS side in three stacks split by lifetime, and Ansible turns three bare Ubuntu
-machines into the cluster over SSM. Argo CD installs everything else from Git. A commit becomes a
-tested, scanned and signed image that reaches `dev` automatically and `prod` through a reviewed pull
-request. Details: [design](docs/selfmanaged-k8s-ops-design.md#3-architecture).
+### 2. Inside the cluster
+
+```mermaid
+flowchart TB
+    subgraph ANS["Built by Ansible, with kubeadm"]
+        CP["kube-apiserver × 3<br/>stacked etcd"]
+        RT["containerd · kubelet<br/>ECR credential provider"]
+        CNI["Calico VXLAN · CoreDNS"]
+    end
+
+    subgraph GIT["Installed by Argo CD from deploy/argocd/"]
+        ARGO["Argo CD<br/>app-of-apps, self-managed"]
+        ING["ingress-nginx<br/>NodePort 30080 · 30443"]
+        CSI["EBS CSI · gp3"]
+        ESO["External Secrets"]
+        CM["cert-manager<br/>Let's Encrypt DNS-01"]
+        MON["kube-prometheus-stack"]
+        RAN["Rancher"]
+        JK["Jenkins · pod agents"]
+        KYV["Kyverno"]
+        APP["medical-rag<br/>dev · prod"]
+    end
+
+    CP --- RT --- CNI
+    ESO -->|"app secrets"| APP
+    ESO -->|"TLS · password"| RAN
+    CM -->|"wildcard certificate"| ING
+    CSI -->|"volumes"| MON
+    CSI -->|"volume"| JK
+    ING -->|"public :80"| APP
+    ING -->|"VPC only :443"| RAN
+    KYV -.->|"enforce prod · audit dev"| APP
+    MON -.->|"scrapes"| CP
+    JK -->|"commits image digests"| ARGO
+
+    classDef ans fill:#f7d9d9,stroke:#a63b3b,color:#1b1430;
+    classDef argo fill:#fde3cf,stroke:#c2602a,color:#1b1430;
+    class CP,RT,CNI ans
+    class ARGO,ING,CSI,ESO,CM,MON,RAN,JK,KYV,APP argo
+```
+
+Sync waves run in order: Argo CD, ingress and storage first, then External Secrets and cert-manager,
+then the secrets and the restored certificate, then the TLS issuers, Rancher and monitoring.
+
+### 3. What happens to a commit
+
+```mermaid
+flowchart LR
+    DEV["git push to main"] --> GH["GitHub"]
+    GH -->|"polled every 2 min"| JK["Jenkins in the cluster"]
+    JK --> GUARD["skip bot commits<br/>and deploy/** changes"]
+    GUARD --> T1["ruff · pytest · hadolint"]
+    T1 --> T2["BuildKit rootless"]
+    T2 --> ECR[("ECR")]
+    T2 --> T3["Trivy scan · Syft SBOM"]
+    T3 --> T4["Cosign sign and attest<br/>with the KMS key"]
+    T4 --> GH2["bump the digest<br/>in deploy/envs/dev"]
+    GH2 --> ARGO["Argo CD"]
+    GH2 --> PR["pull request for prod"] --> HUMAN["human review"] --> ARGO
+    ARGO -->|"PreSync hook"| JOB["index-build Job"]
+    JOB --> S3[("S3 · FAISS index")]
+    ARGO --> DEVENV["dev"]
+    ARGO -->|"Kyverno checks the signature"| PRODENV["prod"]
+    S3 --> DEVENV
+    S3 --> PRODENV
+    PRODENV -->|"embeddings · answers"| API["Hugging Face · Gemini"]
+
+    classDef jk fill:#d7e8f5,stroke:#2f5d8a,color:#1b1430;
+    classDef argo fill:#fde3cf,stroke:#c2602a,color:#1b1430;
+    classDef tf fill:#ded7f5,stroke:#5b43a8,color:#1b1430;
+    classDef ext fill:#eceff3,stroke:#6b7684,color:#1b1430;
+    class JK,GUARD,T1,T2,T3,T4,GH2,PR jk
+    class ARGO,DEVENV,PRODENV,JOB argo
+    class ECR,S3 tf
+    class DEV,GH,HUMAN,API ext
+```
+
+Details: [design](docs/selfmanaged-k8s-ops-design.md#3-architecture).
 
 ## The stack, in the order it was built
 
