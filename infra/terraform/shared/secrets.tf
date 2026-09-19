@@ -3,7 +3,10 @@
 # so they never appear in the Terraform state file or in Git. External Secrets syncs them into
 # Kubernetes later.
 resource "aws_secretsmanager_secret" "app" {
-  for_each = toset(["llm", "github"]) # medical-rag/llm: Gemini + HF keys. medical-rag/github: bot token
+  # medical-rag/llm: Gemini + HF keys. medical-rag/github: bot token.
+  # medical-rag/app-dev and medical-rag/app-prod: GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN and
+  # FLASK_SECRET_KEY for each environment, replaced independently (app guide step 8).
+  for_each = toset(["llm", "github", "app-dev", "app-prod"])
 
   name = "${var.project}/${each.key}"
 

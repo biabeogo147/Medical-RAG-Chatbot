@@ -76,7 +76,7 @@ data "aws_iam_policy_document" "nodes" {
   }
 
   # External Secrets backs up the wildcard certificate (see shared/secrets.tf). Only this one secret
-  # can be written; the other five stay read-only.
+  # can be written; the others stay read-only.
   # External Secrets also calls DeleteResourcePolicy on every push (it removes any resource policy the
   # PushSecret does not ask for), and fails without it.
   statement {
