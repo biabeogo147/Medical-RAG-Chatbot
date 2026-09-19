@@ -291,8 +291,9 @@ given in that step. On 2026-09-18, with a health-only version of that check, `ro
 early: cert-manager reconciled the `Certificate` and found no Secret roughly 48 seconds before the
 restored Secret existed, so it ordered, and the rebuild spent one of the five issuances. The
 measurement, and how that number is derived, is in
-[docs/evidence/gitops.md](../../evidence/gitops.md). The corrected check has not been through a
-rebuild yet, so treat the ordering as reasoned, not demonstrated.
+[docs/evidence/gitops.md](../../evidence/gitops.md). With the corrected check, the rebuild of
+2026-09-19 created the restored Secret 3 seconds before the Certificate, and cert-manager ordered
+nothing.
 
 ### 8.1 The backup
 
@@ -382,6 +383,8 @@ spec:
       metadata:
         annotations:
           cert-manager.io/certificate-name: wildcard-recruitai
+          # Must match issuerRef (name, kind, group) in platform-tls/wildcard-certificate.yaml; see the
+          # note there.
           cert-manager.io/issuer-name: letsencrypt-production
           cert-manager.io/issuer-kind: ClusterIssuer
           cert-manager.io/issuer-group: cert-manager.io
@@ -409,8 +412,8 @@ kubectl -n ingress-nginx get certificate wildcard-recruitai
 `platform-secrets` `Healthy`; the ExternalSecret `SecretSynced`; the certificate still `READY True`. On
 this cluster the restore only rewrote the same certificate. The real proof comes in [step 13](5-teardown-and-rebuild.md#step-13--rebuild-from-nothing-and-the-evidence): after a
 rebuild, `kubectl -n ingress-nginx get certificaterequests` finds **no** request, because nothing was
-ordered. That has not happened yet — the first rebuild raced, as described above — so treat the
-mechanism as unproven until a rebuild prints `No resources found`.
+ordered. The first rebuild raced, as described above; the rebuild of 2026-09-19, with the corrected
+check, printed `No resources found`.
 
 After Rancher is installed, `kubectl -n argocd get app …` resolves to Rancher's
 `apps.catalog.cattle.io` instead of Argo CD. Write `kubectl -n argocd get applications.argoproj.io`

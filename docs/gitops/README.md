@@ -154,9 +154,9 @@ Secret existed — so it ordered a new certificate. The whole bootstrap took 194
 far too short for five charts installed one wave after another. The measurement, and how that 48 s is
 derived, is in [docs/evidence/gitops.md](../evidence/gitops.md).
 
-The check has been corrected, **and has not yet been through a rebuild**. Until one ends with no
-`CertificateRequest`, the ordering described here is reasoned from the Argo CD source, not
-demonstrated.
+With the check corrected, the rebuild of 2026-09-19 measured the Secret 3 seconds **before** the
+Certificate, with no `CertificateRequest` at all — the ordering holds on AWS, not only in the Argo CD
+source.
 
 Two limits of this gate are worth knowing. It decides only **when a child Application is created**;
 after that each child syncs on its own `automated` policy, not on `root`'s clock. And `Synced` means
@@ -242,7 +242,8 @@ Secret, and the PushSecret backs up the new certificate.
 **The restore has to win a race, and only the wave gate makes it win.** cert-manager does not wait for
 External Secrets; it acts on the first reconcile of the `Certificate`. If the Secret is not there by
 then, it orders. Section 4 is therefore what this design rests on, and a weak health check is what
-broke it the first time. That the corrected check holds the order is not yet proven on AWS.
+broke it the first time. With the corrected check, the rebuild of 2026-09-19 restored the certificate
+before the `Certificate` existed and cert-manager ordered nothing.
 
 **It must degrade, never block.** `platform-secrets` sits in wave -1, so anything that makes it
 `Degraded` also stops monitoring, Rancher and the issuers in wave 0. The backup is seeded once with a

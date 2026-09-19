@@ -15,5 +15,15 @@ spec:
   issuerRef:
     group: cert-manager.io
     kind: ClusterIssuer
-    # Start with staging. Change to letsencrypt-production once the staging certificate is Ready.
+    # Production. Before changing the issuer, know what the change does:
+    # - On a running cluster, cert-manager issues again at once (the Secret's issuer annotations no
+    #   longer match), and within 10 minutes the PushSecret copies that certificate over the backup,
+    #   medical-rag/wildcard-tls. Take the cluster down first (make down).
+    # - On a rebuild, the restore (platform-secrets/wildcard-tls-restore.yaml) stamps issuer
+    #   annotations on the backed-up certificate. If they differ from issuerRef here (name, kind or
+    #   group), cert-manager issues a new certificate over it and the PushSecret backs that up. If they
+    #   match, cert-manager keeps the backed-up certificate without checking who signed it.
+    # So any certificate issued by staging replaces the production backup. Save medical-rag/wildcard-tls
+    # to disk first, and put the production version back, with the cluster down, before returning to
+    # letsencrypt-production.
     name: letsencrypt-production

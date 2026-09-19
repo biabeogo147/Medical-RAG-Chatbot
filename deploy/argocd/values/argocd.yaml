@@ -2,7 +2,7 @@
 # later `make bootstrap`), and by the argocd Application that makes Argo CD manage itself (step 3).
 # Keeping one file is what lets that takeover leave the running pods alone.
 
-# NEW (step 9): the internal name of the UI and API.
+# The internal name of the UI and API.
 global:
   domain: argocd.recruitai.io.vn
 
@@ -61,7 +61,6 @@ configs:
       end
 
       return hs
-  # NEW (step 9)
   params:
     # TLS ends at ingress-nginx, which talks to argocd-server over plain HTTP inside the cluster.
     # Without this, argocd-server would redirect that plain HTTP to HTTPS, and every request would loop.
@@ -84,7 +83,7 @@ server:
       memory: 128Mi
     limits:
       memory: 256Mi
-  # NEW (step 9): the UI and API through ingress-nginx, VPN only.
+  # The UI and API through ingress-nginx, VPN only.
   ingress:
     enabled: true
     ingressClassName: nginx

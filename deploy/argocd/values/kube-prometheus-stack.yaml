@@ -103,6 +103,8 @@ grafana:
   # Dashboards come from the chart on every start; there is nothing worth a volume.
   persistence:
     enabled: false
+  # 256Mi was too little: Grafana restarted, most likely out of memory while loading its bundled
+  # dashboards, and the UI answered 502 right after login.
   resources:
     requests:
       cpu: 50m

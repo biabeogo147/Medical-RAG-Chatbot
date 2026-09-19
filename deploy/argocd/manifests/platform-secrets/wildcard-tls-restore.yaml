@@ -30,6 +30,8 @@ spec:
       metadata:
         annotations:
           cert-manager.io/certificate-name: wildcard-recruitai
+          # Must match issuerRef (name, kind, group) in platform-tls/wildcard-certificate.yaml; see the
+          # note there.
           cert-manager.io/issuer-name: letsencrypt-production
           cert-manager.io/issuer-kind: ClusterIssuer
           cert-manager.io/issuer-group: cert-manager.io

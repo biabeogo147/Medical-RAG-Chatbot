@@ -194,8 +194,8 @@ applicationSet:
   which is why it, not health, is what orders the waves. A version of this check that read health
   alone is what let the certificate restore in
   [step 8](3-certificates-and-argocd-ui.md#step-8--keep-the-certificate-across-rebuilds) lose its
-  race and spend a Let's Encrypt issuance. **This is reasoned from the Argo CD source and from what
-  was measured on the failure, not from a rebuild with the check in place** — see
+  race and spend a Let's Encrypt issuance. With the check as written here, the rebuild of 2026-09-19 created
+  the restored Secret 3 seconds before the Certificate and ordered nothing — see
   [the evidence](../../evidence/gitops.md).
 
 **Commit and push** (the loop, message `Add the Argo CD values`), then `git pull` on the workstation.

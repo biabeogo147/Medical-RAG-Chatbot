@@ -262,12 +262,14 @@ grafana:
   # Dashboards come from the chart on every start; there is nothing worth a volume.
   persistence:
     enabled: false
+  # 256Mi was too little: Grafana restarted, most likely out of memory while loading its bundled
+  # dashboards, and the UI answered 502 right after login.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 192Mi
     limits:
-      memory: 256Mi
+      memory: 512Mi
   ingress:
     enabled: true
     ingressClassName: nginx
@@ -370,7 +372,7 @@ Only `Watchdog` (and possibly `InfoInhibitor`). Anything else is a real finding:
 ```bash
 kubectl -n monitoring exec "$AM" -c alertmanager -- \
   amtool alert add GuideTestAlert severity=warning \
-  --annotation=summary="Test alert from the GitOps guide" \
+  --annotation='summary="Test alert from the GitOps guide"' \
   --alertmanager.url=http://127.0.0.1:9093
 ```
 Within about a minute an email titled `[FIRING:1] GuideTestAlert (warning)` arrives. About five minutes later a
