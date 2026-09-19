@@ -9,7 +9,8 @@ Dùng để tự kiểm tra mức hiểu và luyện phỏng vấn. Đáp án n�
 | **B. Chi tiết** | Bạn biết vì sao từng task được viết như vậy, và đổi đi thì cái gì hỏng |
 
 Bộ liên quan: [tổng quan project](../common/questions.md), [Terraform](../terraform/questions.md),
-[AWS](../aws/questions.md). Tham chiếu dạng `Terraform A3.1` trỏ tới bộ tương ứng.
+[AWS](../aws/questions.md), [Argo CD và GitOps](../gitops/questions.md). Tham chiếu dạng `Terraform A3.1` trỏ tới bộ
+tương ứng.
 
 **Cách dùng.** Làm Phần A trước: trả lời thành tiếng, khoảng một phút mỗi câu, rồi so với đáp án. Phần B làm không
 mở code; chỉ tính là đã hiểu khi bạn nói được *lý do*. Trong mỗi nhóm, câu hỏi khó dần về cuối.

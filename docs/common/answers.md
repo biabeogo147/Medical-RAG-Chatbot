@@ -300,7 +300,7 @@ liệu bách khoa công khai và câu hỏi thử nghiệm thì chấp nhận đ
 ### A4. Hạ tầng và cluster
 
 Bộ câu hỏi chuyên sâu: [Terraform](../terraform/questions.md), [Ansible](../ansible/questions.md),
-[AWS](../aws/questions.md).
+[Argo CD và GitOps](../gitops/questions.md), [AWS](../aws/questions.md).
 
 **A4.1** **Ý chính:** "Một VPC ba AZ, ba node Kubernetes ở subnet private, hai load balancer, một VPN gateway nhỏ, và
 các dịch vụ dùng chung như ECR, S3, KMS, Secrets Manager, Route 53, tất cả dựng bằng Terraform."

@@ -3,6 +3,8 @@
 How Argo CD installs and keeps everything that runs inside the cluster, how the files under
 `deploy/argocd/` are organised, and why the pieces start in the order they do. The build instructions
 are in [`guide.md`](guide.md). Every file in the guide is commented, so the code explains each setting.
+Self-check and interview questions (Vietnamese) are in [`questions.md`](questions.md), with answers in
+[`answers.md`](answers.md).
 
 This phase covers Argo CD itself and the platform around the app: ingress-nginx, the EBS CSI driver,
 External Secrets, cert-manager, monitoring with alert email, and Rancher. The app's Helm chart and

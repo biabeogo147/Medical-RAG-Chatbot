@@ -9,7 +9,8 @@ nằm ở [`answers.md`](answers.md), cùng số thứ tự.
 | **B. Chi tiết** | Bạn biết vì sao từng block được viết như vậy, và đổi đi thì cái gì hỏng |
 
 Câu hỏi về bản thân các dịch vụ AWS (VPC, NLB, IAM, KMS, Route 53…) và khác biệt với on-premises nằm ở
-[`../aws/questions.md`](../aws/questions.md). Tham chiếu dạng `AWS B1.1` trỏ tới bộ đó.
+[`../aws/questions.md`](../aws/questions.md). Tham chiếu dạng `AWS B1.1` trỏ tới bộ đó. Phần Argo CD và GitOps nằm ở
+[`../gitops/questions.md`](../gitops/questions.md).
 
 **Cách dùng.** Làm Phần A trước: trả lời thành tiếng, khoảng một phút mỗi câu, rồi so với đáp án. Phần B
 làm không mở code; chỉ tính là đã hiểu khi bạn nói được *lý do*, không chỉ nêu sự kiện. Trong mỗi nhóm, câu

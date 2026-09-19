@@ -10,7 +10,7 @@ tự.
 | **B. Chi tiết** | Bạn nắm các con số, luồng đi và cơ chế xuyên suốt project: port, CIDR, probe, pipeline, secret |
 
 Các bộ câu hỏi chuyên sâu: [Terraform](../terraform/questions.md), [Ansible](../ansible/questions.md),
-[AWS và khác biệt với on-premises](../aws/questions.md).
+[Argo CD và GitOps](../gitops/questions.md), [AWS và khác biệt với on-premises](../aws/questions.md).
 
 **Cách dùng.** Làm Phần A trước: trả lời thành tiếng trong khoảng một phút mỗi câu, rồi so với đáp án. Các nhóm
 đi từ tổng quan tới chi tiết, rồi tình huống, cuối cùng là bài học. Người phỏng vấn có thể nhảy cóc, nên mỗi đáp

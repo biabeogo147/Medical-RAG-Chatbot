@@ -9,8 +9,8 @@ Terraform, Ansible, app và GitOps. Đáp án nằm ở [`answers.md`](answers.m
 | **B. Chi tiết** | Bạn hiểu các dịch vụ đó thực sự hoạt động thế nào ở mức cơ chế, giới hạn và giá |
 
 Bộ liên quan: [tổng quan project](../common/questions.md), [Terraform](../terraform/questions.md),
-[Ansible](../ansible/questions.md). Tham chiếu dạng `Terraform A1.1` trỏ tới bộ tương ứng. Bộ này sẽ được bổ sung khi các
-phase sau hoàn thành.
+[Ansible](../ansible/questions.md), [Argo CD và GitOps](../gitops/questions.md). Tham chiếu dạng `Terraform A1.1` trỏ
+tới bộ tương ứng. Bộ này sẽ được bổ sung khi các phase sau hoàn thành.
 
 **Cách dùng.** Làm Phần A trước: trả lời thành tiếng, khoảng một phút mỗi câu, rồi so với đáp án. Với mỗi dịch vụ, tập nói
 được cả hai vế: nó làm gì trên AWS, và ở on-premises bạn sẽ dựng thứ gì thay thế.
