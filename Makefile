@@ -121,3 +121,18 @@ down: init
 	done
 	@test "$$($(CSI_VOLUMES))" = 0 || { echo "EBS volumes remain; not destroying the cluster"; exit 1; }
 	$(MAKE) infra-destroy
+
+
+# --- Workload identity: the issuer documents AWS reads (app guide step 5) -----------------------
+OIDC_BUCKET = $(PROJECT)-oidc-$(ACCOUNT_ID)
+OIDC_ISSUER = https://$(OIDC_BUCKET).s3.$(REGION).amazonaws.com
+
+.PHONY: oidc-publish oidc-check
+
+# Upload the discovery document and the key set if they are missing. Needs `make tunnel`.
+oidc-publish:
+	bash infra/scripts/oidc.sh publish $(OIDC_BUCKET) $(OIDC_ISSUER)
+
+# After every rebuild: the published key set must still be the one the cluster signs with.
+oidc-check:
+	bash infra/scripts/oidc.sh check $(OIDC_BUCKET) $(OIDC_ISSUER)
