@@ -32,3 +32,15 @@ resource "aws_secretsmanager_secret" "wildcard_tls" {
     managed-by = "external-secrets"
   }
 }
+
+# The private key the API server signs service-account tokens with (app guide step 2). Every rebuild
+# uses the same key, so the public key set AWS trusts never changes. It is set once with
+# put-secret-value, so Terraform never sees the value.
+#
+# Deliberately NOT in the node role's list (cluster/main.tf). Whoever holds this key can mint a token for
+# any service account, and so take every role that trusts this cluster. Only the workstation reads it,
+# while Ansible builds the cluster.
+resource "aws_secretsmanager_secret" "sa_signer" {
+  name                    = "${var.project}/sa-signer"
+  recovery_window_in_days = 7
+}
