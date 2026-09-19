@@ -1,0 +1,9 @@
+# dev: the first environment every change reaches. Its index Job is the one that embeds a new corpus
+# version; prod's finds it already built.
+environment: dev
+
+image:
+  tag: "<12-hex tag>@sha256:<digest>"   # app guide step 11
+
+index:
+  version: cc759ae1a093                  # app guide step 12

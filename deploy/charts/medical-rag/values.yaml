@@ -1,0 +1,24 @@
+# Defaults for both environments. deploy/envs/common.yaml and deploy/envs/<env>/values.yaml set the rest;
+# a value marked "required" has no default here, and rendering fails without it.
+
+environment: ""            # required: dev or prod. Picks medical-rag/app-<environment> and the app role.
+
+aws:
+  accountId: ""            # required: the account that owns the roles, the registry and the buckets
+  region: ap-southeast-1
+
+image:
+  tag: ""                  # required: "<12-hex commit>@sha256:<digest>", from make image (app guide step 11)
+
+index:
+  version: ""              # required: the version the Job must build and the pods pull (app guide step 12)
+
+# The index build Job. Its first run embeds 7,079 chunks through the Hugging Face API; later runs find
+# the version in S3 and stop within seconds.
+indexBuild:
+  resources:
+    requests:
+      cpu: 100m            # the nodes' CPU requests are already 56-67% used
+      memory: 512Mi
+    limits:
+      memory: 2Gi          # an out-of-memory kill would waste the embedding calls; measured in step 21

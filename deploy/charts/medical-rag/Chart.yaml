@@ -1,0 +1,8 @@
+# The medical RAG chatbot: its index build Job, its pods, and what they need in one namespace.
+# Installed by Argo CD once per environment (deploy/argocd/apps/medical-rag-<env>.yaml), with that
+# environment's values file (deploy/envs/<env>/values.yaml).
+apiVersion: v2
+name: medical-rag
+description: Medical RAG chatbot with a versioned FAISS index
+type: application
+version: 0.1.0

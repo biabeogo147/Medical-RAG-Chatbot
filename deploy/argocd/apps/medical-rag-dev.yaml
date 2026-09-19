@@ -1,0 +1,46 @@
+# The app in dev: the chart in deploy/charts/medical-rag with deploy/envs/dev/values.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: medical-rag-dev
+  namespace: argocd
+  labels:
+    # A failed sync (a failed index build) shows as Degraded on root (app guide step 15).
+    medical-rag/report-failed-sync: "true"
+  annotations:
+    # After the whole platform (waves -3 to 0): it needs External Secrets, ingress-nginx and Prometheus.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      path: deploy/charts/medical-rag
+      helm:
+        # Fixed, so a local `helm template medical-rag …` renders exactly what Argo CD renders.
+        releaseName: medical-rag
+        valueFiles:
+          - $values/deploy/envs/common.yaml
+          - $values/deploy/envs/dev/values.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: medical-rag-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # Argo CD creates the namespace with these labels: the Pod Security level "restricted" is enforced,
+    # so a pod that could run as root or gain privileges is refused (concepts §18).
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+        # enforce checks Pods only; warn also checks Deployments and Jobs, so a dry run shows a problem.
+        pod-security.kubernetes.io/warn: restricted
+        pod-security.kubernetes.io/warn-version: latest
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

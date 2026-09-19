@@ -1,0 +1,71 @@
+# Builds the pinned index version from the corpus in S3 (app guide step 16). A Sync hook at wave 1: Argo
+# CD runs it on every sync, after wave 0 (the Secret, the ServiceAccounts, the network rules) is healthy
+# and before wave 2 (the pods) starts. When the version already exists in S3, it stops within seconds
+# without calling Hugging Face.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: index-build
+  labels:
+    {{- include "medical-rag.labels" . | nindent 4 }}
+    app.kubernetes.io/component: index-build
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "1"
+    # Delete the previous run just before the next one starts. Its log stays readable until then.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # No second attempt: the embedding client already retries each batch, and a second full run would spend
+  # the Hugging Face quota twice.
+  backoffLimit: 0
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        {{- include "medical-rag.labels" . | nindent 8 }}
+        app.kubernetes.io/component: index-build
+    spec:
+      serviceAccountName: medical-rag-index-builder
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        {{- include "medical-rag.podSecurity" . | nindent 8 }}
+      containers:
+        - name: index-build
+          image: {{ include "medical-rag.image" . }}
+          command: ["python", "-m", "app.index", "build"]
+          env:
+            - name: CORPUS_STORE
+              value: {{ include "medical-rag.bucket" . }}
+            - name: INDEX_STORE
+              value: {{ include "medical-rag.bucket" . }}
+            # Fail before any embedding call if the corpus does not hash to the pinned version.
+            - name: INDEX_EXPECTED_VERSION
+              value: {{ required "index.version is required" .Values.index.version | quote }}
+            # Never move faiss/LATEST; the builder role is also denied it (infra/terraform/shared/irsa.tf).
+            - name: INDEX_UPDATE_LATEST
+              value: "false"
+            - name: HUGGINGFACEHUB_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: HUGGINGFACEHUB_API_TOKEN
+            - name: HOME
+              value: /tmp
+            {{- include "medical-rag.awsEnv" (dict "role" "medical-rag-index-builder" "Values" .Values) | nindent 12 }}
+          securityContext:
+            {{- include "medical-rag.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.indexBuild.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: aws-token
+              mountPath: /var/run/secrets/aws
+              readOnly: true
+      volumes:
+        # The corpus copy (12 MB) and the new index are written here before the upload.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        {{- include "medical-rag.awsTokenVolume" . | nindent 8 }}

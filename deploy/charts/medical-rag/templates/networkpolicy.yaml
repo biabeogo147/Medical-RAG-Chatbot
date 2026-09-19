@@ -1,0 +1,38 @@
+# Every pod in this namespace: no incoming connections, and outgoing only DNS and HTTPS, never IMDS
+# (concepts §11). Later steps add one policy each to let ingress-nginx and Prometheus in. Policies only
+# add permissions, so those steps never have to change this one.
+# Outgoing 443 covers STS, S3 (through the VPC's gateway endpoint), Hugging Face and Gemini.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default
+  labels:
+    {{- include "medical-rag.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
