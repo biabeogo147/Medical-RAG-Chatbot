@@ -26,7 +26,7 @@ This project is the **self-managed** counterpart to Anime-Recommender, which run
 | Focus | Cluster ops, delivery, supply chain | SLOs, canary, autoscaling, LLM observability |
 
 ### Non-goals
-- A custom domain or TLS certificate for the application paths. Rancher is the exception: it uses a dedicated hostname and a purchased Sectigo DV certificate.
+- TLS for the application. The app has its own names (`dev.` and `app.recruitai.io.vn`), served over HTTP on the public NLB. Rancher uses a dedicated hostname and a purchased Sectigo DV certificate; the other internal UIs use a Let's Encrypt wildcard.
 - Multi-region operation or disaster recovery of AWS resources beyond etcd.
 - A service mesh.
 - Canary rollouts and SLO burn-rate alerting (these belong to Anime).
@@ -94,7 +94,7 @@ source addresses. Architecture and build steps: `docs/gitops/`.
 | external-secrets | Syncs Secrets Manager into K8s Secrets (instance-profile auth) |
 | kube-prometheus-stack | Cluster, control-plane (etcd, scheduler, controller manager, kube-proxy) and app metrics; Alertmanager sends email over SMTP; Grafana, Prometheus and Alertmanager UIs at internal names, VPN only |
 | Jenkins (Helm, JCasC) | CI controller. Agents are ephemeral pods. |
-| medical-rag (Helm chart) | The app, as 2 Argo CD Applications: `medical-rag-dev`, `medical-rag-prod` |
+| medical-rag (Helm chart) | The app, as 2 Argo CD Applications: `medical-rag-dev`, `medical-rag-prod`. Its pods get their own IAM roles through a self-hosted OIDC issuer, not the node role (app guide Part 1, `docs/app/`) |
 | kyverno (P1) | Image signature verification + baseline pod policies |
 | Rancher (Helm) | Private management UI at `https://rancher.recruitai.io.vn`, reachable only through WireGuard. It runs one replica and uses `ingress.tls.source: secret` with the Sectigo certificate, so cert-manager is not needed. The cluster remains on Kubernetes 1.36 until the compatibility gate passes. |
 
@@ -151,9 +151,10 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
 - **IAM instance profile:**
   - `AmazonSSMManagedInstanceCore`
   - ECR read + write, the latter scoped to the repository for Jenkins BuildKit pushes
-  - S3 read/write on the artifacts and backup buckets
-  - `secretsmanager:GetSecretValue` only for `medical-rag/llm`, `medical-rag/github`,
-    `medical-rag/rancher` and `medical-rag/rancher-tls`; no wildcard includes the WireGuard secret
+  - S3 read/write on the cluster's own buckets (etcd backups, SSM transfer). The artifacts bucket is
+    reached only through the app's IRSA roles (app guide step 9)
+  - `secretsmanager:GetSecretValue` only for the eight named secrets other than `medical-rag/wireguard`
+    and `medical-rag/sa-signer`; no wildcard includes either of those two
   - `kms:Sign` and `kms:GetPublicKey` on the cosign key
   - The EBS CSI policy
 - **Registry, storage and keys:**
@@ -164,13 +165,20 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   `alertmanager` alias records to the internal NLB. The node role may change only the TXT record
   `_acme-challenge.recruitai.io.vn` (IAM conditions on record name and type), plus read-only Route 53
   lookups, for cert-manager's DNS-01.
-- **Secrets Manager:** seven empty secrets: `medical-rag/llm`, `medical-rag/github`,
+- **Secrets Manager:** ten empty secrets: `medical-rag/llm`, `medical-rag/github`,
   `medical-rag/rancher`, `medical-rag/rancher-tls`, `medical-rag/wireguard`, `medical-rag/alertmanager`
-  (SMTP settings) and `medical-rag/wildcard-tls` (certificate backup, tagged `managed-by=external-secrets`,
-  the only secret the node role may write). Values are set with
-  the AWS CLI (or, for `wildcard-tls`, by External Secrets), never in Terraform. Nodes can read the six
-  that are not `medical-rag/wireguard`. Of the cluster machines, only the gateway can read
-  `medical-rag/wireguard`; admin identities, including the workstation role, can read all seven.
+  (SMTP settings), `medical-rag/wildcard-tls` (certificate backup, tagged `managed-by=external-secrets`,
+  the only secret the node role may write), `medical-rag/app-dev` and `medical-rag/app-prod` (the app's
+  keys per environment), and `medical-rag/sa-signer` (the service-account signing key). Values are set
+  with the AWS CLI (or, for `wildcard-tls`, by External Secrets), never in Terraform. Nodes can read the
+  eight that are neither `medical-rag/wireguard` nor `medical-rag/sa-signer`. Of the cluster machines, only
+  the gateway can read `medical-rag/wireguard`, and none can read `medical-rag/sa-signer`: Ansible reads it
+  on the workstation. Admin identities, including the workstation role, can read all ten.
+- **Workload identity (app guide Part 1):** an S3 bucket `medical-rag-oidc-<account>` serving the
+  cluster's issuer documents publicly (`prevent_destroy`), an IAM OIDC provider for it, and three roles:
+  `medical-rag-app-dev` and `medical-rag-app-prod` read `faiss/*`; `medical-rag-index-builder` reads
+  `corpus/*` and `faiss/*` and writes `faiss/*`. Each trusts one exact ServiceAccount. The node role no
+  longer has the artifacts bucket.
 - **Budgets:** alarms at 50 and 100 USD.
 - **Tagging:** default tags `project`, `env`, `owner`, `managed-by=terraform`.
 - **Inputs:** `shared/terraform.tfvars` (from the `.example`): budget email. Everything else has defaults.
@@ -259,16 +267,16 @@ check fails, keep Kubernetes at `1.36.4`.
 
 **Index as a versioned artifact**
 - **CLI:** new `python -m app.index build` command.
-- **Version hash:** `sha256(pdf bytes + chunk_size + chunk_overlap + embedding model id)`, truncated to 12 hex characters.
-- **Idempotent upload:** if `s3://<artifacts>/faiss/<version>/index.faiss` already exists, exit 0 without re-embedding. Otherwise embed in **batches of 64 with exponential-backoff retry on 429/5xx**, then upload `index.faiss`, `index.pkl` and `manifest.json` (version, chunk count, model, build time, duration).
-- **Kubernetes Job:** the build runs as a Job defined as an Argo CD **PreSync hook** in the chart, so a new index version is built before the Deployment rolls.
-- **Pinned in values:** `index.version` in `deploy/envs/<env>/values.yaml`. An initContainer (aws-cli image) syncs that version into an `emptyDir`. **Rolling back the index = reverting one line in Git.**
+- **Version hash:** `sha256(pdf file names + pdf bytes + chunk_size + chunk_overlap + embedding model id)`, truncated to 12 hex characters. `python -m app.index version` prints it without building.
+- **Idempotent upload:** if `s3://<artifacts>/faiss/<version>/manifest.json` already exists (it is uploaded last), exit 0 without re-embedding. Otherwise embed in **batches of 64 with exponential-backoff retry on 429/5xx**, then upload `index.faiss`, `index.pkl` and `manifest.json` (version, chunk count, model, build time, duration).
+- **Kubernetes Job:** the build runs as a Job defined as an Argo CD **Sync hook at wave 1** in the chart, after the ServiceAccounts and the ExternalSecret at wave 0 and before the Deployment at wave 2. A PreSync hook would run before the ExternalSecret exists on the first sync. The Job reads the corpus from `s3://<artifacts>/corpus/`, uses the `medical-rag-index-builder` role, and fails before embedding if the corpus does not hash to the pinned `index.version`.
+- **Pinned in values:** `index.version` in `deploy/envs/<env>/values.yaml`. An initContainer running the app image (`python -m app.index pull`, `INDEX_REQUIRE_PINNED=true`) downloads that version into an `emptyDir`, with the environment's own role. The cluster never reads or moves `faiss/LATEST`, which stays for docker compose. **Rolling back the index = reverting one line in Git.**
 
 **Container hardening**
 - Multi-stage build.
 - Non-root UID 10001, `readOnlyRootFilesystem: true`, drop ALL capabilities, `seccompProfile: RuntimeDefault`.
 - Writable `emptyDir` for `/tmp` and the index.
-- `.dockerignore` excludes `.git`, `data/` (the PDF comes from S3 in the Job), logs and vectorstore.
+- `.dockerignore` excludes `.git`, `data/` (the PDF comes from `s3://<artifacts>/corpus/` in the Job), `infra/`, `deploy/`, logs and vectorstore.
 
 **Tests (pytest)**
 - Chunking parameters.
@@ -280,16 +288,16 @@ check fails, keep Kubernetes at `1.36.4`.
 
 ```
 deploy/
-  charts/medical-rag/        Deployment, Service, Ingress, index-build Job (PreSync hook), ExternalSecret,
+  charts/medical-rag/        Deployment, Service, Ingress, index-build Job (Sync hook, wave 1), ExternalSecret,
                              ServiceMonitor, PDB, NetworkPolicy, ServiceAccount
-  envs/dev/values.yaml       1 replica, image.tag, index.version, ingress path /dev
-  envs/prod/values.yaml      2 replicas, topologySpreadConstraints (hostname), PDB minAvailable 1
+  envs/dev/values.yaml       1 replica, image.tag, index.version, host dev.recruitai.io.vn
+  envs/prod/values.yaml      2 replicas, topologySpreadConstraints (hostname), PDB minAvailable 1, host app.recruitai.io.vn
   argocd/root.yaml           app-of-apps
   argocd/apps/*.yaml         addons + medical-rag-dev + medical-rag-prod
 ```
 
-- **Ingress routing:** without a domain, the public NLB routes by path: `/dev` → dev and `/` → prod. The app must therefore honor `SCRIPT_NAME` / prefix.
-- **NetworkPolicy:** default deny ingress in the app namespaces; allow from the `ingress-nginx` and `monitoring` namespaces; allow egress DNS + TCP 443.
+- **Ingress routing:** by host on the public NLB, HTTP: `dev.recruitai.io.vn` → dev and `app.recruitai.io.vn` → prod (two alias records in the cluster stack). Path routing (`/dev`, `/`) was dropped once the project had a domain: it needed URL-prefix handling in the app, and it made the two environments share one `session` cookie.
+- **NetworkPolicy:** default deny ingress in the app namespaces; allow from the `ingress-nginx` and `monitoring` namespaces; allow egress DNS + TCP 443, except `169.254.169.254/32`. No pod in these namespaces needs IMDS: they use their own roles.
 - **Sync policies:** Argo CD automated sync with prune and selfHeal for dev. **prod syncs automatically, but its values file changes only through a reviewed PR.**
 
 ### 4.5 CI pipeline (Jenkins, `Jenkinsfile`)
@@ -416,14 +424,14 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | `m7i-flex.large` gives about 40% of 2 vCPU as baseline and bursts above it, and unlike T instances it publishes no CPU credit metric, so exhaustion is silent | Nodes idle far below the baseline and Jenkins builds are short. Alert on `node_cpu_seconds_total` sustained above 80% instead of on credits. |
 | Account credits run out or expire, which may suspend the account | Track the live balance and expiry in `docs/evidence/`. The state bucket has `prevent_destroy`, and the cosign KMS key cannot be recreated without invalidating every signature. P1: copy the state bucket and record the key ARN off-account before expiry. |
 | Node memory pressure (Jenkins + Prometheus + builds) | Resource requests on all addons; Prometheus retention 24h; at most 1 concurrent Jenkins build. |
-| No domain for the app's ingress | Path-based routing on the public NLB DNS; TLS for app traffic is out of scope. Rancher uses its own private hostname and certificate. |
+| App traffic is plain HTTP | Host-based routing on the public NLB (`dev.` and `app.recruitai.io.vn`); TLS for app traffic is out of scope. Rancher and the internal UIs use their own certificates. |
 | The Sectigo certificate is a Domain Validation certificate with a fixed expiry, and nothing renews it automatically | Calendar reminder before expiry, and the replacement goes in with one `put-secret-value`; External Secrets pushes it to the cluster without a redeploy. If manual renewal becomes a nuisance, move Rancher to the cert-manager wildcard that already serves the other internal UIs. |
 | Delegating the whole domain can interrupt existing web or mail records | Lower TTLs early, copy every record except the apex SOA and NS, compare answers from both providers, and remove any parent DS record before changing name servers. Keep the old provider for at least 48 hours; enable Route 53 signing and publish a new DS only after the unsigned delegation is stable. |
 | WireGuard exposes UDP 51820 to the internet | WireGuard silently drops unauthenticated packets; the gateway has no SSH key, no application permissions, and reads only its own secret. If a client is lost, replace its public key in Secrets Manager and replace the gateway instance (or let the next rebuild pick it up), then verify only the new peer handshakes. |
 | Rancher controls the whole cluster | TCP 443 exists only on the internal NLB, open to the whole cluster VPC because Rancher's own agents connect to it from inside. From outside the VPC, access requires a valid WireGuard peer and Rancher credentials. Configure an MFA-enforcing external identity provider before treating MFA as a control. Disconnect the VPN and destroy the cluster when idle. |
 | A Kubernetes minor exceeds Rancher's chart constraint | The §4.2.1 gate: keep 1.36.4 until a candidate chart accepts the target, upgrade Rancher first, and require Argo CD health. |
 | The internal NLB is open to the whole VPC, including the Kubernetes API on 6443, and the VPN peer arrives with a VPC address | The gateway firewall forwards only DNS to the VPC resolver and TCP 443 from the tunnel, drops everything else, and blocks connections from the VPC towards the client. The API stays reachable only through the SSM tunnel from the workstation. |
-| **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | IMDSv2 hop limit 2 is required for pods today. NetworkPolicy egress deny to `169.254.169.254/32` for all app namespaces, allowed only for external-secrets, ebs-csi and Jenkins agents. Documented as a known limitation; P2 is self-hosted IRSA (pod-identity-webhook + S3-hosted OIDC discovery). |
+| **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | Self-hosted IRSA for the app, built before its chart (app guide Part 1): a stable signing key, an S3-hosted issuer, an IAM OIDC provider and per-ServiceAccount roles. The chart mounts the token itself, with no pod-identity webhook. App namespaces block `169.254.169.254/32`, and the node role loses the artifacts bucket. Platform pods (External Secrets, cert-manager, EBS CSI, later Jenkins) stay on the node role for now; moving them uses the same issuer. |
 | ingress-nginx was retired upstream in March 2026: no further releases or security fixes, and Kubernetes 1.36 postdates its last release | Kept because the NodePorts and Rancher's `ingressClassName` depend on it; traffic reaching it is the demo app or a VPN user. Migrate to a maintained controller or Gateway API; the NodePorts stay the same. |
 | Let's Encrypt allows 5 certificates per identical name set per 7 days, and the cluster is rebuilt more often | The wildcard certificate is pushed to `medical-rag/wildcard-tls` and restored in wave -1, before its `Certificate` exists; cert-manager keeps a valid restored certificate. Test changes against the staging issuer. |
 | Prometheus and Alertmanager UIs have no authentication | VPN-only names plus a VPC-only allowlist on their Ingresses; single VPN peer. P2: an OAuth proxy in front of all internal UIs. |
@@ -452,3 +460,6 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | TLS for other internal UIs | cert-manager + Let's Encrypt wildcard via DNS-01, backed up in Secrets Manager |
 | Alert delivery | Alertmanager email over SMTP with an app password (not SES) |
 | Control-plane metrics | Exposed on node addresses by the kubeadm config and scraped |
+| AWS identity for the app's pods | Self-hosted IRSA without a webhook: S3-hosted issuer, stable signing key in Secrets Manager, one role per ServiceAccount |
+| App routing | Hosts `dev.` and `app.recruitai.io.vn` on the public NLB, HTTP |
+| App secrets | One Secrets Manager secret per environment (`medical-rag/app-dev`, `medical-rag/app-prod`) |
