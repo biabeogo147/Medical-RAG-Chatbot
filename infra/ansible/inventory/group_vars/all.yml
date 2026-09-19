@@ -34,3 +34,8 @@ service_cidr: "10.96.0.0/12"
 
 # The machine kubeadm runs `init` on; the other two join it.
 first_control_plane: "{{ groups['first_node'] | first }}"
+
+# --- workload identity (app guide part 1) -----------------------------------------------------------
+# The issuer written into every service-account token, and trusted by AWS. It must be exactly the URL of
+# the bucket in infra/terraform/shared/oidc.tf, or AWS rejects every token.
+oidc_issuer_url: "https://{{ project }}-oidc-{{ aws_account_id }}.s3.{{ aws_region }}.amazonaws.com"

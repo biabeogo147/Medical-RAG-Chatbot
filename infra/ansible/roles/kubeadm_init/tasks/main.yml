@@ -6,11 +6,76 @@
     path: /etc/kubernetes/admin.conf
   register: kubeadm_admin_conf
 
+- name: Read the service-account signing key from Secrets Manager
+  # Read on the workstation, whose role may read it; the node role may not. Every rebuild uses the same
+  # key, so the key set published for AWS (app guide step 5) stays valid.
+  ansible.builtin.command: >-
+    aws secretsmanager get-secret-value
+    --region {{ aws_region }}
+    --secret-id {{ project }}/sa-signer
+    --query SecretString
+    --output text
+  delegate_to: localhost
+  become: false
+  register: sa_signer
+  changed_when: false
+  no_log: true
+
+- name: Make sure the certificate directory exists
+  ansible.builtin.file:
+    path: /etc/kubernetes/pki
+    state: directory
+    mode: '0755'
+
+- name: Look at the signing key of an existing cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/pki/sa.key
+    checksum_algorithm: sha256
+  register: sa_key_file
+
+- name: Refuse to go on with a cluster built with a different key
+  # Tokens from such a cluster would be rejected by AWS. Swapping the key under a running API server is
+  # not the fix: the issuer and the key are chosen at kubeadm init, so the fix is a rebuild.
+  ansible.builtin.assert:
+    that:
+      - sa_key_file.stat.exists
+      - sa_key_file.stat.checksum == ((sa_signer.stdout + '\n') | hash('sha256'))
+    fail_msg: >-
+      /etc/kubernetes/pki/sa.key is not the key in {{ project }}/sa-signer. Rebuild the cluster:
+      make down, make infra, make cluster (app guide step 4).
+  when: kubeadm_admin_conf.stat.exists
+
+- name: Put the signing key in place before kubeadm init
+  # kubeadm reuses a key it finds here instead of generating one. The copy travels through the SSM transfer
+  # bucket (objects expire within a day). It happens during make cluster, before Argo CD or any workload
+  # is installed, so no pod exists yet that could read it through the node role.
+  ansible.builtin.copy:
+    content: "{{ sa_signer.stdout }}\n"
+    dest: /etc/kubernetes/pki/sa.key
+    owner: root
+    group: root
+    mode: '0600'
+  when: not kubeadm_admin_conf.stat.exists
+  no_log: true
+
+- name: Derive the public half next to it
+  # kubeadm does not write sa.pub when it reuses sa.key, and the API server needs both.
+  ansible.builtin.command: openssl rsa -in /etc/kubernetes/pki/sa.key -pubout -out /etc/kubernetes/pki/sa.pub
+  when: not kubeadm_admin_conf.stat.exists
+  changed_when: true
+
 - name: Write the kubeadm configuration
   ansible.builtin.template:
     src: kubeadm-config.yaml.j2
     dest: /etc/kubernetes/kubeadm-config.yaml
     mode: '0600'
+
+- name: Validate the kubeadm configuration
+  # A wrong field or bad indentation stops the play here, before kubeadm init changes anything. kubeadm
+  # does not check extraArgs names or values: a misspelt flag shows up later, as kubeadm init timing out
+  # while it waits for the control plane.
+  ansible.builtin.command: kubeadm config validate --config /etc/kubernetes/kubeadm-config.yaml
+  changed_when: false
 
 - name: Initialise the control plane
   # --upload-certs stores the control-plane certificates in a Secret for two hours, which is how the

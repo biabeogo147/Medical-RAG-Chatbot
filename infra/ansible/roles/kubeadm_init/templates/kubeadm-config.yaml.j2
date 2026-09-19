@@ -20,6 +20,23 @@ apiServer:
     # to be valid for the local end of that tunnel as well. kubeadm does not add these by itself.
     - "127.0.0.1"
     - "localhost"
+  # Workload identity (app guide part 1). Tokens are signed for the public issuer that AWS trusts. The
+  # in-cluster issuer stays in the list, so a token that names it is still accepted. v1beta4 takes a list,
+  # which is what lets a flag appear twice.
+  extraArgs:
+    - name: service-account-issuer
+      value: "{{ oidc_issuer_url }}"
+    - name: service-account-issuer
+      value: "https://kubernetes.default.svc.cluster.local"
+    # Without this, the discovery document would point AWS at the private API address for the key set.
+    - name: service-account-jwks-uri
+      value: "{{ oidc_issuer_url }}/openid/v1/jwks"
+    # Set explicitly. Unset, it would default to the first issuer alone, and a client asking for the old
+    # audience would be refused. sts.amazonaws.com is deliberately absent: a token minted for AWS must not
+    # also work against this API server.
+    - name: api-audiences
+      value: "{{ oidc_issuer_url }},https://kubernetes.default.svc.cluster.local"
+
 
 networking:
   podSubnet: "{{ pod_cidr }}"
