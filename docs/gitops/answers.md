@@ -40,7 +40,7 @@ vi của công cụ cần xác nhận (trên cluster hoặc trong tài liệu ch
 | Chỉ có tài khoản `admin`, không SSO, không RBAC; mọi Application dùng AppProject `default` | A6.2, A6.3, A9.2 |
 | Notifications tắt, và Prometheus chưa scrape metric của Argo CD: sync lỗi không báo cho ai | A7.1, A9.1 |
 | Health check để `root` chờ im lặng khi một Application con `Healthy` mà `OutOfSync`, hoặc `Suspended`; nhánh `Degraded` và nhánh "không có resource" chưa chạy thật lần nào | A3.7, B2.4 |
-| Không Application nào đặt `syncPolicy.retry` | B1.8 |
+| Retry chỉ là mặc định ngầm (automated sync tự dùng `limit: 5`), không ghi trong file nào | B1.8 |
 | Mỗi component của Argo CD chạy một replica; request và limit là điểm xuất phát, chưa đo | A7.5, A9.2 |
 | Polling 3 phút, không webhook | A4.4 |
 | Mọi pod dùng chung IAM role của node, gồm cả quyền ghi bản backup certificate và hai managed policy phạm vi cả account | A5.2, A6.4 |
@@ -410,7 +410,8 @@ có rollback tự động. Application báo sync lỗi, và cluster ở trạng 
 
 *Nếu được hỏi thêm:*
 
-- Automated sync không tự thử lại cùng commit đã lỗi nếu không có `retry` (B1.8).
+- Một lần automated sync lỗi được thử lại tối đa 5 lần (mặc định khi không đặt `retry`); sau đó automated sync không
+  tự chạy lại cùng commit (B1.8).
 - Hook `SyncFail` chạy được việc dọn dẹp khi sync lỗi. Project chưa dùng.
 - Vì vậy thứ tự wave quan trọng: đặt trước những gì an toàn khi đứng một mình, như namespace và secret, để một lần dừng giữa
   chừng không làm hỏng thứ đang chạy.
@@ -871,15 +872,19 @@ từng được test.
 
 *Ở đâu:* `apps/rancher.yaml:14-17`; troubleshooting, dòng `kubeVersion`.
 
-**B1.8** `retry` cho một lần sync lỗi được thử lại với backoff, trong một số lần giới hạn. Theo tài liệu Argo CD, automated sync
-không thử lại một lần sync đã lỗi với cùng commit và cùng tham số, kể cả khi bật `selfHeal`. Không có `retry` thì một lỗi tạm
-thời, như "webhook chưa sẵn sàng", để Application đứng lỗi tới commit sau hoặc tới khi sync tay. Evidence ghi `platform-tls`
-"thử lại liên tục" khi deadlock (A8.5); cơ chế chính xác của lần đó cần đối chiếu với log của controller **[kiểm chứng]**.
+**B1.8** `retry` cho một lần sync lỗi được thử lại với backoff, trong một số lần giới hạn. **Không đặt `retry` không có nghĩa
+là không retry:** khi Application không khai báo, automated sync tự gắn `retry: {limit: 5}` cho operation của nó
+(`controller/appcontroller.go`). Khoảng chờ theo backoff mặc định, 5 giây nhân đôi mỗi lần **[kiểm chứng]** trong tài liệu
+của bản 3.5. Phase App đã thấy đúng điều này trên cluster:
+operation có `initiatedBy: automated`, `retry: {"limit":5}`, message `(retried 5 times)` (`App A7.1`). Hết năm lần thì sync
+`Failed`, và automated sync không thử lại cùng commit nữa, kể cả khi bật `selfHeal`. Nó chỉ chạy lại khi có commit mới lên
+`main` trong lúc app còn `OutOfSync`, hoặc khi sync tay. Evidence ghi `platform-tls` "thử lại liên tục" khi deadlock (A8.5); đó có thể là chính các lần retry mặc định
+này **[kiểm chứng]** với log của controller.
 
-Tôi sẽ thêm `retry` (ví dụ `limit: 5`, backoff từ 5 giây tới 3 phút) cho các Application có webhook, như cert-manager và
-External Secrets. Lý do: lỗi hay gặp nhất ở đó là "webhook chưa sẵn sàng", và nó tự hết sau vài giây.
+Vậy lỗi tạm thời như "webhook chưa sẵn sàng" đã được mặc định che phần lớn. Đặt `retry` tường minh chỉ để chọn con số khác,
+và để người đọc file thấy được hành vi đó.
 
-*Ở đâu:* không có trong `apps/*.yaml`; điểm yếu ở đầu file.
+*Ở đâu:* không có trong `apps/*.yaml`, nên dùng mặc định.
 
 **B1.9** Tên resource của chart được sinh từ release name, ví dụ `argocd-server` và `argocd-repo-server`. `make bootstrap` cài
 bằng `helm upgrade --install argocd`. Nếu Application dùng một `releaseName` khác, Argo CD render ra object tên khác, tức cài một
@@ -1193,8 +1198,8 @@ Dừng *trước* khi destroy cluster, lúc driver còn chạy để làm nốt.
 Resource dùng các CRD đó chỉ apply được khi CRD đã có. Chúng còn cần webhook của operator chạy, vì cả hai đều có admission
 webhook kiểm tra resource. Một wave riêng, cộng health check yêu cầu `Healthy` và `Synced`, bảo đảm CRD đã có và giảm mạnh khả
 năng webhook chưa sẵn sàng trước wave -1. Nhưng không tuyệt đối: CA bundle của webhook (do cainjector của cert-manager và
-cert-controller của External Secrets inject) có thể tới chậm hơn lúc Deployment `Available`. Đó là lý do nên có `retry`
-(B1.8).
+cert-controller của External Secrets inject) có thể tới chậm hơn lúc Deployment `Available`. Retry mặc định của automated sync
+che trường hợp đó (B1.8).
 
 *Ở đâu:* `values/cert-manager.yaml:1-4`, `values/external-secrets.yaml:1-3`.
 

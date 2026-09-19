@@ -27,7 +27,7 @@ Con số nào chưa đo được viết dưới dạng `[điền: …]`. Không 
 | Lỗi Kyverno khi deploy image chưa ký lên prod | Evidence Kyverno | A6.2, A7.4 |
 | RTO khi khôi phục etcd | Evidence restore drill | A7.2, A7.4 |
 | Số request lỗi trong lúc nâng cấp Kubernetes, phiên bản đích | Evidence upgrade drill | A7.3, A7.4 |
-| Các `[điền]` của Phần B | Chart, Jenkinsfile, manifest | B1.5, B2.2, B2.6, B2.8, B2.10, B3.3, B4.3, B4.5, B4.7, B4.8, B5.1, B5.2, B6.1, B6.2, B6.5 |
+| Các `[điền]` của Phần B | Jenkinsfile, manifest | B2.4, B2.10, B4.2–B4.8, B5.1–B5.3, B6.1, B6.2, B6.4–B6.6 |
 
 **Cần xác nhận khi xong dự án:**
 
@@ -35,7 +35,6 @@ Con số nào chưa đo được viết dưới dạng `[điền: …]`. Không 
   Thiết kế cho phép cắt chúng nếu hết thời gian (A10.3); cắt cái nào thì sửa mọi câu nhắc tới nó.
 - Script boot chờ credential cho SSM agent (A10.1, chuyện 3) đã có trong repo chưa.
 - Các alert rule ở A7.5 đã cấu hình chưa, và có receiver không.
-- App chạy được dưới `/dev` chưa (A2.6, B1.5).
 - `max_retries=1` của client Gemini có nghĩa là tổng số lần gọi hay số lần thử lại (A3.4).
 - Phần B dựa trên thiết kế và code hiện có; chỗ phụ thuộc file chưa viết (`deploy/`, `Jenkinsfile` mới) phải kiểm
   lại khi phase đó xong.
@@ -120,7 +119,7 @@ cả chạy trên ba node Kubernetes trong một VPC ba AZ."
 
 ```
 # Người dùng
-Người dùng ──HTTP 80──> Public NLB ──> ingress-nginx ──> app dev (/dev) hoặc prod (/)
+Người dùng ──HTTP 80──> Public NLB ──> ingress-nginx ──> app dev (dev.recruitai.io.vn) hoặc prod (app.recruitai.io.vn)
                                                         ├─> Hugging Face API (vector câu hỏi)
                                                         └─> Gemini API (câu trả lời)
 
@@ -142,8 +141,8 @@ trong FAISS đã nạp sẵn trong bộ nhớ, gọi Gemini, rồi trả về tr
 
 *Nếu được hỏi thêm:*
 
-1. Trình duyệt gọi DNS name của public NLB, cổng 80; NLB chuyển tới NodePort 30080.
-2. ingress-nginx xem đường dẫn: `/dev` sang app dev, còn lại sang prod.
+1. Trình duyệt gọi `dev.` hoặc `app.recruitai.io.vn`, trỏ vào public NLB, cổng 80; NLB chuyển tới NodePort 30080.
+2. ingress-nginx xem host: `dev.recruitai.io.vn` sang app dev, `app.recruitai.io.vn` sang prod.
 3. gunicorn nhận request; index đã được nạp lúc khởi động, không nạp lại mỗi request.
 4. App gọi Hugging Face để có vector câu hỏi, tìm 3 chunk, gọi Gemini (A1.2).
 5. Thời gian tìm kiếm và thời gian gọi LLM được đo riêng thành metric.
@@ -195,12 +194,12 @@ nhật và chỉ ghi log khi image chưa ký; prod có hai replica, đổi versi
 |---|---|---|
 | Values | `deploy/envs/dev/values.yaml` | `deploy/envs/prod/values.yaml` |
 | Replica | 1 | 2, trên hai node khác nhau, có PodDisruptionBudget |
-| Đường dẫn | `/dev` | `/` |
+| Host | `dev.recruitai.io.vn` | `app.recruitai.io.vn` |
 | Cách đổi version | Jenkins commit thẳng | Pull request, người duyệt merge |
 | Kyverno | Audit | Enforce |
 
-Không có domain cho app, nên hai môi trường chia nhau một NLB theo đường dẫn, và app phải chạy được dưới `/dev`
-(B1.5). Làm một mình thì người duyệt PR prod cũng là tôi; ở công ty cần branch protection và CODEOWNERS.
+Hai môi trường chia nhau một NLB theo host, nên app không phải xử lý tiền tố URL
+(B1.5, chi tiết: `App A1.4`). Làm một mình thì người duyệt PR prod cũng là tôi; ở công ty cần branch protection và CODEOWNERS.
 
 ---
 
@@ -211,7 +210,7 @@ nhiều phút và tốn quota; nó chạy server development của Flask và n�
 kubeconfig admin, không quét, không ký."
 
 *Nếu được hỏi thêm:* dựng lại index lúc khởi động còn khiến liveness probe có thể giết pod giữa chừng. Sau khi sửa,
-container khoẻ sau khoảng 6 giây ở local, và pod Ready sau `[điền: thời gian trên cluster]`.
+container khoẻ sau khoảng 6 giây ở local, và pod dev trên cluster Ready sau 10 giây (chi tiết: `App A3.1`).
 
 **A3.2** **Ý chính:** "Index là một artifact có version: build một lần, lưu trên S3, và pod tải đúng version ghi
 trong Git. Muốn quay về index cũ thì sửa một dòng trong Git."
@@ -221,10 +220,10 @@ trong Git. Muốn quay về index cũ thì sửa một dòng trong Git."
 - **Version là hash** SHA-256 của tên và nội dung file PDF, kích thước chunk, overlap và tên model embedding, lấy 12
   ký tự đầu. Cùng đầu vào luôn ra cùng version: trong container và trên Windows đều ra `cc759ae1a093`.
 - **Không build lại khi không cần:** job kiểm tra version đó đã có chưa; có rồi thì bỏ qua. Ở local, lần đầu mất
-  150.7 giây cho 7.079 chunk, lần sau dưới 1 giây; trên cluster `[điền]`.
+  150.7 giây cho 7.079 chunk, lần sau dưới 1 giây; trên cluster 149,1 giây, các lần sau `already exists, skipping build`.
 - **Chống lỗi khi build:** embedding gửi theo lô; lỗi 408, 429, 500, 502–504 thì retry với thời gian chờ tăng dần.
-- **Trên Kubernetes:** Argo CD chạy job build *trước* khi cập nhật app (PreSync hook); một initContainer tải đúng
-  version ghi trong values.
+- **Trên Kubernetes:** Argo CD chạy job build *trước* khi cập nhật app (Sync hook ở wave 1, Deployment ở wave 2); một
+  initContainer tải đúng version ghi trong values (chi tiết: `App A3.2`).
 - **Rollback:** đổi `index.version` về giá trị cũ trong Git.
 
 **A3.3** **Ý chính:** "`/healthz` trả lời 'process còn sống không', `/readyz` trả lời 'đã sẵn sàng phục vụ chưa'.
@@ -490,7 +489,7 @@ không có public IP, Kubernetes API và Rancher chỉ có trên load balancer n
   toàn account.
 - **Mã hoá:** EBS mã hoá; bucket S3 chặn truy cập public và chỉ nhận HTTPS.
 - **Metadata:** bắt buộc IMDSv2. Nhưng hop limit để 2 cho pod, nên thứ thật sự chặn pod app lấy credential là
-  NetworkPolicy `[điền: bằng chứng]`, không phải IMDSv2.
+  NetworkPolicy, không phải IMDSv2: từ container app, IMDS timeout và AWS SDK báo `NoCredentialsError` (`App A2.8`).
 - **Pod:** non-root, filesystem chỉ đọc; NetworkPolicy chỉ cho traffic vào namespace app từ ingress-nginx và
   monitoring.
 
@@ -657,7 +656,8 @@ chính pod, tức key Gemini và Hugging Face."
   Kubernetes Secret (B5.4).
 - **Chiều ngược lại:** ai ghi được vào bucket artifacts thì chạy được code trong pod app qua file pickle (A6.4).
 - **Hạn chế thiệt hại:** container non-root, filesystem chỉ đọc, drop mọi capability.
-- **Cách siết:** egress chỉ tới đúng domain cần thiết qua proxy, và IRSA tự host.
+- **Cách siết:** egress chỉ tới đúng domain cần thiết qua proxy. IRSA tự host đã làm cho app (`App A2`); pod nền tảng
+  vẫn dùng role của node (`App A10.5`).
 
 **A9.5** **Ý chính:** "Prompt nằm trong code nên đi qua pipeline image như mọi thay đổi code. Model Gemini là biến môi
 trường nên đổi trong values. Đổi model embedding thì version index đổi theo, nên image và `index.version` phải đổi trong
@@ -742,7 +742,8 @@ AI để soạn tài liệu và rà soát; mọi thứ đều được kiểm ch
 > **Mẹo:** nói thật về AI và nói cách bạn kiểm chứng. Chuẩn bị giải thích được bất kỳ dòng code nào người phỏng vấn
 > chỉ vào; các bộ câu hỏi chi tiết Terraform, Ansible và AWS dùng để luyện đúng việc này.
 
-**A10.5** **Ý chính:** "Sửa ba điểm yếu lớn nhất: quyền IAM dùng chung của node bằng IRSA tự host, mã hoá Secret trong
+**A10.5** **Ý chính:** "Sửa ba điểm yếu lớn nhất: quyền IAM dùng chung của node cho các pod nền tảng, bằng
+cùng issuer mà app đã dùng, mã hoá Secret trong
 etcd và snapshot, và NAT gateway đơn. Sau đó là bộ đánh giá chất lượng câu trả lời và một lần load test."
 
 *Nếu được hỏi thêm:* tách `AdministratorAccess` của workstation; đưa Terraform vào CI với OIDC; giảm retry khi đang
@@ -787,9 +788,9 @@ từ tunnel về địa chỉ VPC của nó (Terraform B9.7).
 ingress-nginx gửi thẳng tới IP pod lấy từ EndpointSlice; nếu pod ở node khác thì đi qua VXLAN (UDP 4789).
 
 **IP thật:** public NLB giữ IP client khi tới node, nhưng Service NodePort của ingress-nginx dùng
-`[điền: externalTrafficPolicy]`. Với `Cluster`, kube-proxy SNAT mọi traffic vào NodePort, nên ingress-nginx chỉ thấy
-IP node. Muốn thấy IP thật thì dùng `Local` (health check của NLB sẽ loại node không có pod ingress) hoặc Proxy
-Protocol v2.
+`externalTrafficPolicy: Local`. Với `Cluster`, kube-proxy SNAT mọi traffic vào NodePort, nên ingress-nginx chỉ thấy
+IP node. `Local` giữ IP thật; health check của NLB loại node không có pod ingress, nên ingress-nginx chạy dạng DaemonSet.
+Cách khác là Proxy Protocol v2.
 
 **B1.3** TLS đi xuyên qua internal NLB (listener TCP 443) và **terminate ở ingress-nginx** bằng certificate Sectigo
 trong Secret `tls-rancher-ingress`. Load balancer không bao giờ giữ private key; certificate mua ngoài nên không dùng
@@ -804,13 +805,10 @@ drill HA tắt node 2.
 
 *Ở đâu:* `infra/ansible/roles/kubeadm_init/templates/kubeadm-config.yaml.j2`; `Makefile` target `tunnel`.
 
-**B1.5** ingress-nginx định tuyến theo đường dẫn trên cùng DNS name của public NLB: `/dev` sang dev, còn lại sang prod.
-
-App phải biết tiền tố `/dev`, nếu không `url_for`, redirect và form sinh ra `/...` và gửi người dùng dev sang prod.
-
-**Bẫy:** nếu đặt `SCRIPT_NAME=/dev` cho gunicorn, request có path không bắt đầu bằng `/dev` có thể bị từ chối, mà probe
-`/readyz` và Prometheus lại gọi thẳng pod. Cách an toàn là để ingress gửi header `X-Forwarded-Prefix` và app dùng
-`ProxyFix`. `[điền: cách đã cấu hình, path của probe và ServiceMonitor ở dev, bằng chứng /dev hoạt động]`.
+**B1.5** ingress-nginx định tuyến theo **host** trên cùng public NLB: `dev.recruitai.io.vn` sang dev,
+`app.recruitai.io.vn` sang prod. Thiết kế ban đầu dùng path `/dev` vì lúc đó chưa có domain; có domain rồi thì mỗi môi
+trường một host, nên app không phải biết tiền tố URL nào. Probe (`/readyz`, `/healthz`) và ServiceMonitor (`/metrics`) dùng
+đúng một path ở cả hai môi trường, và gọi thẳng pod, không qua Ingress. Chi tiết: `App A1.4`.
 
 **B1.6**
 
@@ -818,9 +816,9 @@ App phải biết tiền tố `/dev`, nếu không `url_for`, redirect và form 
 - **Egress:** chỉ DNS và TCP 443. Metadata service là `http://169.254.169.254`, cổng 80, nên pod app vốn không tới
   được nó; thiết kế vẫn chặn `169.254.169.254/32` tường minh.
 
-**Mâu thuẫn trong thiết kế:** trong chính namespace này, initContainer tải index và Job build index cần đọc, ghi S3 bằng
-instance role, tức phải gọi metadata service. Chúng cần một policy riêng theo `podSelector`, hoặc một cách cấp quyền
-khác. `[điền: cách đã giải quyết]`.
+**Mâu thuẫn trong thiết kế ban đầu:** initContainer tải index và Job build index cần đọc, ghi S3, mà với instance role
+thì phải gọi metadata service. Đã giải quyết bằng IRSA tự host: chúng nhận role riêng qua token, nên cả namespace chặn được
+IMDS (`App A2`).
 
 ### B2. App và index
 
@@ -830,9 +828,11 @@ lấy 12 ký tự hex đầu. Đổi tên file thì **version đổi**, dù vect
 
 *Ở đâu:* `src/app/index.py` (`compute_version`), `src/app/config/config.py`.
 
-**B2.2** Job là **PreSync hook** nên chạy trước khi Deployment được cập nhật; Job lỗi thì sync lỗi và bản cũ vẫn chạy.
-`python -m app.index build` tính version, thấy `faiss/<version>/manifest.json` đã có thì chỉ ghi lại con trỏ
-`faiss/LATEST` và thoát. Ở local lần đầu 150.7 giây, lần sau dưới 1 giây; trên cluster `[điền]`.
+**B2.2** Job là **Sync hook ở wave 1**: chạy sau wave 0 (ServiceAccount, ExternalSecret, NetworkPolicy) và trước
+Deployment ở wave 2; Job lỗi thì sync lỗi và bản cũ vẫn chạy. Không dùng PreSync vì PreSync chạy trước cả ServiceAccount và
+Secret mà Job cần (`App A3.2`). `python -m app.index build` tính version, thấy `faiss/<version>/manifest.json` đã có thì log
+`already exists, skipping build` và thoát. Trong cluster nó không bao giờ ghi `faiss/LATEST` (`INDEX_UPDATE_LATEST=false`, và
+role builder bị `Deny`). Ở local lần đầu 150.7 giây; trên cluster 149,1 giây, các lần sau chỉ vài giây.
 
 **Cần biết thêm:**
 
@@ -882,7 +882,8 @@ embedding và client Gemini. Dựng lỗi thì retry, thời gian chờ gấp đ
 
 **Đánh đổi:** app được viết để retry trong nền mà không bị restart, nhưng startup probe vẫn giết container sau 5 phút
 nếu chain chưa dựng được. Lỗi cấu hình vì vậy lộ ra thành CrashLoop, nhưng lỗi tạm thời kéo dài hơn 5 phút cũng bị
-restart. `[điền: periodSeconds và failureThreshold thật]`.
+restart. Chart đặt startup `periodSeconds: 10`, `failureThreshold: 30` (5 phút); readiness 10 s × 3; liveness 20 s × 3,
+timeout 5 s (`App B1.4`).
 
 **B2.7** gunicorn có 2 worker, mỗi worker là một process với bộ đếm riêng. Không có multiprocess mode thì mỗi lần scrape
 chỉ thấy số của worker nhận request đó.
@@ -898,9 +899,9 @@ chỉ thấy số của worker nhận request đó.
 nhưng chỉ là base64, ai có cookie cũng đọc được, và app chạy HTTP nên nó đi qua mạng dạng rõ. Mọi worker và pod cùng
 môi trường dùng chung key nên pod nào cũng đọc được cookie.
 
-**Dev và prod chung host:** cả hai dùng cookie tên `session` với path `/`. Khác key thì mở dev làm mất lịch sử prod và
-ngược lại; cùng key thì hai môi trường dùng chung lịch sử. Cần `SESSION_COOKIE_NAME` hoặc path riêng cho dev
-`[điền: đã cấu hình gì; FLASK_SECRET_KEY lấy từ secret nào]`.
+**Dev và prod:** mỗi môi trường một host, và cookie gắn theo host, nên hai cookie `session` không đụng nhau.
+`FLASK_SECRET_KEY` lấy từ `medical-rag/app-<env>` qua ExternalSecret; key của prod đã được thay riêng ở bước 20 của guide
+App, trước khi prod tồn tại (`App A6.5`).
 
 **Giới hạn 4 KB:** trình duyệt bỏ cookie lớn hơn khoảng 4 KB, và 20 tin có thể vượt; server chỉ ghi một warning.
 
@@ -938,7 +939,7 @@ Container chạy non-root, `readOnlyRootFilesystem: true`, drop mọi capability
 
 **B3.3** `kubectl drain` tôn trọng PodDisruptionBudget: với 1 replica và `minAvailable: 1`, không pod nào được phép bị
 evict, nên drain **treo vô hạn** và `upgrade.yml` dừng ở node đang chạy pod dev. Thiết kế chỉ đặt PDB cho prod; chart nên
-chỉ render PDB khi số replica lớn hơn 1. `[điền: điều kiện trong chart]`.
+chỉ render PDB khi số replica lớn hơn 1: `gt (int .Values.replicas) 1` trong `pdb.yaml` (`App B1.8`).
 
 **B3.4**
 
@@ -947,17 +948,20 @@ chỉ render PDB khi số replica lớn hơn 1. `[điền: điều kiện trong 
 - **Node chết đột ngột:** PDB và `maxUnavailable` không liên quan. Pod trên node chết vẫn nằm trong danh sách endpoint
   cho tới khi node bị đánh dấu `NotReady` (khoảng 40–50 giây), và chỉ bị evict sau 300 giây. Trong khoảng đó
   ingress-nginx có thể vẫn gửi tới pod chết, rồi retry sang pod còn sống. Thứ thật sự cứu prod là pod thứ hai nằm ở node
-  khác, nhờ `topologySpreadConstraints` theo hostname `[điền: whenUnsatisfiable: DoNotSchedule]`.
+  khác, nhờ `topologySpreadConstraints` theo hostname với `whenUnsatisfiable: DoNotSchedule` (`App A4.3`).
 
-**B3.5**
+**B3.5** Tuỳ trường hợp. **Version mới hợp lệ** (corpus hoặc thiết lập chunk đã đổi, và version trong values đúng là version
+corpus băm ra): Job ở wave 1 build nó, khoảng 149 giây, rồi wave 2 rollout bình thường. **Version gõ sai:** rolling update
+không bắt đầu. Job được báo trước version phải build: corpus băm ra version khác nên nó dừng ngay với
+`The corpus builds version …, but … was expected`, trước lời gọi embedding nào.
 
-1. Deployment tạo pod mới; pod cũ vẫn chạy vì `maxUnavailable: 0`.
-2. initContainer không tìm thấy `faiss/<version>/`, lỗi, pod mới kẹt ở `Init:Error` rồi `Init:CrashLoopBackOff`.
-3. Pod mới không bao giờ Ready, nên pod cũ không bị xoá và người dùng vẫn được phục vụ.
-4. Quá `progressDeadlineSeconds`, rollout bị đánh dấu thất bại và Argo CD báo Application `Degraded`.
-5. Sửa bằng cách revert dòng `index.version`.
+1. Sync lỗi ở wave 1, nên wave 2 (Deployment) không được apply; pod cũ vẫn chạy và phục vụ.
+2. Argo CD tự retry sync 5 lần, trong lúc đó `root` hiện `Progressing`.
+3. Sau đó sync `Failed`, và `root` chuyển `Degraded` với message của lần sync (luật `report-failed-sync`).
+4. Sửa bằng cách revert dòng `index.version`. Nếu app trở về `Synced` mà sync cuối vẫn `Failed`, chạy một lần sync tay.
 
-Bình thường PreSync Job build index trước; chuyện này xảy ra khi version trong values gõ sai.
+Đã test có chủ đích trên cluster: pod cũ vẫn `1/1 Running`, 0 restart (`App A7.1`, `A7.2`, `A7.5`). Trường hợp initContainer
+không tìm thấy version, kẹt ở `Init:CrashLoopBackOff`, chỉ còn xảy ra nếu version bị xoá khỏi S3 sau khi Job đã thấy nó.
 
 **B3.6** Role Ansible `ecr_credential_provider` cài binary `ecr-credential-provider` v1.37.0 (kiểm tra SHA256), ghi
 file cấu hình khớp các image `*.dkr.ecr.*.amazonaws.com` với thời gian cache mặc định 12 giờ, và thêm hai cờ

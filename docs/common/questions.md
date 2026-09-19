@@ -183,8 +183,7 @@ thấy IP thật của người dùng không?
 **B1.4** `kubectl` trên workstation tới Kubernetes API bằng đường nào? Vì sao certificate của API server phải
 có `127.0.0.1`?
 
-**B1.5** Không có domain cho app, dev và prod chia một NLB thế nào? App phải làm gì để chạy đúng dưới `/dev`, và
-probe cùng Prometheus gọi pod dev bằng path nào?
+**B1.5** Dev và prod chia một public NLB thế nào? Probe và Prometheus gọi pod của hai môi trường bằng path nào?
 
 **B1.6** NetworkPolicy của namespace app cho gì đi vào, gì đi ra? Pod nào trong namespace đó lại cần quyền AWS?
 
@@ -208,7 +207,7 @@ chứ không dùng con trỏ `LATEST`?
 **B2.7** Vì sao metric cần `PROMETHEUS_MULTIPROC_DIR`, vì sao `start.sh` xoá thư mục đó mỗi lần khởi động, và
 `child_exit` trong `gunicorn.conf.py` thực sự làm gì?
 
-**B2.8** Lịch sử chat nằm ở đâu, giữ bao nhiêu tin? Dev và prod chạy chung một host thì cookie session ra sao?
+**B2.8** Lịch sử chat nằm ở đâu, giữ bao nhiêu tin? Cookie session của dev và prod có ảnh hưởng nhau không?
 
 **B2.9** Câu trả lời của Gemini được đưa vào HTML thế nào để không thành lỗ XSS?
 
@@ -226,7 +225,8 @@ xảy ra khi nâng cấp node?
 **B3.4** Mất một node đột ngột khác drain một node thế nào? PodDisruptionBudget và `maxUnavailable: 0` giúp ở
 trường hợp nào?
 
-**B3.5** Values trỏ tới một version index chưa có trên S3. Kể từng bước chuyện gì xảy ra trong rolling update.
+**B3.5** Values trỏ tới một version index chưa có trên S3. Kể từng bước chuyện gì xảy ra, trong hai trường hợp: version đó
+là version mới hợp lệ, và version bị gõ sai.
 
 **B3.6** Node pull image từ ECR mà không có `imagePullSecrets`. Cơ chế nào làm việc đó?
 

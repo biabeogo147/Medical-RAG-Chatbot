@@ -10,8 +10,9 @@ phỏng vấn. Đáp án nằm ở [`answers.md`](answers.md), cùng số thứ 
 | **B. Chi tiết** | Bạn biết vì sao từng file trong `deploy/argocd/` và `Makefile` được viết như vậy, và đổi đi thì cái gì hỏng |
 
 Bộ liên quan: [tổng quan project](../common/questions.md), [Terraform](../terraform/questions.md),
-[Ansible](../ansible/questions.md), [AWS](../aws/questions.md). Tham chiếu dạng `Common A5.2` trỏ tới bộ tương ứng. Pipeline
-Jenkins, chart của app và dev/prod thuộc phase sau; câu về chúng nằm ở `Common A5` và `Common B4`.
+[Ansible](../ansible/questions.md), [AWS](../aws/questions.md). Tham chiếu dạng `Common A5.2` trỏ tới bộ tương ứng. Chart của
+app và dev/prod có bộ riêng: [App](../app/questions.md). Pipeline Jenkins thuộc phase sau; câu về nó nằm ở `Common A5` và
+`Common B4`.
 
 **Cách dùng.** Làm Phần A trước: trả lời thành tiếng, khoảng một phút mỗi câu, rồi so với đáp án. Nhóm A8 là các câu chuyện
 sự cố; tập kể chúng tới khi nói trôi mà không cần nhìn. Phần B làm không mở code; chỉ tính là đã hiểu khi bạn nói được *lý
