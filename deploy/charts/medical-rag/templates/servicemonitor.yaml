@@ -1,0 +1,19 @@
+# Tells Prometheus to scrape the app (app guide step 19). kube-prometheus-stack picks up every
+# ServiceMonitor in every namespace (serviceMonitorSelectorNilUsesHelmValues: false in its values).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: medical-rag
+  labels:
+    {{- include "medical-rag.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: medical-rag
+      app.kubernetes.io/component: web
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
