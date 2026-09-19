@@ -30,7 +30,7 @@ spec:
       metadata:
         annotations:
           cert-manager.io/certificate-name: wildcard-recruitai
-          cert-manager.io/issuer-name: letsencrypt-staging
+          cert-manager.io/issuer-name: letsencrypt-production
           cert-manager.io/issuer-kind: ClusterIssuer
           cert-manager.io/issuer-group: cert-manager.io
   dataFrom:
