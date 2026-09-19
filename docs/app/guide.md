@@ -4,7 +4,8 @@ A step-by-step guide that puts the chatbot on the cluster: first an AWS identity
 its image and index, then a Helm chart that Argo CD deploys to dev and prod. The architecture and the
 decisions behind it are in [`README.md`](README.md) next to this file. Every file is commented, so the
 code you copy explains itself. Follow the steps in order: each one ends with a check, and the next step
-assumes it passed.
+assumes it passed. If Argo CD's files or statuses get confusing, the pictures in
+[`argocd-explained.md`](../gitops/argocd-explained.md) show how it works, without commands.
 
 **Before step 1:** read *The big picture* and sections 1, 2 and 10 of [Concepts](guide/0-concepts.md),
 about 10 minutes. That page explains, in plain terms, every idea this guide uses: IAM roles, IMDS,

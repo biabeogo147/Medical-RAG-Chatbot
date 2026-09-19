@@ -3,7 +3,8 @@
 How the chatbot runs on the cluster. The phase starts where the GitOps phase ended: Argo CD installs
 everything from Git, and the platform (ingress, certificates, secrets, monitoring) is in place. The build
 instructions are in [`guide.md`](guide.md), and every concept it uses is explained in
-[`guide/0-concepts.md`](guide/0-concepts.md).
+[`guide/0-concepts.md`](guide/0-concepts.md). How Argo CD reads these files, when it syncs and what its
+statuses mean is drawn in [`../gitops/argocd-explained.md`](../gitops/argocd-explained.md).
 
 This phase adds four things:
 
@@ -112,7 +113,7 @@ their pods. This is listed as a later improvement, not done in this phase.
 
 | | dev | prod |
 |---|---|---|
-| Application | `medical-rag-dev`, wave 1 under `root` | `medical-rag-prod`, wave 2: dev builds a new index first |
+| Application | `medical-rag-dev`, wave 1 under `root` | `medical-rag-prod`, wave 2 under `root`: on a new cluster, dev builds a new index first |
 | Namespace | `medical-rag-dev`, Pod Security `restricted` | `medical-rag-prod`, Pod Security `restricted` |
 | Host | `dev.recruitai.io.vn` (HTTP, public NLB) | `app.recruitai.io.vn` (HTTP, public NLB) |
 | Secret | `medical-rag/app-dev` → ExternalSecret | `medical-rag/app-prod` → ExternalSecret |
@@ -123,23 +124,80 @@ their pods. This is listed as a later improvement, not done in this phase.
   project had no domain then. It has one now, so each environment gets its own name. That removes the
   URL-prefix handling the app would otherwise need. It also stops the two environments sharing the
   `session` cookie, and keeps the probe and metrics paths identical.
-- **The index build is a Sync hook at wave 1, not a PreSync hook.** A PreSync hook runs before any
-  normal resource on the first sync, so its ServiceAccount and the ExternalSecret holding its API key
-  would not exist yet. At wave 1, the ServiceAccounts and the ExternalSecret (wave 0) are already applied, and
-  Argo CD waits for the ExternalSecret to be healthy. The Deployment and everything that serves traffic
-  are at wave 2, so pods start only once their index version is in S3. Step 16 proves the first half of this
-  order on the cluster, step 17 the second.
-- **A failed build shows on `root`.** Argo CD leaves hooks out of an Application's health, so the app's
-  Applications carry the label `medical-rag/report-failed-sync: "true"`, and the health check in
-  `deploy/argocd/values/argocd.yaml` reports their failed last sync as `Degraded` (step 15). Platform
-  Applications carry no label and are judged as before.
+- **The index build is a Sync hook at wave 1, not a PreSync hook.** A PreSync hook would run before the
+  ServiceAccount and the ExternalSecret it needs (wave 0) exist. The order of one release is drawn in
+  [section 5](#5-life-of-a-release).
+- **A failed build shows on `root`.** The app's Applications carry the label
+  `medical-rag/report-failed-sync: "true"`, so the health check in `deploy/argocd/values/argocd.yaml` reports
+  their failed last sync as `Degraded` (step 15). The failure path is drawn in
+  [section 5](#what-a-failed-build-does).
 - **Pods get the index from an init container that runs the app image** with `python -m app.index pull`.
   The image is the same one Kyverno will verify later, and the pull is pinned. The init container is the only
   one with the AWS token: the app container that answers users holds no AWS credentials at all.
 - **Only `/` and `/clear` are public.** The Ingress routes exactly those two paths, so `/metrics`, `/healthz`
   and `/readyz` answer `404` from outside. A per-client rate limit protects the model quota.
 
-## 5. What is proven and what is assumed
+## 5. Life of a release
+
+A release changes one or two values in a values file. Everything after the push is Argo CD's work.
+
+```mermaid
+sequenceDiagram
+    participant You as You, on the laptop
+    participant Git as GitHub main
+    participant Argo as Argo CD
+    participant K8s as medical-rag-dev, Job and pods
+    participant S3 as S3 artifacts bucket
+
+    You->>Git: envs/dev/values.yaml, new image.tag or index.version, pushed to main
+    Argo->>Git: refresh, render the chart with common.yaml and dev/values.yaml
+    Argo->>K8s: wave 0, ServiceAccounts, ExternalSecret, NetworkPolicies
+    Argo->>K8s: wave 1, run the index-build Job
+    K8s->>S3: is index.version already there?
+    Note over K8s,S3: no - build it from the corpus and upload it<br/>yes - already exists, skipping build
+    Argo->>K8s: wave 2, Deployment and the rest
+    K8s->>S3: each new pod's init container pulls the pinned index
+    Note over K8s: new pods Ready, then the old ones removed
+```
+
+1. You change `image.tag` (a new image) or `index.version` (a new corpus or new chunk settings) in
+   `deploy/envs/dev/values.yaml`, and push to `main`.
+2. Argo CD renders the chart with `common.yaml` and the dev values, and syncs the three waves.
+3. The Job builds the index only if that version is not in S3 yet. Dev's first build took 149.1 s. Later runs, in
+   dev and in prod, found it in S3 and logged `already exists, skipping build`.
+4. The new pods pull the pinned version in their init container. A pod went from created to Ready in 10 s.
+
+**Promoting to prod** is the same change in `deploy/envs/prod/values.yaml`: copy the two values that dev
+ran. Prod does not wait for dev: once the file is on `main`, `medical-rag-prod` syncs by itself, and its Job
+finds the index that dev already built. (Its wave 2 under `root` matters only when `root` itself syncs, as
+on a new cluster.) Until Jenkins
+exists, you edit these files by hand; after, Jenkins commits dev's values and opens a pull request for
+prod's.
+
+### What a failed build does
+
+```mermaid
+flowchart TB
+    PUSH["A wrong index.version<br/>pushed to main"] --> JOB["wave 1: the Job fails"]
+    JOB --> STOP["wave 2 is not applied:<br/>the running pods stay as they are"]
+    JOB --> RETRY["Argo CD retries the sync 5 times<br/>root reads Progressing"]
+    RETRY --> FAILED["last sync Failed<br/>root reads Degraded, with the message"]
+    FAILED --> FIX["Revert or fix, push to main"]
+    FIX --> MANUAL["If the app now reads Synced,<br/>start one sync by hand"]
+    MANUAL --> OK["last sync Succeeded<br/>root reads Healthy"]
+```
+
+- **Users do not notice.** The Deployment is at wave 2, after the Job, so a failed build never replaces the
+  running pods. In the failure test of step 17, the pod stayed `1/1 Running` with 0 restarts.
+- **You notice on `root`.** After five retries the sync is `Failed`, and `root` turns `Degraded` with the
+  message `one or more synchronization tasks completed unsuccessfully (retried 5 times).`
+- **A revert is not quite enough.** It makes the app `Synced` again, but the last sync stays `Failed` until
+  one sync succeeds, so start one by hand. Why this is so is drawn in
+  [argocd-explained §4](../gitops/argocd-explained.md#4-the-life-of-an-automated-sync).
+
+The numbers are in [docs/evidence/app.md](../evidence/app.md).
+
+## 6. What is proven and what is assumed
 
 | Claim | Status |
 |---|---|
@@ -154,7 +212,7 @@ their pods. This is listed as a later improvement, not done in this phase.
 | The init container reaches STS and S3 with IMDS blocked; the app container has no credentials | Proven for a test pod by step 7; for the app by step 17 |
 | A sync of an existing version does not embed again | Proven by steps 17 and 20 (`already exists, skipping build`) |
 
-## 6. Known limits
+## 7. Known limits
 
 | Limit | Why it is accepted | What would fix it |
 |---|---|---|

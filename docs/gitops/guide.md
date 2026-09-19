@@ -6,7 +6,8 @@ with alert email, and Rancher. Every internal UI (Argo CD, Grafana, Prometheus, 
 opens only through the VPN.
 Every file is commented, so the code you copy explains itself. The architecture overview is in
 [`README.md`](README.md) next to this file. Follow the steps in order: each one ends with a check, and
-the next step assumes it passed.
+the next step assumes it passed. If Argo CD's files or statuses get confusing, the pictures in
+[`argocd-explained.md`](argocd-explained.md) show how it works, without commands.
 
 ## How this guide works
 

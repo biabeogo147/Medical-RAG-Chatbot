@@ -4,7 +4,8 @@ How Argo CD installs and keeps everything that runs inside the cluster, how the 
 `deploy/argocd/` are organised, and why the pieces start in the order they do. The build instructions
 are in [`guide.md`](guide.md). Every file in the guide is commented, so the code explains each setting.
 Self-check and interview questions (Vietnamese) are in [`questions.md`](questions.md), with answers in
-[`answers.md`](answers.md).
+[`answers.md`](answers.md). What Argo CD does and when (which file it reads, refresh and sync, retries,
+what each status means) is drawn in [`argocd-explained.md`](argocd-explained.md).
 
 This phase covers Argo CD itself and the platform around the app: ingress-nginx, the EBS CSI driver,
 External Secrets, cert-manager, monitoring with alert email, and Rancher. The app's Helm chart and
@@ -123,9 +124,18 @@ flowchart TB
         MON["kube-prometheus-stack"]
         RAN["rancher"]
     end
+    subgraph WAPP1["wave 1"]
+        DEVAPP["medical-rag-dev<br/>app guide, Part 3"]
+    end
+    subgraph WAPP2["wave 2"]
+        PRODAPP["medical-rag-prod<br/>app guide, Part 4"]
+    end
 
-    ROOT --> W3 --> W2 --> W1 --> W0
+    ROOT --> W3 --> W2 --> W1 --> W0 --> WAPP1 --> WAPP2
 ```
+
+The app's two Applications come last. Inside each one, the chart has waves of its own (0, 1, 2), a separate
+set of numbers drawn in [argocd-explained §5](argocd-explained.md#5-two-levels-of-waves).
 
 A wave starts only when every Application in the previous wave is **Healthy** and **Synced**. Both
 halves are needed, and `Synced` is the one that does the work: Argo CD deliberately leaves a resource
