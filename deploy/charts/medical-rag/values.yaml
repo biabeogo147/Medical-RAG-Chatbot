@@ -44,3 +44,9 @@ indexPull:
       memory: 128Mi
     limits:
       memory: 512Mi
+
+ingress:
+  host: ""                 # required: the environment's public name
+  # Requests per minute from one client address. externalTrafficPolicy: Local on ingress-nginx keeps the
+  # real address, so this limits each user, not the load balancer.
+  limitRpm: 30

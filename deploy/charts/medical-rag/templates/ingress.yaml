@@ -1,0 +1,34 @@
+# The app's public name, plain HTTP through the public load balancer (app guide step 18). Only the chat page
+# and its "clear" link are routed; /metrics, /healthz and /readyz stay inside the cluster, and nginx answers
+# 404 for them.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: medical-rag
+  labels:
+    {{- include "medical-rag.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    # An answer can take over 60 s: the embedding call retries, then up to two 30 s LLM attempts.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/limit-rpm: {{ .Values.ingress.limitRpm | quote }}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ required "ingress.host is required" .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Exact
+            backend:
+              service:
+                name: medical-rag
+                port:
+                  name: http
+          - path: /clear
+            pathType: Exact
+            backend:
+              service:
+                name: medical-rag
+                port:
+                  name: http

@@ -7,3 +7,6 @@ image:
 
 index:
   version: "cc759ae1a093"                  # app guide step 12
+
+ingress:
+  host: dev.recruitai.io.vn            # app guide step 14
