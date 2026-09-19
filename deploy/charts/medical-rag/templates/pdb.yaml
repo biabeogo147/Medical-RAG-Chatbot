@@ -1,0 +1,18 @@
+# Keeps one pod running through planned disruptions such as `kubectl drain` (app guide step 20). Rendered
+# only with more than one replica: with a single replica, minAvailable 1 would block every drain forever.
+{{- if gt (int .Values.replicas) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: medical-rag
+  labels:
+    {{- include "medical-rag.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: medical-rag
+      app.kubernetes.io/component: web
+{{- end }}

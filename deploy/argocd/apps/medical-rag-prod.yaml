@@ -1,0 +1,42 @@
+# The app in prod: the same chart with deploy/envs/prod/values.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: medical-rag-prod
+  namespace: argocd
+  labels:
+    medical-rag/report-failed-sync: "true"
+  annotations:
+    # After dev (wave 1): on a rebuild, dev's Job builds a new index version first, and prod's finds it.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      path: deploy/charts/medical-rag
+      helm:
+        releaseName: medical-rag
+        valueFiles:
+          - $values/deploy/envs/common.yaml
+          - $values/deploy/envs/prod/values.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: medical-rag-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+        # enforce checks Pods only; warn also checks Deployments and Jobs, so a dry run shows a problem.
+        pod-security.kubernetes.io/warn: restricted
+        pod-security.kubernetes.io/warn-version: latest
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
