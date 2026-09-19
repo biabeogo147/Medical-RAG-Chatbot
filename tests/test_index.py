@@ -72,3 +72,62 @@ def test_build_fails_without_pdfs(tmp_path):
     (tmp_path / "data").mkdir()
     with pytest.raises(Exception, match="No PDF files"):
         index.build(LocalStore(tmp_path / "store"), tmp_path / "data", embeddings_factory=CountingEmbeddings)
+
+
+
+
+def test_build_refuses_an_unexpected_version_before_embedding(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    _write_pdf(data / "doc.pdf")
+    embeddings = CountingEmbeddings()
+
+    with pytest.raises(ValueError, match="was expected"):
+        index.build(
+            LocalStore(tmp_path / "store"),
+            data,
+            embeddings_factory=lambda: embeddings,
+            expected_version="000000000000",
+        )
+    assert embeddings.calls == 0, "a wrong version must fail before any embedding call"
+
+
+def test_build_can_leave_latest_alone(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    _write_pdf(data / "doc.pdf")
+    store = LocalStore(tmp_path / "store")
+
+    from langchain_core.documents import Document
+
+    monkeypatch.setattr(
+        "app.components.pdf_loader.load_pdf_files",
+        lambda _path: [Document(page_content="fever and headache " * 40, metadata={"page": 0})],
+    )
+    version = index.build(store, data, embeddings_factory=CountingEmbeddings, update_latest=False)
+
+    assert store.exists(f"faiss/{version}/manifest.json")
+    assert not store.exists(index.LATEST_KEY)
+
+
+def test_pull_refuses_latest_when_a_pinned_version_is_required(tmp_path):
+    with pytest.raises(ValueError, match="pinned"):
+        index.pull(LocalStore(tmp_path / "store"), "latest", tmp_path / "pulled", require_pinned=True)
+
+
+def test_version_command_reads_the_corpus_store(tmp_path, monkeypatch, capsys):
+    corpus = tmp_path / "corpus-store" / "corpus"
+    corpus.mkdir(parents=True)
+    _write_pdf(corpus / "doc.pdf")
+    monkeypatch.setattr(index.config, "CORPUS_STORE", f"file://{tmp_path / 'corpus-store'}")
+
+    assert index.main(["version"]) == 0
+
+    printed = capsys.readouterr().out.strip().splitlines()[-1]
+    expected = index.compute_version(
+        [corpus / "doc.pdf"],
+        index.config.CHUNK_SIZE,
+        index.config.CHUNK_OVERLAP,
+        index.config.EMBEDDING_MODEL_NAME,
+    )
+    assert printed == expected

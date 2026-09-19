@@ -19,3 +19,5 @@ MLops-Common/
 k8s.yaml
 Jenkinsfile
 docker-compose.yml
+infra/
+deploy/

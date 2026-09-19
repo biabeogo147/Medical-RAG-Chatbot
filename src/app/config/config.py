@@ -15,6 +15,15 @@ INDEX_STORE = os.getenv("INDEX_STORE", f"file://{PROJECT_ROOT / 'index-store'}")
 INDEX_VERSION = os.getenv("INDEX_VERSION", "latest")
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", 64))
 
+# The Kubernetes Job reads the corpus from <CORPUS_STORE>/corpus/ instead of DATA_PATH.
+CORPUS_STORE = os.getenv("CORPUS_STORE")
+# The build fails unless the corpus hashes to this version: the one pinned in the values file.
+INDEX_EXPECTED_VERSION = os.getenv("INDEX_EXPECTED_VERSION")
+# Local runs move the faiss/LATEST pointer. The cluster pins every version, never moves LATEST, and
+# refuses to read it.
+INDEX_UPDATE_LATEST = os.getenv("INDEX_UPDATE_LATEST", "true").lower() == "true"
+INDEX_REQUIRE_PINNED = os.getenv("INDEX_REQUIRE_PINNED", "false").lower() == "true"
+
 # Models
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.5-flash-lite")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
