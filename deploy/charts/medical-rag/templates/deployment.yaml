@@ -1,0 +1,128 @@
+# The app (app guide step 17). Wave 2: the pods start only after the index Job (wave 1) succeeded, so the
+# pinned version is in S3 when the init container asks for it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medical-rag
+  labels:
+    {{- include "medical-rag.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: {{ .Values.replicas }}
+  revisionHistoryLimit: 3
+  # Start the new pod before stopping an old one: the app never has fewer ready pods than asked for.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: medical-rag
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "medical-rag.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      serviceAccountName: medical-rag
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "medical-rag.podSecurity" . | nindent 8 }}
+      # gunicorn stops within its graceful_timeout (30 s); preStop gives ingress-nginx time to stop sending.
+      terminationGracePeriodSeconds: 45
+      {{- if .Values.spreadAcrossNodes }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: medical-rag
+              app.kubernetes.io/component: web
+      {{- end }}
+      initContainers:
+        # Downloads exactly the pinned version into /tmp/index, with the app role. The only container with
+        # the token for AWS: the app container below never calls AWS.
+        - name: index-pull
+          image: {{ include "medical-rag.image" . }}
+          command: ["python", "-m", "app.index", "pull"]
+          env:
+            - name: INDEX_STORE
+              value: {{ include "medical-rag.bucket" . }}
+            - name: INDEX_VERSION
+              value: {{ required "index.version is required" .Values.index.version | quote }}
+            # Refuse "latest": a pod must never read the moving pointer.
+            - name: INDEX_REQUIRE_PINNED
+              value: "true"
+            - name: HOME
+              value: /tmp
+            {{- include "medical-rag.awsEnv" (dict "role" (printf "medical-rag-app-%s" .Values.environment) "Values" .Values) | nindent 12 }}
+          securityContext:
+            {{- include "medical-rag.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.indexPull.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: aws-token
+              mountPath: /var/run/secrets/aws
+              readOnly: true
+      containers:
+        - name: app
+          image: {{ include "medical-rag.image" . }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            # The init container already pulled the index into /tmp/index (INDEX_DIR, set in the image).
+            - name: INDEX_PULL_ON_START
+              value: "false"
+          # GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN and FLASK_SECRET_KEY.
+          envFrom:
+            - secretRef:
+                name: app-secrets
+          # /readyz answers 200 once the RAG chain is built; about 6 s locally. Up to 5 minutes is allowed.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # /healthz answers as long as gunicorn does. Generous, so a pod busy with slow LLM calls is not
+          # restarted.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          securityContext:
+            {{- include "medical-rag.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # One writable folder for everything the app writes: the index (/tmp/index), gunicorn's heartbeat
+        # files, the Prometheus multiprocess files (/tmp/prometheus) and the Hugging Face cache (/tmp/hf).
+        # The root filesystem is read-only.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- include "medical-rag.awsTokenVolume" . | nindent 8 }}

@@ -1,0 +1,19 @@
+# A stable address for the pods. The port is named http: the Ingress (step 18) and the ServiceMonitor
+# (step 19) refer to it by name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: medical-rag
+  labels:
+    {{- include "medical-rag.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  selector:
+    app.kubernetes.io/name: medical-rag
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -22,3 +22,25 @@ indexBuild:
       memory: 512Mi
     limits:
       memory: 2Gi          # an out-of-memory kill would waste the embedding calls; measured in step 21
+
+# The pods that serve the app.
+replicas: 1
+# Spread the replicas over different nodes (prod). A replica that has nowhere to go stays Pending rather
+# than sharing a node, so losing one node never takes every replica.
+spreadAcrossNodes: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 768Mi          # a starting point; measured in step 21
+  limits:
+    memory: 1536Mi
+
+# The init container that downloads the pinned index.
+indexPull:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
