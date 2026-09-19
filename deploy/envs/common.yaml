@@ -1,0 +1,5 @@
+# Settings both environments share. The account ID names the registry, the buckets and the roles. AWS
+# documents account IDs as identifiers, not secrets, but from here on this one is in Git.
+aws:
+  accountId: "242834061265"
+  region: ap-southeast-1
