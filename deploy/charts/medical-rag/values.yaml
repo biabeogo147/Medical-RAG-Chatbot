@@ -18,10 +18,10 @@ index:
 indexBuild:
   resources:
     requests:
-      cpu: 100m            # the nodes' CPU requests are already 56-67% used
-      memory: 512Mi
+      cpu: 100m
+      memory: 384Mi          # 2026-09-19: Job peak 321Mi (step 16)
     limits:
-      memory: 2Gi          # an out-of-memory kill would waste the embedding calls; measured in step 21
+      memory: 1024Mi         # max(1.5 x peak, 1Gi)
 
 # The pods that serve the app.
 replicas: 1
@@ -31,10 +31,10 @@ spreadAcrossNodes: false
 
 resources:
   requests:
-    cpu: 100m
-    memory: 768Mi          # a starting point; measured in step 21
+    cpu: 50m              # 2026-09-19: 0.001 cores peak under 10 questions
+    memory: 320Mi          # 2026-09-19: 277Mi peak under 10 questions
   limits:
-    memory: 1536Mi
+    memory: 640Mi         # 2 x request, at least 512Mi measured in step 21
 
 # The init container that downloads the pinned index.
 indexPull:
