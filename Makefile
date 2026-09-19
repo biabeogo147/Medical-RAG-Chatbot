@@ -136,3 +136,28 @@ oidc-publish:
 # After every rebuild: the published key set must still be the one the cluster signs with.
 oidc-check:
 	bash infra/scripts/oidc.sh check $(OIDC_BUCKET) $(OIDC_ISSUER)
+
+
+# --- App image, built on the workstation until Jenkins takes over (app guide step 11) -----------
+REGISTRY   = $(ACCOUNT_ID).dkr.ecr.$(REGION).amazonaws.com
+IMAGE_REPO = $(REGISTRY)/$(PROJECT)
+# The tag is the commit. ECR tags are immutable, so one commit is one image, never overwritten.
+IMAGE_TAG  = $(shell git rev-parse --short=12 HEAD)
+
+.PHONY: image
+
+# Refuses to run on uncommitted or unpushed code, or when the tag already exists. Tests first.
+image:
+	@test -z "$$(git status --porcelain)" || { echo "Uncommitted changes: commit and push first"; exit 1; }
+	@git fetch --quiet origin main
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" || { echo "HEAD is not origin/main: git pull first"; exit 1; }
+	@if out=$$(aws ecr describe-images --region $(REGION) --repository-name $(PROJECT) --image-ids imageTag=$(IMAGE_TAG) 2>&1); then \
+	  echo "$(IMAGE_TAG) is already in ECR, and tags are immutable"; exit 1; \
+	elif ! grep -q ImageNotFoundException <<<"$$out"; then \
+	  echo "$$out"; exit 1; \
+	fi
+	docker buildx build --progress=plain --target test .
+	aws ecr get-login-password --region $(REGION) | docker login --username AWS --password-stdin $(REGISTRY)
+	docker buildx build --target runtime --provenance=false --sbom=false --tag $(IMAGE_REPO):$(IMAGE_TAG) --push .
+	aws ecr describe-images --region $(REGION) --repository-name $(PROJECT) --image-ids imageTag=$(IMAGE_TAG) \
+	  --query 'imageDetails[0].[imageTags[0],imageDigest]' --output text
