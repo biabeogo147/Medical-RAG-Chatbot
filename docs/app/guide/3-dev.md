@@ -145,7 +145,8 @@ that name yet. New baseline: 90 managed resources in `cluster`.
 **Problem now.** The app's index build will run as an Argo CD *hook* ([concepts §17](0-concepts.md#17-sync-waves-and-hooks)).
 Argo CD leaves hooks out of an Application's health. If the Job fails, the sync is marked `Failed`, but the
 Application still *shows* `Healthy`. `root` then shows `Healthy` too, or waits forever without saying
-why. Automated sync also does not retry a failed sync of the same commit, so nothing fixes itself.
+why. Automated sync retries a failed sync only a few times (below), then never again for the same commit,
+so nothing fixes itself.
 
 **Why it matters.** A failed index build must be visible where you look first, on `root`, with the reason.
 Otherwise a broken release looks like a healthy cluster.
@@ -209,6 +210,13 @@ The Lua lines are indented by six spaces, like the rest of the check.
 - **`operationState` is the last sync, not the current one.** The next successful sync replaces it. But when
   a fix makes the rendered objects equal the live ones again (a revert, for example), the app is already
   `Synced` and automated sync does not run: start one sync by hand (step 17 shows how).
+- **Retries come first, so `Degraded` comes late.** When an Application has no `syncPolicy.retry`, Argo CD
+  gives each automated sync `retry: {limit: 5}` itself (`controller/appcontroller.go`), waiting 5 s, then 10,
+  20, 40 and 80 s between attempts. Each attempt runs the hook Job again. During the retries the phase is
+  `Running`, which the rule above does not match, and `root` reads `Progressing` because the child is still
+  `OutOfSync`. Only after the fifth failed retry is the phase `Failed`, and `root` `Degraded`. The waits
+  alone add 155 s, so for a Job that fails in seconds this takes a few minutes. The default is kept: a
+  retry gets past a short outage, such as a webhook that is not ready yet.
 - **The GitOps guide's copy of this check stays as it was.** It shows the check as it was built in that
   phase; this step extends it.
 
@@ -580,7 +588,8 @@ image:
   tag: "<12-hex tag>@sha256:<digest>"   # app guide step 11
 
 index:
-  version: cc759ae1a093                  # app guide step 12
+  # Quoted: a version of only digits (or digits and one "e") would otherwise be read as a number.
+  version: "cc759ae1a093"                # app guide step 12
 ```
 
 Create `deploy/argocd/apps/medical-rag-dev.yaml`:
@@ -1070,7 +1079,8 @@ evidence until the test's revert is pushed, or `git revert HEAD` would revert th
 **Prove what a failed build does.** Pin a version that does not exist, and watch it fail safely. The Job
 stops in its first seconds, before any Hugging Face call, because the corpus does not hash to it.
 
-1. On the laptop, in `deploy/envs/dev/values.yaml`, change `version: cc759ae1a093` to `version: 000000000000`.
+1. On the laptop, in `deploy/envs/dev/values.yaml`, change the version to `version: "000000000000"`, **with**
+   the quotes. Without them YAML reads twelve zeros as the number `0`, and the Job's message says `0`.
    This is the one change that skips the branch check: it is meant to fail.
    ```bash
    git status --short                 # only: M deploy/envs/dev/values.yaml
@@ -1078,9 +1088,26 @@ stops in its first seconds, before any Hugging Face call, because the corpus doe
    git commit -m "Test: pin an index version that does not exist"
    git push origin HEAD:main
    ```
-2. Refresh and wait a minute:
+2. On the workstation, make Argo CD read the new commit now instead of within three minutes:
    ```bash
    kubectl -n argocd annotate applications.argoproj.io medical-rag-dev argocd.argoproj.io/refresh=normal --overwrite
+   ```
+3. Wait for the sync to give up. It is retried five times first (step 15, *Retries come first*), so this
+   takes about five minutes:
+   ```bash
+   kubectl -n argocd wait applications.argoproj.io/medical-rag-dev \
+     --for=jsonpath='{.status.operationState.phase}'=Failed --timeout=15m
+   ```
+   Expected: `application.argoproj.io/medical-rag-dev condition met`. Meanwhile, a look at the retries is
+   optional (in another window):
+   ```bash
+   kubectl -n argocd get applications.argoproj.io medical-rag-dev \
+     -o jsonpath='{.status.operationState.phase} {.status.operationState.retryCount} {.status.operationState.message}{"\n"}'
+   ```
+   It prints `Running`, a count from 0 to 5, and `… Retrying attempt #N at …`. `root` reads `Progressing`
+   meanwhile, not yet `Degraded`.
+4. Once the wait returns, look at the result:
+   ```bash
    kubectl -n argocd get applications.argoproj.io medical-rag-dev \
      -o jsonpath='{.status.operationState.phase} {.status.health.status}{"\n"}'
    kubectl -n argocd get applications.argoproj.io root -o jsonpath='{.status.health.status}{"\n"}'
@@ -1090,29 +1117,43 @@ stops in its first seconds, before any Hugging Face call, because the corpus doe
    ```
    Expected:
    - `Failed Healthy`: the child's own health ignores the hook;
-   - `root` is `Degraded`: the rule from step 15. The next line is the failed sync's message, which names the
-     failed Job; the Argo CD UI shows it on `root`'s tree;
+   - `root` is `Degraded`: the rule from step 15. If it still reads `Progressing`, wait for `root`'s next
+     refresh (up to three minutes) and run the line again;
+   - the failed sync's message, which says a sync task completed unsuccessfully; the Argo CD UI shows it on
+     `root`'s tree;
    - the Job's log ends with `…builds version cc759ae1a093, but 000000000000 was expected…`;
    - the same pod as before is still `Running` and ready: wave 2 was never applied.
-3. Undo the test. On the laptop:
+5. Undo the test. On the laptop:
    ```bash
    git log -1 --oneline               # must show "Test: pin an index version that does not exist"
    git revert --no-edit HEAD
    git push origin HEAD:main
    ```
    The rendered objects now equal the live ones again, so the app reads `Synced`, and automated sync does not
-   run: the last sync stays `Failed`, and `root` stays `Degraded`. Start one sync by hand, on the
-   workstation:
+   run: the last sync stays `Failed`, and `root` stays `Degraded`.
+6. On the workstation, make Argo CD read the revert, and check that it has:
    ```bash
    kubectl -n argocd annotate applications.argoproj.io medical-rag-dev argocd.argoproj.io/refresh=normal --overwrite
+   kubectl -n argocd wait applications.argoproj.io/medical-rag-dev \
+     --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m
+   ```
+   Expected: `condition met`. Syncing before this could still use the test's commit.
+7. Start one sync by hand:
+   ```bash
    kubectl -n argocd patch applications.argoproj.io medical-rag-dev --type merge \
      -p '{"operation":{"initiatedBy":{"username":"operator"},"sync":{"syncStrategy":{"hook":{}}}}}'
    ```
-   If the patch is refused, press **Sync** on `medical-rag-dev` in the Argo CD UI (through the VPN). After a
-   minute, run the three `kubectl -n argocd get …` lines of point 2 again. Expected: `Succeeded Healthy`, then
-   `Healthy`.
+   If the patch is refused, press **Sync** on `medical-rag-dev` in the Argo CD UI (through the VPN), with
+   **Retry** left off.
+8. Wait for it. The Job finds the index already built, so this takes about a minute:
+   ```bash
+   kubectl -n argocd wait applications.argoproj.io/medical-rag-dev \
+     --for=jsonpath='{.status.operationState.phase}'=Succeeded --timeout=10m
+   ```
+   Then run the first two lines of point 4 again. Expected: `Succeeded Healthy`, then `Healthy` (again, give
+   `root` up to three minutes).
 
-**Record** the outputs of points 2 and 3. Then commit the evidence.
+**Record** the outputs of points 3, 4 and 8. Then commit the evidence.
 
 ---
 
@@ -1359,8 +1400,22 @@ Push the commit to the temporary branch `app/step-19` and run the check below on
 `servicemonitor.monitoring.coreos.com/medical-rag`.
 
 **Move `main`** to the checked commit: on the laptop, `git push origin HEAD:main`, then
-`git push origin --delete app/step-19`; on the workstation, `git checkout main && git pull`. Then refresh `medical-rag-dev`, and wait two minutes: Prometheus reloads its targets, then
-scrapes.
+`git push origin --delete app/step-19`; on the workstation, `git checkout main && git pull`.
+
+Check that `main` now holds this step's commit: `git log -1 --oneline` on the workstation must show the
+message of your step 19 commit. If it shows the step 18 commit, the push went somewhere else: compare
+`git ls-remote origin main app/step-19` with `git log -1` on the laptop, and push again.
+
+Then make Argo CD read it, and wait until the sync of that commit has finished:
+```bash
+kubectl -n argocd annotate applications.argoproj.io medical-rag-dev argocd.argoproj.io/refresh=normal --overwrite
+kubectl -n argocd wait applications.argoproj.io/medical-rag-dev \
+  --for=jsonpath='{.status.operationState.syncResult.revisions[0]}'=$(git rev-parse HEAD) --timeout=10m
+kubectl -n argocd get applications.argoproj.io medical-rag-dev \
+  -o jsonpath='{.status.sync.status} {.status.operationState.phase}{"\n"}'
+```
+Expected: `condition met`, then `Synced Succeeded`. Then wait two minutes: Prometheus reloads its targets,
+then scrapes.
 
 **Check**, with the `promq` helper from step 16 (define it again in a new shell):
 ```bash

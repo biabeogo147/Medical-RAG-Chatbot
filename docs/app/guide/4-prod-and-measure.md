@@ -102,7 +102,7 @@ image:
   tag: "<12-hex tag>@sha256:<digest>"   # the same as dev
 
 index:
-  version: cc759ae1a093                  # the same as dev: dev's Job built it, prod's finds it
+  version: "cc759ae1a093"                # the same as dev: dev's Job built it, prod's finds it
 
 replicas: 2
 spreadAcrossNodes: true
@@ -302,7 +302,64 @@ base image and measures again.
 
 ### 21.2 Set the resources
 
-**Laptop.** In `deploy/charts/medical-rag/values.yaml`, set:
+**From the outputs to the numbers.** Three measurements decide everything:
+
+| Measurement | Where it comes from | Unit in the output |
+|---|---|---|
+| App memory under load | The dev pod's line of the memory query, run after the ten questions | bytes |
+| App CPU under load | The dev pod's line of the CPU query, run after the ten questions | cores (`0.12` = 120m) |
+| Job memory peak | Step 16, check 6 | bytes |
+
+These are the dev lines you recorded in 21.1; the lines below only put them in variables, so that nothing
+is copied by hand. On the workstation, in the shell where `promq` is defined, run them **within 30 minutes
+of the ten questions**. The two queries are the ones from 21.1, reduced to one line for dev
+(`max by (namespace)`), over the last 30 minutes:
+```bash
+APP_MEM=$(promq 'max by (namespace) (max_over_time(container_memory_working_set_bytes{namespace="medical-rag-dev",container="app"}[30m]))' | awk '{print $2}')
+APP_CPU=$(promq 'max by (namespace) (max_over_time(rate(container_cpu_usage_seconds_total{namespace="medical-rag-dev",container="app"}[5m])[30m:1m]))' | awk '{print $2}')
+JOB_MEM=336347136                 # your Job peak from step 16, in bytes
+echo "app memory $APP_MEM bytes, app CPU $APP_CPU cores, Job peak $JOB_MEM bytes"
+```
+Expected: three numbers, and `APP_MEM` and `APP_CPU` at least as high as the dev lines you recorded under
+load in 21.1. A lower number means the ten questions are older than 30 minutes, so the window holds only
+idle time: ask them again, then rerun these lines. An empty one usually means `promq` is not defined in
+this shell.
+
+Then let Python apply the rules of the table below and print the two blocks to copy:
+```bash
+python3 - "$APP_MEM" "$APP_CPU" "$JOB_MEM" <<'EOF'
+import datetime, math, sys
+app_mem, app_cpu, job_mem = (float(x) for x in sys.argv[1:])
+mib = lambda b: b / 2**20
+up = lambda x, step: int(math.ceil(x / step) * step)
+day = datetime.date.today().isoformat()
+req_mem = up(mib(app_mem), 64)
+lim_mem = max(2 * req_mem, 512)
+req_cpu = max(up(app_cpu * 1000, 50), 50)
+job_req = up(mib(job_mem), 64)
+job_lim = max(up(1.5 * mib(job_mem), 64), 1024)
+print(f"""indexBuild:
+  resources:
+    requests:
+      cpu: 100m            # the nodes' CPU requests are already 57-68% used
+      memory: {job_req}Mi  # {day}: Job peak {mib(job_mem):.0f}Mi (step 16)
+    limits:
+      memory: {job_lim}Mi  # {day}: max(1.5 x {mib(job_mem):.0f}Mi, 1Gi)
+
+resources:
+  requests:
+    cpu: {req_cpu}m        # {day}: {app_cpu:.3f} cores peak under 10 questions
+    memory: {req_mem}Mi    # {day}: {mib(app_mem):.0f}Mi peak under 10 questions
+  limits:
+    memory: {lim_mem}Mi    # {day}: 2 x request, at least 512Mi""")
+EOF
+```
+Expected: two YAML blocks. With the Job peak of 321Mi, for example, the first one reads `memory: 384Mi`
+and `memory: 1024Mi`. **Record** the three variables and the printed blocks.
+
+**Laptop.** Copy the printed blocks from the workstation. In `deploy/charts/medical-rag/values.yaml`, replace
+the whole `indexBuild:` block and the top-level `resources:` block with them. Leave `indexPull:` as it is. The rules the script
+applies:
 
 | Setting | New value |
 |---|---|
@@ -312,8 +369,7 @@ base image and measures again.
 | `indexBuild.resources.requests.memory` | The Job's peak from step 16, rounded up to the next 64Mi |
 | `indexBuild.resources.limits.memory` | 1.5 times the Job's peak, at least 1Gi: an out-of-memory kill wastes the embedding |
 
-Next to each number, write a comment with the date and the measurement it came from, for example
-`# 2026-09-20: 612Mi peak under 10 questions`.
+The printed blocks already carry, next to each number, the date and the measurement it came from.
 
 **Commit** (`git add deploy/charts/medical-rag/values.yaml`, message `Set app resources from measurements`). Before the commit, `git status --short` shows exactly:
 ```
