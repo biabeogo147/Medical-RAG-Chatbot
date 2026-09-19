@@ -32,10 +32,6 @@ data "aws_ecr_repository" "app" {
   name = var.project
 }
 
-data "aws_s3_bucket" "artifacts" {
-  bucket = "${var.project}-artifacts-${local.account_id}"
-}
-
 # Reading the alias, not the key, means the key can be rotated without touching this code.
 data "aws_kms_alias" "cosign" {
   name = "alias/${var.project}-cosign"

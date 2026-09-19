@@ -54,18 +54,18 @@ data "aws_iam_policy_document" "nodes" {
     resources = [data.aws_ecr_repository.app.arn]
   }
 
-  # Listing a bucket and reading its objects are different permissions on different ARNs, so both
-  # statements are needed: the shared artifacts bucket plus the two cluster buckets.
+  # The cluster's own buckets: etcd snapshots and the Ansible transfer bucket. The artifacts bucket is not
+  # here: the app's pods reach it through their own roles (shared/irsa.tf, app guide step 6).
   statement {
     sid       = "S3ListBuckets"
     actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
-    resources = concat([data.aws_s3_bucket.artifacts.arn], [for b in aws_s3_bucket.this : b.arn])
+    resources = [for b in aws_s3_bucket.this : b.arn]
   }
 
   statement {
     sid       = "S3ReadWriteObjects"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = concat(["${data.aws_s3_bucket.artifacts.arn}/*"], [for b in aws_s3_bucket.this : "${b.arn}/*"])
+    resources = [for b in aws_s3_bucket.this : "${b.arn}/*"]
   }
 
   # Read by External Secrets, which turns them into Kubernetes Secrets.
