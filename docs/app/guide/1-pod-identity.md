@@ -107,7 +107,8 @@ resource "aws_secretsmanager_secret" "sa_signer" {
 
 - **kubeadm makes a new key on every `kubeadm init`.** Each rebuild would then publish a different
   public key, and the roles would reject tokens until someone published the new one. A key that is
-  already on disk is reused instead: kubeadm prints `[certs] Using the existing "sa" key`.
+  already on disk is reused instead. kubeadm's output says `[certs] Using the existing "sa" key`, but
+  Ansible shows a successful command's output only with `-v`.
 - **The other two control planes get the same key without extra work.** `kubeadm join
   --control-plane` copies it from the Secret that `--upload-certs` fills.
 - **Not in `secret_names` either.** That output lists what the cluster reads. This secret is read only
@@ -470,8 +471,8 @@ on node 1, before `kubeadm init`.
 make infra
 make cluster
 ```
-`make cluster` now shows `Validate the kubeadm configuration` as `ok` on node 1, before `Initialise
-the control plane`. Then, in window 1, stop the old tunnel with `Ctrl-C` (it points at a node that no
+`make cluster` now shows `Validate the kubeadm configuration` as `ok` on node 1, followed by `Initialise
+the control plane` as `changed`. Then, in window 1, stop the old tunnel with `Ctrl-C` (it points at a node that no
 longer exists) and run `make tunnel` again. Back in window 0:
 ```bash
 make bootstrap
@@ -511,13 +512,25 @@ kubectl -n argocd wait applications.argoproj.io/root \
    is the one that signs. Check 1 already showed it.
 4. `root` turned `Healthy`, and `kubectl -n argocd get applications.argoproj.io` shows every Application
    `Synced` and `Healthy`. The audience change broke none of them.
-5. The guard on a running cluster passes:
+5. The guard on a running cluster passes. The output is long, so keep it in a file and look for the one
+   task that matters:
    ```bash
-   make cluster
+   set -o pipefail
+   make cluster 2>&1 | tee /tmp/cluster-2.log
+   grep -A3 "Refuse to go on" /tmp/cluster-2.log
+   grep -A5 "PLAY RECAP" /tmp/cluster-2.log
    ```
-   Expected: `Refuse to go on with a cluster built with a different key` shows `ok` for node 1.
-   `Put the signing key in place…` and `Derive the public half…` are `skipping`. The recap shows
-   `changed=0` for every node.
+   `set -o pipefail` keeps make's exit status through `tee`: a failure before Ansible even starts (for
+   example `terraform output`) then still shows as an error.
+   Expected:
+   - `grep` prints `ok: [medical-rag-node-1]` with `"msg": "All assertions passed"`.
+   - The recap shows `failed=0` and `changed=0` for every node.
+
+   `Put the signing key in place…` and `Derive the public half…` do not appear at all. They are skipped
+   on a cluster that already exists, and `infra/ansible/ansible.cfg` hides skipped tasks
+   (`display_skipped_hosts = False`). If `grep` prints nothing, the guard did not run: either node 1 has no
+   `/etc/kubernetes/admin.conf`, or the play stopped before `kubeadm_init` (the recap shows `failed` or
+   `unreachable` above 0). Stop and look at `/tmp/cluster-2.log`.
 
 **Record** the issuer line and the three hashes.
 
