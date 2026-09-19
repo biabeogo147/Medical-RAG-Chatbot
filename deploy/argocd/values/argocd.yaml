@@ -35,6 +35,11 @@ configs:
     #
     # Two cases still leave root waiting with no explanation: a child that stays Healthy but
     # OutOfSync, and a child that reports Suspended. Neither has come up here.
+    #
+    # A failed sync is a third case: Argo CD leaves hooks out of health, so a failed hook (the app's index
+    # build Job) leaves the child Healthy. Children labelled medical-rag/report-failed-sync=true report a
+    # failed last sync as Degraded instead (app guide step 15). The platform's children carry no label.
+
     resource.customizations.health.argoproj.io_Application: |
       hs = {}
       hs.status = "Progressing"
@@ -42,6 +47,15 @@ configs:
 
       if obj.status == nil or obj.status.health == nil or obj.status.sync == nil then
         return hs
+      end
+
+      if obj.metadata.labels ~= nil and obj.metadata.labels["medical-rag/report-failed-sync"] == "true" then
+        local op = obj.status.operationState
+        if op ~= nil and (op.phase == "Failed" or op.phase == "Error") then
+          hs.status = "Degraded"
+          hs.message = op.message or "the last sync of the child Application failed"
+          return hs
+        end
       end
 
       if obj.status.health.status == "Degraded" then
