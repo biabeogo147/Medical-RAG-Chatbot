@@ -2,7 +2,8 @@
 
 How the chatbot runs on the cluster. The phase starts where the GitOps phase ended: Argo CD installs
 everything from Git, and the platform (ingress, certificates, secrets, monitoring) is in place. The build
-instructions are in [`guide.md`](guide.md).
+instructions are in [`guide.md`](guide.md), and every concept it uses is explained in
+[`guide/0-concepts.md`](guide/0-concepts.md).
 
 This phase adds four things:
 
@@ -58,9 +59,9 @@ This is the mechanism behind EKS's IRSA, built by hand:
 | Signing key | `medical-rag/sa-signer` in Secrets Manager; Ansible puts it on node 1 before `kubeadm init` | kubeadm would generate a new key on every rebuild, and AWS would stop trusting the tokens. kubeadm reuses a key it finds, and the other control planes receive it through `--upload-certs`. The node role cannot read this secret: whoever holds it can mint a token for any ServiceAccount |
 | Issuer | S3 bucket `medical-rag-oidc-<account>`, shared stack, `prevent_destroy` | AWS must fetch the public key over HTTPS without credentials. The URL can never change: the tokens, the API server flags and every trust policy name it. A deleted bucket name could be claimed by someone else, so it is protected from deletion |
 | Issuer documents | `make oidc-publish`, taken from the running API server | The value comes from the cluster, like secret values come from the CLI, and Terraform creates only the container. The script refuses to overwrite a document that differs, because that would mean the key changed |
-| API server flags | kubeadm `extraArgs`: two `service-account-issuer`s, `service-account-jwks-uri`, explicit `api-audiences` | The S3 issuer is listed first, so it signs. `sts.amazonaws.com` is not an API audience, so a token minted for AWS is useless against the cluster |
+| API server flags | kubeadm `extraArgs`: two `service-account-issuer`s, `service-account-jwks-uri`, explicit `api-audiences` | The S3 issuer is listed first, so it is the one written into new tokens. `sts.amazonaws.com` is not an API audience, so a token minted for AWS is useless against the cluster |
 | OIDC provider and roles | shared stack | Long-lived, like the bucket. Each trust policy requires `aud = sts.amazonaws.com` and one exact `sub` |
-| The pod side | the chart, not a webhook | A projected ServiceAccount token plus `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_REGION` and `AWS_STS_REGIONAL_ENDPOINTS`. The AWS SDK exchanges the token before it ever tries IMDS. EKS injects the same lines with a mutating webhook, but a webhook that is down can block the creation of every pod in the cluster, and only our own chart needs it |
+| The pod side | the chart, not a webhook | A projected ServiceAccount token plus `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_REGION` and `AWS_STS_REGIONAL_ENDPOINTS`. The AWS SDK exchanges the token before it ever tries IMDS. EKS injects the same lines with a mutating webhook. Upstream configures it with `failurePolicy: Ignore`, so when it is down a pod starts without the token and quietly falls back to the node role. Only our own chart needs these lines |
 
 **Roles:**
 
@@ -71,6 +72,15 @@ This is the mechanism behind EKS's IRSA, built by hand:
 | `medical-rag-index-builder` | `medical-rag-{dev,prod}:medical-rag-index-builder` | read `corpus/*` and `faiss/*`, write `faiss/*`, never delete |
 
 Serving and building are separate ServiceAccounts, so the pod that faces the internet can only read.
+
+**What must stay protected.** The private signing key (whoever holds it can mint a token for any
+ServiceAccount), write access to the issuer bucket (whoever can change the published key set can make
+AWS trust their own key), and the bucket's name (`prevent_destroy`). The public documents themselves are
+public by design.
+
+**The hop limit is not the fence.** The nodes' IMDS hop limit of 2 is what lets pods reach IMDS at all,
+for every pod on the node at once. It stays at 2 because platform pods still need the node role. The
+per-pod fence is the NetworkPolicy below.
 
 **IMDS is closed to the app namespaces.** Their NetworkPolicy allows egress to DNS and to TCP 443, except
 to `169.254.169.254`. Nothing in these namespaces needs IMDS any more, not even the build Job.
@@ -98,15 +108,16 @@ their pods. This is listed as a later improvement, not done in this phase.
 - **`faiss/LATEST` is for docker compose only.** In the cluster, builds never move it
   (`INDEX_UPDATE_LATEST=false`) and pulls refuse it (`INDEX_REQUIRE_PINNED=true`).
 
-## 4. Deployment shape (Parts 3 and 4, written after Part 1 is proven)
+## 4. Deployment shape (Parts 3 and 4)
 
 | | dev | prod |
 |---|---|---|
-| Application | `medical-rag-dev`, last sync wave under `root` | `medical-rag-prod`, same wave, created after dev has built the index |
-| Namespace | `medical-rag-dev` | `medical-rag-prod` |
+| Application | `medical-rag-dev`, wave 1 under `root` | `medical-rag-prod`, wave 2: dev builds a new index first |
+| Namespace | `medical-rag-dev`, Pod Security `restricted` | `medical-rag-prod`, Pod Security `restricted` |
 | Host | `dev.recruitai.io.vn` (HTTP, public NLB) | `app.recruitai.io.vn` (HTTP, public NLB) |
 | Secret | `medical-rag/app-dev` → ExternalSecret | `medical-rag/app-prod` → ExternalSecret |
-| Replicas | 1, no PDB | 2, spread across nodes, PDB `minAvailable: 1` |
+| Replicas | 1, no PDB | 2, one per node (`DoNotSchedule`), PDB `minAvailable: 1` |
+| Values | `deploy/envs/common.yaml` + `deploy/envs/dev/values.yaml` | `deploy/envs/common.yaml` + `deploy/envs/prod/values.yaml` |
 
 - **Hosts, not paths.** The design first planned `/dev` and `/` on the NLB's DNS name, because the
   project had no domain then. It has one now, so each environment gets its own name. That removes the
@@ -115,10 +126,18 @@ their pods. This is listed as a later improvement, not done in this phase.
 - **The index build is a Sync hook at wave 1, not a PreSync hook.** A PreSync hook runs before any
   normal resource on the first sync, so its ServiceAccount and the ExternalSecret holding its API key
   would not exist yet. At wave 1, the ServiceAccounts and the ExternalSecret (wave 0) are already applied, and
-  Argo CD waits for the ExternalSecret to be healthy. This ordering is an assumption until step 15 shows
-  it on the cluster.
+  Argo CD waits for the ExternalSecret to be healthy. The Deployment and everything that serves traffic
+  are at wave 2, so pods start only once their index version is in S3. Step 16 proves the first half of this
+  order on the cluster, step 17 the second.
+- **A failed build shows on `root`.** Argo CD leaves hooks out of an Application's health, so the app's
+  Applications carry the label `medical-rag/report-failed-sync: "true"`, and the health check in
+  `deploy/argocd/values/argocd.yaml` reports their failed last sync as `Degraded` (step 15). Platform
+  Applications carry no label and are judged as before.
 - **Pods get the index from an init container that runs the app image** with `python -m app.index pull`.
-  The image is the same one Kyverno will verify later, and the pull is pinned.
+  The image is the same one Kyverno will verify later, and the pull is pinned. The init container is the only
+  one with the AWS token: the app container that answers users holds no AWS credentials at all.
+- **Only `/` and `/clear` are public.** The Ingress routes exactly those two paths, so `/metrics`, `/healthz`
+  and `/readyz` answer `404` from outside. A per-client rate limit protects the model quota.
 
 ## 5. What is proven and what is assumed
 
@@ -129,8 +148,11 @@ their pods. This is listed as a later improvement, not done in this phase.
 | The cluster never moves `faiss/LATEST` | Enforced by an explicit `Deny` in the builder role, besides `INDEX_UPDATE_LATEST=false` |
 | AWS accepts the cluster's tokens, and each boundary holds | Proven by step 7 |
 | A new cluster signs with the same key | Proven at the first rebuild after step 5 (`make oidc-check`) |
-| The Sync hook at wave 1 runs after the ExternalSecret is ready | Assumed; proven by step 15 |
-| The app pod reaches STS and S3 with IMDS blocked | Proven for a test pod by step 7; for the app by step 16 |
+| The Sync hook at wave 1 runs after the ExternalSecret is ready | Read in the Argo CD docs; proven by step 16 (Secret created before the Job's pod) |
+| The pods (wave 2) start only after the Job (wave 1) succeeded | Proven by step 17 (Job completion before Deployment creation) |
+| A failed build turns `root` `Degraded` and leaves the running pods alone | Proven on purpose by step 17 (a pinned version that does not exist) |
+| The init container reaches STS and S3 with IMDS blocked; the app container has no credentials | Proven for a test pod by step 7; for the app by step 17 |
+| A sync of an existing version does not embed again | Proven by steps 17 and 20 (`already exists, skipping build`) |
 
 ## 6. Known limits
 
@@ -140,4 +162,6 @@ their pods. This is listed as a later improvement, not done in this phase.
 | The signing key passes through the SSM transfer bucket while Ansible copies it to node 1, and the node role can read that bucket | It happens during `make cluster`, before Argo CD or any workload exists, so no pod is there to read it. Objects in that bucket expire after a day | Remove the transfer bucket from the node role (Ansible hands nodes presigned URLs and should not need it), proven by a `make cluster` run that still reports `changed=0` |
 | App traffic is plain HTTP | Out of scope in the design; the internal UIs use TLS | A certificate for `dev.` and `app.` and an HTTPS listener on the public NLB |
 | The image is built on the workstation | Jenkins is the next phase | Jenkins with rootless BuildKit |
-| Both app secrets start with the same values | Your decision: replace them per environment later | `put-secret-value` per environment, the Flask key first |
+| Both app secrets start with the same API keys | The Flask key is replaced for prod in step 20; the API keys are yours to split | `put-secret-value` per environment |
+| The image carries 4 CRITICAL and 14 HIGH findings (ECR scan) | Recorded as the "before" of criterion #9; the Jenkins phase hardens the base image | A smaller base image and a Trivy gate in the pipeline |
+| The account ID is in Git (`deploy/envs/common.yaml`) | AWS treats account IDs as identifiers, not secrets; the image and role names need it | Template it in at deploy time, which Argo CD does not do on its own |

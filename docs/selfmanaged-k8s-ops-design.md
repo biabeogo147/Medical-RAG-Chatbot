@@ -290,12 +290,19 @@ check fails, keep Kubernetes at `1.36.4`.
 deploy/
   charts/medical-rag/        Deployment, Service, Ingress, index-build Job (Sync hook, wave 1), ExternalSecret,
                              ServiceMonitor, PDB, NetworkPolicy, ServiceAccount
+  envs/common.yaml           account ID and region, shared by both environments
   envs/dev/values.yaml       1 replica, image.tag, index.version, host dev.recruitai.io.vn
   envs/prod/values.yaml      2 replicas, topologySpreadConstraints (hostname), PDB minAvailable 1, host app.recruitai.io.vn
   argocd/root.yaml           app-of-apps
   argocd/apps/*.yaml         addons + medical-rag-dev + medical-rag-prod
 ```
 
+- **Waves inside the chart:** ServiceAccounts, ExternalSecret and NetworkPolicies at 0; the index Job (Sync hook) at 1;
+  Deployment, Service, Ingress, ServiceMonitor and PDB at 2. `medical-rag-dev` is wave 1 under `root`, `medical-rag-prod`
+  wave 2. Both carry `medical-rag/report-failed-sync: "true"`, so the Application health check reports a failed
+  sync (a failed hook) as `Degraded` on `root` (app guide step 15).
+- **Pod Security:** Argo CD creates both namespaces with `pod-security.kubernetes.io/enforce: restricted`. Only the
+  init container mounts the AWS token; the app container holds no AWS credentials.
 - **Ingress routing:** by host on the public NLB, HTTP: `dev.recruitai.io.vn` → dev and `app.recruitai.io.vn` → prod (two alias records in the cluster stack). Path routing (`/dev`, `/`) was dropped once the project had a domain: it needed URL-prefix handling in the app, and it made the two environments share one `session` cookie.
 - **NetworkPolicy:** default deny ingress in the app namespaces; allow from the `ingress-nginx` and `monitoring` namespaces; allow egress DNS + TCP 443, except `169.254.169.254/32`. No pod in these namespaces needs IMDS: they use their own roles.
 - **Sync policies:** Argo CD automated sync with prune and selfHeal for dev. **prod syncs automatically, but its values file changes only through a reviewed PR.**

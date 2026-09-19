@@ -1,6 +1,6 @@
 # App guide — Part 1: An AWS identity for the app's own pods (steps 1–9)
 
-[Index](../guide.md) · [Next: Part 2 →](2-image-and-index.md) · [Troubleshooting](troubleshooting.md)
+[Index](../guide.md) · [Concepts](0-concepts.md) · [Next: Part 2 →](2-image-and-index.md) · [Troubleshooting](troubleshooting.md)
 
 **Before you start:** the GitOps phase is finished: after a rebuild every Application is `Synced` and
 `Healthy`. The laptop has Git; everything else runs on the ops workstation.
@@ -14,31 +14,61 @@ and run its **check before** first.
 
 ---
 
-Today every pod on a node uses the node's IAM role. It gets that role from the instance metadata
-service (IMDS) at `169.254.169.254`. That role reads six secrets, including the wildcard certificate's
-private key. It changes a DNS record, writes and deletes in S3, pushes to ECR, and signs with the cosign
-key. The chatbot is the only pod that takes traffic from the internet. If it were taken over, all of
-that would go with it.
+New terms in this part are explained in [Concepts](0-concepts.md). **Before step 1, read [the big picture](0-concepts.md#the-big-picture) and
+concepts sections 1, 2 and 10** (about 10 minutes). The table at the end of this introduction says what to read
+before each later step.
 
-A NetworkPolicy can cut a pod off from IMDS. But the app has to download its index from S3 when it
-starts, and a NetworkPolicy applies to a whole pod: it cannot block the app container and still let the
-init container through. So the pod needs AWS credentials that do not come from the node.
+**The problem.** Today, AWS sees every pod on a node as the node itself. Any pod can ask the instance
+metadata service (IMDS, the address `169.254.169.254`) for the node role's credentials ([concepts §1](0-concepts.md#1-iam-roles-and-temporary-credentials), [concepts §2](0-concepts.md#2-imds-and-the-hop-limit)). That role:
 
-This part gives the app's pods their own IAM roles, the way EKS does it with IRSA ("IAM roles for
-service accounts"). Four pieces are built in order:
+- reads the platform's secrets, including the wildcard certificate's private key;
+- changes a DNS record;
+- reads, writes and deletes in S3 buckets, including the one that holds the index;
+- pushes to ECR, and signs with the cosign key.
 
-1. **A signing key that does not change.** The API server signs every service-account token with it. The
-   key is kept in Secrets Manager, so every rebuild uses the same one.
-2. **A public issuer.** The API server writes the issuer URL into each token. The public half of the
-   key is published at that URL in an S3 bucket, where AWS can fetch it.
+The chatbot is the only pod that takes traffic from the internet. If an attacker took it over, they would
+get all of that.
+
+**Why a firewall rule alone does not fix it.** A NetworkPolicy can cut a pod off from IMDS ([concepts §11](0-concepts.md#11-networkpolicy-egress)). But the
+app has to download its index from S3 when it starts, and IMDS is its only source of AWS credentials today.
+Block IMDS, and the app cannot start. A NetworkPolicy also applies to a whole pod, so it cannot block the
+app container and still let the init container through. The pod needs AWS credentials that do not come from
+the node.
+
+**The idea.** Give the app's pods their own IAM roles, the way Amazon EKS does with IRSA (IAM roles for
+service accounts, [concepts §10](0-concepts.md#10-irsa-and-what-this-project-does-differently)). A pod proves who it is with a token that Kubernetes signs, and AWS exchanges that
+token for a role made just for that pod. Four pieces make this work:
+
+1. **A signing key that does not change.** The API server signs every ServiceAccount token with it ([concepts §4](0-concepts.md#4-serviceaccounts-and-their-tokens)).
+   We store it in Secrets Manager, and Ansible installs it on every rebuild.
+2. **A public issuer.** The issuer is the web address that says who made the token; the API server writes
+   it into each token. We make it an S3 bucket AWS can read, and publish the public key there ([concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc)).
 3. **An OIDC provider in IAM, and roles that trust it.** Each role accepts a token only for one named
-   ServiceAccount in one named namespace.
-4. **A pod that asks for such a token.** The pod mounts a token meant for AWS (`audience:
-   sts.amazonaws.com`), and four environment variables tell the AWS SDK to exchange it for the role.
+   ServiceAccount in one named namespace ([concepts §8](0-concepts.md#8-the-iam-oidc-provider-and-trust-policies)).
+4. **A pod that uses such a token.** The pod mounts a token meant for AWS ([concepts §7](0-concepts.md#7-projected-tokens-and-audiences)). Four `AWS_*` environment
+   variables tell the AWS SDK to exchange it for the role ([concepts §3](0-concepts.md#3-how-the-aws-sdk-finds-credentials)).
 
-EKS adds a webhook that injects piece 4 into every pod. This project does not. Only our own chart needs
-it, and the chart can write the same volume and variables itself. The webhook would add a component that can
-block the creation of every pod in the cluster when it is down.
+**What Part 1 does, and what comes later.** Part 1 builds these four pieces and proves them with a test
+pod. The app's permanent NetworkPolicy, which closes IMDS for real, comes with the chart in Part 3. That is
+safe only because Part 1 gave the pod its own role first.
+
+**No webhook.** On EKS, a webhook adds piece 4 to every pod. Upstream configures it to be skipped when it
+is down: the pod then starts without the token, and quietly falls back to the node role. Only our own
+chart needs piece 4, so the chart writes it itself ([concepts §10](0-concepts.md#10-irsa-and-what-this-project-does-differently)).
+
+**How the nine steps build it:**
+
+| Step | Builds | Read first |
+|---|---|---|
+| 1 | Nothing yet: checks that the public bucket can exist | [the big picture](0-concepts.md#the-big-picture), [concepts §1](0-concepts.md#1-iam-roles-and-temporary-credentials), [concepts §2](0-concepts.md#2-imds-and-the-hop-limit), [concepts §10](0-concepts.md#10-irsa-and-what-this-project-does-differently) |
+| 2 | Piece 1: the stable key, stored in Secrets Manager | [concepts §4](0-concepts.md#4-serviceaccounts-and-their-tokens), [concepts §5](0-concepts.md#5-the-signing-key-pair) |
+| 3 | Piece 2: the issuer's address, an S3 bucket | [concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc) |
+| 4 | Pieces 1 and 2 inside the cluster: tokens carry the new issuer and the stable key | [concepts §7](0-concepts.md#7-projected-tokens-and-audiences) |
+| 5 | Piece 2: the two issuer documents AWS reads | [concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc) |
+| 6 | Piece 3: the OIDC provider and the three pod roles | [concepts §8](0-concepts.md#8-the-iam-oidc-provider-and-trust-policies), [concepts §9](0-concepts.md#9-sts-assumerolewithwebidentity-the-exchange), [concepts §12](0-concepts.md#12-scoping-s3-permissions) |
+| 7 | Piece 4, by hand: a test pod proves the whole chain | [concepts §3](0-concepts.md#3-how-the-aws-sdk-finds-credentials), [concepts §11](0-concepts.md#11-networkpolicy-egress) |
+| 8 | One app secret per environment | [concepts §13](0-concepts.md#13-secrets-manager-and-external-secrets) |
+| 9 | The node role loses the artifacts bucket | [concepts §12](0-concepts.md#12-scoping-s3-permissions) | [concepts §12](0-concepts.md#12-scoping-s3-permissions) |
 
 **Assumption until step 7.** Nothing in this part is proven until the pod in step 7 prints the right role
 ARN. Parts 3 and 4 are written only after that.
@@ -47,7 +77,16 @@ ARN. Parts 3 and 4 are written only after that.
 
 ## Step 1 — Read-only checks before anything is created
 
-**Goal:** know that the public bucket can exist before any code depends on it.
+**Problem now.** Part 1 needs an S3 bucket that anyone on the internet can read ([concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc)). Two things outside this repository could make that impossible. S3 Block Public Access, a switch for the whole account, can forbid public bucket policies (a bucket policy is the JSON rule saying who may read a bucket). And the bucket's name could already be taken, because S3 names are global. If we skip this check, we only find out when `terraform apply` fails in step 3.
+
+**Why it matters.** If public policies are blocked for the account, the design has to change: the issuer would have to sit behind CloudFront, AWS's content delivery network. That is much cheaper to learn before anything depends on the bucket.
+
+**This step.** Three read-only AWS calls. Nothing is created.
+
+**After this step.**
+- Works: you know the bucket can be created. Nothing new exists yet.
+- Proven by: `NoSuchPublicAccessBlockConfiguration` (or both flags `false`), `404` for the bucket name, and no `medical-rag-oidc` OIDC provider.
+- Still missing: everything. The signing key comes first → step 2.
 
 Nothing is written in this step. On the workstation:
 ```bash
@@ -81,8 +120,16 @@ Expected: `"OpenIDConnectProviderList": []`, or a list without any `medical-rag-
 
 ## Step 2 — The signing key
 
-**Goal:** one RSA key pair that every rebuild of the cluster uses. The private key is in Secrets Manager
-and nowhere else.
+**Problem now.** The API server signs every ServiceAccount token ([concepts §4](0-concepts.md#4-serviceaccounts-and-their-tokens)) with a private key ([concepts §5](0-concepts.md#5-the-signing-key-pair)). kubeadm makes that key during `kubeadm init`, so every rebuild of the cluster makes a new one. AWS will check tokens against a public key that we publish once ([concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc)). After the next rebuild, tokens would be signed with a key AWS has never seen, and every role would refuse them.
+
+**Why it matters.** With one key that never changes, the public key is published once and stays valid. That private key is also the most sensitive thing in this part: whoever holds it can write a token for any ServiceAccount, and so assume every role that trusts the cluster. It needs a home that only the workstation can read.
+
+**This step.** Create an empty secret `medical-rag/sa-signer` with Terraform. Generate an RSA key pair in memory, store the private key in the secret, and check that it reads back.
+
+**After this step.**
+- Works: the key is stored, and the node role is not allowed to read it.
+- Proven by: the round-trip prints `MATCH`, and `grep -n sa-signer infra/terraform/cluster/main.tf` prints nothing.
+- Still missing: the running cluster still signs with kubeadm's own key (step 4), and there is no public place for the public key yet → step 3.
 
 | File | Change |
 |---|---|
@@ -177,7 +224,16 @@ Expected: no output.
 
 ## Step 3 — The issuer bucket
 
-**Goal:** a bucket whose URL becomes the issuer, able to serve exactly two public files.
+**Problem now.** AWS checks a token like this: it reads the issuer address written in the token, then downloads two small files from that address ([concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc)). It does not log in to do this, so the address must be public on the internet. Today the issuer is `https://kubernetes.default.svc.cluster.local`, an address that exists only inside the cluster. AWS could never reach it.
+
+**Why it matters.** The issuer address is permanent. It is written into every token, into an API server setting, and into every role's trust policy. So it needs a public HTTPS address that never disappears and that nobody else can take over ([concepts §5](0-concepts.md#5-the-signing-key-pair)).
+
+**This step.** Create an S3 bucket whose web address becomes the issuer. Its policy lets anyone read exactly two files. It lives in the shared stack (`infra/terraform/shared`, which `make down` never destroys), and Terraform refuses to delete it.
+
+**After this step.**
+- Works: the address exists, and the bucket policy is public.
+- Proven by: `"IsPublic": true`, and the address answers `403`. S3 answers `403`, not `404`, for a missing file when the caller may not list the bucket.
+- Still missing: the two issuer documents (step 5), and the API server still writes the old issuer into its tokens → step 4.
 
 | File | Change |
 |---|---|
@@ -324,8 +380,27 @@ curl -s -o /dev/null -w '%{http_code}\n' "$ISSUER/.well-known/openid-configurati
 
 ## Step 4 — Build the cluster with the stable key and the public issuer
 
-**Goal:** the API server signs tokens with the key from step 2, names the bucket as their issuer, and
-advertises the key set's public URL.
+**Problem now.** The key and the bucket exist, but the running API server knows neither. It signs with the key kubeadm made. It writes `iss: https://kubernetes.default.svc.cluster.local` into every token. And it tells callers to fetch the public keys from an address that exists only inside the cluster.
+
+**Why it matters.** For AWS to trust a token, the token's `iss` must be the bucket's address, and its signature must come from the stable key ([concepts §5](0-concepts.md#5-the-signing-key-pair), [concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc)). This project sets both only at `kubeadm init`, and a guard refuses to swap the key under a running API server. So the change is a rebuild.
+
+**This step.** Ansible copies the stored key to node 1 before `kubeadm init`. It also adds four API server settings:
+
+- the bucket's address becomes the issuer written into new tokens (it is listed first);
+- the old in-cluster issuer is still accepted, so a token that names it stays valid;
+- the address of the key set points to the bucket;
+- the list of audiences the API server accepts is written out in full ([concepts §7](0-concepts.md#7-projected-tokens-and-audiences)).
+
+A guard stops `make cluster` if the running cluster uses a different key. Then the cluster is rebuilt.
+
+**After this step.**
+- Works: new tokens carry the S3 issuer and are signed with the stable key.
+- Proven by:
+  - the discovery document's `issuer` is the S3 address;
+  - `sa.pub` has the same hash on all three nodes, equal to step 2's;
+  - every Application is `Synced` and `Healthy`;
+  - a second `make cluster` prints `All assertions passed` for the guard and `changed=0` for every node.
+- Still missing: the bucket is still empty, so AWS cannot check a signature yet → step 5.
 
 > **This step rebuilds the cluster.** The issuer and the key are chosen when `kubeadm init` runs, and
 > `kubeadm init` runs only on a new cluster. If the cluster is running, take it down first:
@@ -538,8 +613,16 @@ kubectl -n argocd wait applications.argoproj.io/root \
 
 ## Step 5 — Publish the issuer documents
 
-**Goal:** AWS can fetch the discovery document and the key set from the issuer URL, and they are exactly
-what the API server serves.
+**Problem now.** Tokens now name the bucket as their issuer, but the bucket is empty. AWS would ask it for the discovery document, get `403`, and reject every token.
+
+**Why it matters.** The two issuer documents are what lets a stranger check a token ([concepts §6](0-concepts.md#6-issuer-discovery-document-and-jwks-oidc)). They must be exactly what the API server serves. A copy made with the wrong key would make AWS reject every token, or trust the wrong key.
+
+**This step.** A script copies the two issuer documents from the API server into the bucket. It refuses to overwrite a document that differs. `make oidc-check` compares them again after every rebuild.
+
+**After this step.**
+- Works: anyone, AWS included, can download the key set.
+- Proven by: two `published` lines; then `make oidc-check` prints two `same` lines, and the public address returns the issuer.
+- Still missing: IAM does not trust this issuer yet, and no role exists → step 6.
 
 | File | Change |
 |---|---|
@@ -670,7 +753,16 @@ make oidc-publish
 
 ## Step 6 — The OIDC provider and three roles
 
-**Goal:** IAM trusts the issuer. Three roles each accept a token only from their own ServiceAccount.
+**Problem now.** AWS can now check a token's signature, but checking is not trusting. IAM accepts these tokens only from an issuer registered as an OIDC provider, and only for a role whose trust policy names that provider ([concepts §8](0-concepts.md#8-the-iam-oidc-provider-and-trust-policies)). Neither exists yet.
+
+**Why it matters.** The trust policy decides which pod may use which role. A token for the ServiceAccount `medical-rag` in `medical-rag-dev` gets `medical-rag-app-dev` and nothing else. The app pods that answer users may only read. Only the Job that builds the index (Part 3) may write ([concepts §12](0-concepts.md#12-scoping-s3-permissions)).
+
+**This step.** Terraform registers the OIDC provider for the issuer, with the audience `sts.amazonaws.com`. It creates the three pod roles (two app roles, one index-builder role), each with `aud` and `sub` conditions in its trust policy and a narrow permissions policy.
+
+**After this step.**
+- Works: a pod with the right token can, in principle, exchange it for its role ([concepts §9](0-concepts.md#9-sts-assumerolewithwebidentity-the-exchange)).
+- Proven by: the provider's ARN is listed, and the trust policy of `medical-rag-app-dev` shows both conditions.
+- Still missing: nothing has tried the exchange from a real pod → step 7.
 
 **The cluster from step 4 stays up until step 9 is done**: steps 6, 7 and 9 use kubectl, and steps 8 and 9
 change the running cluster stack. If it was taken down in between, rebuild first (`make infra`,
@@ -851,9 +943,21 @@ aws iam get-role \
 
 ## Step 7 — Prove it with a pod
 
-**Goal:** show, on the real cluster, that the whole chain works and that each boundary holds. Parts 3 and
-4 are built on this, so they are not written until every check here passes. Steps 8 and 9 go on only
-after it passes too.
+**Problem now.** Steps 2–6 built every piece, but each was checked on its own. Nothing has yet run the whole chain from a real pod. The dangerous failure is silent. If the pod's `AWS_*` variables are missing or misspelt, the SDK quietly falls back to the node role through IMDS ([concepts §3](0-concepts.md#3-how-the-aws-sdk-finds-credentials)). The pod still reads S3 and everything looks fine, except that the ARN says `medical-rag-nodes`.
+
+**Why it matters.** Parts 3 and 4 put every app pod on this chain. A silent fallback would leave the internet-facing pod with the node's permissions: the exact risk Part 1 prepares to remove ([concepts §2](0-concepts.md#2-imds-and-the-hop-limit), [concepts §11](0-concepts.md#11-networkpolicy-egress)).
+
+**This step.** Two throwaway pods, one with the right ServiceAccount and one with a wrong one, and one NetworkPolicy. Then six checks. Nothing is committed. Parts 3 and 4 are written only after every check here passes.
+
+**After this step.**
+- Works: the pod gets the app role, can list `faiss/`, cannot list `corpus/`, cannot write, and another ServiceAccount is refused.
+- Proven by:
+  - 7.1 prints the `medical-rag-app-dev` ARN;
+  - 7.2 lists `faiss/` without an error;
+  - 7.3 and 7.4 print `AccessDenied`, naming that role;
+  - 7.5 is refused (`AccessDenied` on `AssumeRoleWithWebIdentity`);
+  - 7.6: with the NetworkPolicy, IMDS times out (`exit=124`, the exit code of `timeout`) while the S3 listing of 7.2 still works.
+- Still missing: per-environment secrets (step 8), and the node role can still use the artifacts bucket → step 9.
 
 Nothing is committed in this step. Everything is created with kubectl and deleted at the end.
 
@@ -870,7 +974,8 @@ kubectl -n medical-rag-dev create serviceaccount other
 ```
 
 Write two pods into a file and apply it. The first runs as `medical-rag`, the second as `other`. Both
-carry exactly what the chart will add later: a token for AWS, and three variables pointing the SDK at it.
+carry exactly what the chart will add later: a token for AWS, and four `AWS_*` variables pointing the SDK
+at it (plus `HOME`, so the CLI has a writable cache).
 ```bash
 cat > /tmp/irsa-proof.yaml <<EOF
 apiVersion: v1
@@ -1069,8 +1174,16 @@ lines. That proves a new cluster signs with the same key, so nothing has to be p
 
 ## Step 8 — One secret per environment for the app
 
-**Goal:** dev and prod read their API keys and their Flask session key from separate secrets, so either
-can be replaced without touching the other.
+**Problem now.** The app's keys (Gemini, Hugging Face, and the Flask session key) sit in one secret, `medical-rag/llm`. Dev and prod would share them. Replacing a key for one environment would replace it for both, and a session cookie signed in dev would be accepted by prod.
+
+**Why it matters.** Each environment should be replaceable on its own. Note that this step gives the node role *more* access, not less. That is fine: only External Secrets uses it to copy the values into the cluster ([concepts §13](0-concepts.md#13-secrets-manager-and-external-secrets)), and the app pods never see Secrets Manager.
+
+**This step.** Two new secrets, `medical-rag/app-dev` and `medical-rag/app-prod`, in the shared stack. The node role may read them. Both start with the values of `medical-rag/llm`, and you replace them per environment later.
+
+**After this step.**
+- Works: each environment has its own secret.
+- Proven by: each secret lists the same three key names.
+- Still missing: both still hold the same values until you replace them. The node role can still read and write the artifacts bucket → step 9.
 
 | File | Change |
 |---|---|
@@ -1156,8 +1269,16 @@ three key names, twice. New baselines: 34 managed resources in `shared`, 88 in `
 
 ## Step 9 — Take the artifacts bucket away from the node role
 
-**Goal:** the payoff. The only pods that can read the index are the ones with a role for it, and no pod
-on the node can write to the bucket through IMDS.
+**Problem now.** The three pod roles give the app's pods new rights, but take nothing away from the node role. Any pod on a node can still read, overwrite and delete the index through IMDS. That includes the chatbot, until Part 3 adds its permanent NetworkPolicy ([concepts §2](0-concepts.md#2-imds-and-the-hop-limit)).
+
+**Why it matters.** Once the node role loses the bucket, only pods with a role for it can touch the index, and only the index-builder role can write. Until then, a compromised pod can still read, overwrite and delete the index. The node role keeps its other permissions ([concepts §1](0-concepts.md#1-iam-roles-and-temporary-credentials)); those belong to the platform components.
+
+**This step.** Remove the artifacts bucket from the node role's policy, and drop the `data` block that looked the bucket up, which nothing uses any more.
+
+**After this step.**
+- Works: the node role now reaches only the etcd-snapshot bucket and the Ansible transfer bucket.
+- Proven by: a pod without a role of its own gets `AccessDenied` naming `medical-rag-nodes`, while the app role still lists `faiss/`.
+- Still missing: nothing more in Part 1. The app has no image and no corpus in S3 → Part 2, step 10.
 
 | File | Change |
 |---|---|

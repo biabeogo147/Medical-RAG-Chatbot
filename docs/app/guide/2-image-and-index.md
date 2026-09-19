@@ -1,6 +1,6 @@
 # App guide — Part 2: The image, the corpus and the index version (steps 10–13)
 
-[← Part 1](1-pod-identity.md) · [Index](../guide.md) · [Troubleshooting](troubleshooting.md)
+[← Part 1](1-pod-identity.md) · [Index](../guide.md) · [Concepts](0-concepts.md) · [Troubleshooting](troubleshooting.md)
 
 **Before you start:** Part 1 is done, including step 7. This part does not need the cluster: it runs on
 the workstation, against ECR and S3.
@@ -16,7 +16,8 @@ the workstation, against ECR and S3.
 ---
 
 The chart in Part 3 runs the index build as a Kubernetes Job and pins the index version in its values
-file. Three things are missing for that today:
+file. The version is a hash of the corpus and the settings ([concepts §15](0-concepts.md#15-the-index-version)), and images are pinned by tag and digest
+([concepts §14](0-concepts.md#14-image-tags-and-digests)). Three things are missing for that today:
 
 1. **The Job has no way to get the PDF.** The image deliberately leaves `data/` out, and
    `python -m app.index build` reads only a local folder.
@@ -32,12 +33,20 @@ image, a version, and the corpus in S3.
 
 ## Step 10 — The index CLI: corpus from S3, a `version` command, a pinned build
 
-**Goal:**
+**Problem now.** The code has three gaps:
 
-- `python -m app.index version` prints the version and nothing else.
-- `build` can read the corpus from `<CORPUS_STORE>/corpus/`.
-- `build` fails before embedding if the version is not the one expected.
-- The cluster never moves `LATEST` and never reads it.
+- **No PDF for the Job.** The build reads PDFs only from a local folder, and the image leaves `data/` out. A Kubernetes Job would find nothing to build.
+- **Nothing ties the pinned version to the build** ([concepts §15](0-concepts.md#15-the-index-version)). A Job could build one version while the pods look for another, and that would only show when the pods fail to find their index.
+- **`faiss/LATEST` moves on every build**, even one that skips. Dev and prod would keep moving a pointer they share.
+
+**Why it matters.** The chart will pin one index version. The build must produce exactly that version, stop at once when it cannot (before spending Hugging Face quota on embedding calls), and never touch the shared pointer.
+
+**This step.** We change the index code and add four tests. A new command, `python -m app.index version`, prints the version and nothing else. The build can read the PDF from S3 (`<CORPUS_STORE>/corpus/`). Before it calls the embedding API, it stops if the version is not the pinned one. In the cluster it never moves `faiss/LATEST`. On a laptop everything works as before.
+
+**After this step.**
+- Works: the code is in Git.
+- Proven by: the test stage prints `All checks passed!` and `26 passed`.
+- Still missing: no image contains this code → step 11.
 
 | File | Change |
 |---|---|
@@ -311,7 +320,16 @@ and push again. Do not go on to step 11 with a red test stage.
 
 ## Step 11 — `make image`: build, test and push one immutable image
 
-**Goal:** the first image in ECR, built from a commit that is on GitHub, and never overwritten.
+**Problem now.** The ECR repository (AWS's image registry, [concepts §14](0-concepts.md#14-image-tags-and-digests)) is empty, and nothing builds images for it: the old `Jenkinsfile` pushes to Docker Hub. Tags in the ECR repository are immutable. An image pushed from uncommitted code would keep its tag until someone deletes it, and that tag could never be reused for the right image.
+
+**Why it matters.** The chart will pin a tag and a digest. The tag must name a commit anyone can check out, and the image must have passed its tests.
+
+**This step.** `make image`. It refuses a working tree with uncommitted changes, a commit that is not pushed, or a tag that already exists. It runs the tests, builds, pushes, and prints the digest.
+
+**After this step.**
+- Works: one image, tagged with its commit.
+- Proven by: a tag and digest line; ECR's vulnerability scan reports `COMPLETE`; a second `make image` refuses because the tag exists.
+- Still missing: the index version has been measured only locally, not by this image → step 12.
 
 | File | Change |
 |---|---|
@@ -406,7 +424,16 @@ make image
 
 ## Step 12 — The index version, computed by that image
 
-**Goal:** the version the chart will pin, computed by the exact code that will build it.
+**Problem now.** The version to pin ([concepts §15](0-concepts.md#15-the-index-version)) was computed earlier by a local build: `cc759ae1a093`. The chart must pin the value that *this image's* code computes. If the code or a default changed since, it would be different.
+
+**Why it matters.** The build Job, running this image, checks the corpus against the pinned version and refuses a mismatch (step 10). A wrong pin stops every build.
+
+**This step.** Run the `version` command inside the image, against `data/`. Nothing is committed.
+
+**After this step.**
+- Works: the value to pin is known.
+- Proven by: `cc759ae1a093`.
+- Still missing: the PDF exists only in Git, and the Job reads it from S3 → step 13.
 
 Nothing is committed. On the workstation, with the tag **recorded in step 11**, not the current `HEAD`.
 An evidence commit since then has moved `HEAD` to a commit that has no image:
@@ -436,8 +463,16 @@ going on: that value would be pinned in both environments.
 
 ## Step 13 — The corpus in S3
 
-**Goal:** the PDF at `corpus/` in the artifacts bucket, where the build Job reads it, byte for byte the
-file in Git.
+**Problem now.** The build Job reads the corpus from `s3://<artifacts>/corpus/` (step 10), and there is nothing there.
+
+**Why it matters.** The Job must hash exactly the bytes Git holds, under the same file name, because the name is part of the version ([concepts §15](0-concepts.md#15-the-index-version)). The bucket keeps its content across rebuilds, and an overwritten object can be recovered for only 30 days, so the upload must never replace anything.
+
+**This step.** Upload the PDF once, with a condition that refuses to overwrite, and a SHA-256 checksum stored with the object.
+
+**After this step.**
+- Works: the corpus is in S3, where the Job reads it.
+- Proven by: S3's checksum equals the file's.
+- Still missing: nothing deploys the app yet: no DNS name, no chart → Part 3, written after step 7 passes.
 
 > **Shared state.** The artifacts bucket keeps its content across rebuilds, and an overwritten object
 > can be recovered for only 30 days (noncurrent versions expire). So the upload refuses to replace
@@ -492,9 +527,8 @@ Part 1 gave the app's pods their own roles, and this part produced the three inp
 | Index version | `cc759ae1a093` (or what step 12 printed) | `index.version` in the values files |
 | Corpus | `s3://medical-rag-artifacts-<account>/corpus/` | the build Job's `CORPUS_STORE=s3://medical-rag-artifacts-<account>` (the code adds `corpus/`) |
 
-Parts 3 and 4 (the chart, dev, prod, measurements) are written once step 7 has passed on the cluster.
-Their plan is in the [roadmap](../guide.md#roadmap).
+Next: [Part 3](3-dev.md) puts the chart on the cluster, in dev.
 
 ---
 
-[← Part 1](1-pod-identity.md) · [Index](../guide.md) · [Troubleshooting](troubleshooting.md)
+[← Part 1](1-pod-identity.md) · [Index](../guide.md) · [Next: Part 3 →](3-dev.md) · [Troubleshooting](troubleshooting.md)

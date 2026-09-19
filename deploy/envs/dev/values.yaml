@@ -6,4 +6,4 @@ image:
   tag: "1eaa43bf3512@sha256:c10cd57eb4b22d025f2daf772743e7a79f3285233921ef4236e532a75e166769"   # app guide step 11
 
 index:
-  version: 000000000000                  # app guide step 12
+  version: "cc759ae1a093"                  # app guide step 12

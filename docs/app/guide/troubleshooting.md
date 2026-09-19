@@ -1,6 +1,6 @@
 # App guide — Troubleshooting
 
-[Index](../guide.md) · [Part 1](1-pod-identity.md) · [Part 2](2-image-and-index.md)
+[Index](../guide.md) · [Concepts](0-concepts.md) · [Part 1](1-pod-identity.md) · [Part 2](2-image-and-index.md) · [Part 3](3-dev.md) · [Part 4](4-prod-and-measure.md)
 
 Find the symptom, read the cause, fix that, then repeat the step's check. When nothing here matches,
 stop and collect the exact output before changing anything.
@@ -52,6 +52,40 @@ stop and collect the exact output before changing anything.
 | Step 13: `head-object` returns `200` | The corpus is already uploaded. Skip the upload and run the check. If the checksum differs, stop: the object in S3 is not the file in Git |
 | Step 13: `Unknown options: --if-none-match` | The AWS CLI on the workstation is too old for conditional writes. Update it with the same installer as `workstation-init.sh`, then run again |
 | Step 13: `PreconditionFailed` | The object appeared between the check and the upload. Run the check |
+
+
+## Parts 3 and 4: the chart, dev and prod
+
+| Symptom | Cause and fix |
+|---|---|
+| Step 14: `getent` returns nothing for `dev.recruitai.io.vn` | The name was looked up before the record existed, and the answer "no such name" is cached. Wait a few minutes; `getent ahostsv4 dev.recruitai.io.vn` from another machine, or `dig @8.8.8.8 dev.recruitai.io.vn` if `dig` exists, shows the record |
+| Step 15: the gate shows an Application whose last sync is not `Succeeded` | Look at it first: `kubectl -n argocd get applications.argoproj.io <name> -o jsonpath='{.status.operationState.message}'`. The new rule ignores unlabelled Applications, but a failed platform sync deserves a look before anything else changes |
+| Step 15: `yq` prints `0` | The `if` block is not inside the Lua string. It must be indented exactly like the lines around it (six spaces) |
+| Branch check: `helm lint` or `helm template` fails with `… is required` | A required value is missing: `aws.accountId`, `image.tag`, `index.version`, `environment` or `ingress.host`. Pass both values files, `common.yaml` first |
+| Branch check: `field is immutable` for `job.batch/index-build` | The Job was not filtered out. In a namespace where the Job already ran, keep the `yq 'select(.kind != null and .kind != "Job")'` line of the check: a dry run cannot change a finished Job, and Argo CD recreates it on every sync anyway |
+| Branch check: `Warning: would violate PodSecurity "restricted:latest"` | A pod or container lost a security setting. Compare with `medical-rag.podSecurity` and `medical-rag.containerSecurity` in `_helpers.tpl`. The pods would be refused by `enforce` |
+| Step 16: `medical-rag-dev` does not appear | `root` has not read the new file yet: refresh `root` (step 16). `kubectl -n argocd get applications.argoproj.io root -o jsonpath='{.status.sync.status}'` should turn `Synced` |
+| Step 16: the Job never starts; the ExternalSecret is not `Ready` | `kubectl -n medical-rag-dev describe externalsecrets.external-secrets.io app-secrets`. `AccessDenied`: the node role cannot read `medical-rag/app-dev` (Part 1 step 8, `make infra`). `ResourceNotFound` or no current version: the secret has no value |
+| Step 16: the Job fails with `AccessDenied` on `AssumeRoleWithWebIdentity` | The ServiceAccount is not exactly `medical-rag-index-builder`, or the namespace is not `medical-rag-dev`: the builder role's trust policy names both (Part 1 step 6) |
+| Step 16: the Job fails with `… but cc759ae1a093 was expected` | The corpus in S3 does not hash to the pinned version: compare its checksum with step 13, and the chunk settings in the image with step 12 |
+| Step 16: the Job fails on Hugging Face (`429`, `503`) | The quota or the service. The Job has no second attempt on purpose. Wait, then start one sync by hand with the `kubectl patch` of step 17 point 3 (or **Sync** in the Argo CD UI). A new commit does not help unless it changes the rendered objects |
+| After a fix, `root` stays `Degraded` and the app's last sync stays `Failed` | The fix made the rendered objects equal the live ones, so the app is `Synced` and automated sync does not run. Start one sync by hand (step 17 point 3) |
+| `kubectl wait … --for=condition=…` fails at once with `NotFound` | The object does not exist yet: Argo CD creates it later in the sync. Run the `--for=create` line first, as the steps do |
+| Step 16: the Job is `OOMKilled` | `kubectl -n medical-rag-dev describe pod -l job-name=index-build` shows it. Raise `indexBuild.resources.limits.memory` in the chart's `values.yaml` |
+| Step 17: the pod stays in `Init:Error` or `Init:CrashLoopBackOff` | `kubectl -n medical-rag-dev logs deployment/medical-rag -c index-pull`. `AccessDenied` on `AssumeRoleWithWebIdentity`: the ServiceAccount is not `medical-rag`. `… not found`: the version is not in S3 |
+| Step 17: the pod is `Running` but never `Ready` | `kubectl -n medical-rag-dev logs deployment/medical-rag -c app`: the chain build is retried with its last error. A missing key in `app-secrets` or an unreachable model API shows here |
+| Step 17: `CreateContainerConfigError` | The Secret `app-secrets` does not exist yet, or lacks a key. See the ExternalSecret row above |
+| Step 17: the IMDS check connects instead of timing out | The NetworkPolicy `default` is missing or does not select the pod: `kubectl -n medical-rag-dev get networkpolicies`. Calico must be running: `kubectl get pods -n calico-system` |
+| Step 17, failure test: `root` stays `Healthy` | The Application lacks the label `medical-rag/report-failed-sync`, or step 15's rule is not in `argocd-cm` (step 15 check). Revert the test commit first |
+| Step 18: `curl` on `/` returns `404` | The Ingress did not match: `kubectl -n medical-rag-dev get ingress medical-rag` must show the host. `Exact` paths do not match `/?x=1` style variations in some clients; use the plain URL |
+| Step 18: `curl` on `/` returns `502` or `504` | nginx cannot reach the pod: the policy `allow-from-ingress-nginx` must exist, and the controller pods must carry `app.kubernetes.io/name: ingress-nginx` (`kubectl -n ingress-nginx get pods --show-labels`) |
+| Step 18: a question returns `503` | The chain is not ready yet: wait for `Ready` |
+| Step 18: `429` | The rate limit (`ingress.limitRpm`) was hit. Wait a minute |
+| Step 19: `promq` prints nothing | Prometheus has not picked up the ServiceMonitor yet (up to two minutes), or cannot reach the pod: the policy `allow-from-prometheus` must exist, and `kubectl -n monitoring get pods --show-labels` must show `app.kubernetes.io/name=prometheus` |
+| Step 19: `promq` fails with `services "kube-prometheus-stack-prometheus" not found` | The Service has another name: `kubectl -n monitoring get svc`, and use that name in `promq` |
+| Step 20: one prod pod stays `Pending` | `kubectl -n medical-rag-prod describe pod <name>`: `didn't match pod topology spread constraints` means only one node has room. Check the CPU requests with `kubectl describe nodes \| grep -A8 "Allocated resources"` |
+| Step 20: the prod Job embeds again | dev and prod pin different versions, or dev never built this one. Compare `index.version` in both values files |
+| Step 21: `promq` returns nothing for `container="app"` | The kubelet's cAdvisor metrics are scraped under the job `kubelet`: `promq 'count(container_memory_working_set_bytes{namespace="medical-rag-dev"})'` must be above zero |
 
 ---
 

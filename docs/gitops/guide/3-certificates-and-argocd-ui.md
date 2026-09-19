@@ -626,6 +626,11 @@ applicationSet:
       memory: 128Mi
 ```
 
+> **Extended later.** App guide step 15 adds one rule to this check: a child Application labelled
+> `medical-rag/report-failed-sync: "true"` reports a failed last sync as `Degraded`, so a failed index
+> build shows on `root`. The repository's `values/argocd.yaml` carries that version; this page shows the
+> check as it was built in this phase.
+
 **Why:**
 
 - **This changes Argo CD through Git.** Argo CD manages itself since [step 3](1-argocd.md#step-3--the-root-application-and-argo-cd-managing-itself), so pushing this file is
