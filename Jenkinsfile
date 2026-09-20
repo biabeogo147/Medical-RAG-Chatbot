@@ -232,5 +232,27 @@ spec:
       }
     }
 
+    stage('SBOM and signature') {
+      when { branch 'main' }
+      steps {
+        container('trivy') {
+          sh "trivy image --format spdx-json --output sbom.spdx.json ${IMAGE}@${env.IMAGE_DIGEST}"
+        }
+        container('tools') {
+          // The key never leaves KMS; the pipeline may only ask it to sign (Jenkins guide step 3).
+          // The public Rekor log is not used: these images are private, and verification uses the key.
+          sh """
+            cosign sign --yes --tlog-upload=false \
+              --key awskms:///alias/medical-rag-cosign ${IMAGE}@${env.IMAGE_DIGEST}
+            cosign attest --yes --tlog-upload=false --type spdxjson --predicate sbom.spdx.json \
+              --key awskms:///alias/medical-rag-cosign ${IMAGE}@${env.IMAGE_DIGEST}
+          """
+        }
+      }
+      post {
+        always { archiveArtifacts artifacts: 'sbom.spdx.json', fingerprint: true }
+      }
+    }
+
   }
 }
