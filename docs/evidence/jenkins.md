@@ -387,7 +387,7 @@ writable cache"* — while the Jenkins guide copied four of the five variables a
 four variables the app's pods use". Fixed in the `Jenkinsfile`; the guide's step 9 still carries the
 four-variable block.
 
-## Step 10 — Partial
+## Step 10 — Only build what should be built, and test it first
 
 | Check | Result |
 |---|---|
@@ -400,13 +400,320 @@ four-variable block.
 exists despite `agent.enabled: false`** — the guide asserted this and it had never been read; `agent.enabled`
 suppresses the default pod template, not the cloud.
 
-**Still owed:** a build that passes the skip guard and runs both stages — two `[Pipeline] stage` lines, BuildKit's
-`DONE` lines and `26 passed` — and the three `promq` readings of what the build pod asked for.
+**Build #11 closed the step.** The commit touched `Makefile` only, which is outside `deploy/`, `docs/` and
+`*.md`, so the skip guard let it through without a contrived change to the `Jenkinsfile`.
+
+| Check | Result |
+|---|---|
+| `[Pipeline] stage` lines | **three**, not the two the guide predicts: `Declarative: Checkout SCM`, `Skip guard`, `Test` |
+| ruff | `All checks passed!` |
+| pytest | `26 passed, 1 warning in 1.57s` |
+| `Test` stage duration | 20:00:25 → 20:00:57, about 32 s, with no layer cache |
+| Result | `Finished: SUCCESS` |
+| Build pod's CPU requests, read from Prometheus after the pod was deleted | `buildkit` **0.3**, `jnlp` **0.1**, pod total **0.4** — identical across builds 7 to 12, because requests do not vary with what a build does |
+| Step 9's pod, for comparison | `tools` **0.05**, `jnlp` **0.1**, total **0.15** |
+
+The metric is in cores: 0.4 is 400m. Step 1.2 predicted this exactly — *"one build pod for at least 400m"* —
+and the pod landed on `medical-rag-node-2`, which had 775m free. The `jnlp` container the plugin adds does
+carry requests of its own, 100m, which step 10's Why left open.
+
+**The `Test` stage prints an `ERROR` and is still correct.**
+
+```
+#6 importing cache manifest from 242834061265.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag:buildcache
+#6 ERROR: failed to configure registry cache importer: unexpected status from HEAD request to
+   https://242834061265.dkr.ecr.ap-southeast-1.amazonaws.com/v2/medical-rag/manifests/buildcache: 401 Unauthorized
+```
+
+`--import-cache type=registry,…` needs a registry login, and this stage deliberately has none — that is the
+step's own security argument. So the flag cannot work where it is written, in this build or any other: the
+`Log in to ECR` stage comes after `Test`. BuildKit treats a failed cache import as non-fatal and builds from
+scratch, which is why the step passes. Two things follow: the cache line is dead as placed, and the guide's
+expected output does not mention the `ERROR`, so a reader following it exactly would stop here.
 
 **One thing the guide does not warn about.** Between `[Pipeline] node` and the pod being ready, Jenkins prints
 `Still waiting to schedule task` and `Waiting for next available executor`. Here that gap was 19 seconds, spent
 pulling 348 MB of images, and it was read as a failure. It is ordinary queue output; the plugin waits
 `waitForPodSec: 600` before giving up.
+
+## Step 11 — The tools image, and the app image
+
+Run on `main` rather than the temporary branch the step asks for, so `BRANCH_NAME = main` and the build both
+imported and **exported** the cache on its first run.
+
+| Check | Result |
+|---|---|
+| Alpine base, pinned by index digest | `alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8` |
+| Tools image | `medical-rag-ci:2ed703f3a494@sha256:106f85c5a76dcd1847e1c8e20ece5933f7b733cabbe4e9d93f64b2f431e6b38f` |
+| `Log in to ECR` identity | `arn:aws:sts::242834061265:assumed-role/medical-rag-ci/botocore-session-1789910509` |
+| App image, from the log | `medical-rag:9022e3828864@sha256:9e67e4d1a1ffdcc7953caa2d3d1932f07494385aab498a6e3e500eabddd29a2b` |
+| The same image, from `aws ecr describe-images` | `sha256:9e67e4d1a1ffdcc7953caa2d3d1932f07494385aab498a6e3e500eabddd29a2b`, pushed `2026-09-20T13:22:18Z` — **identical** |
+| `Test` stage | 20:21:15 → 20:21:47, about 32 s, `All checks passed!` and `26 passed` |
+| `Build and push` stage | 20:21:50 → 20:22:34, about 44 s, with the cache empty |
+| Cache on this run | import failed with `…/medical-rag:buildcache: not found`, then `writing cache image manifest sha256:34aa4d37977b44fa2bab80855a88550d2e2ba32dadce1b075c76eee5d7247472` — the first build is the one that creates it |
+| Pod | three containers now: `buildkit` 300m, `tools` 50m, `jnlp` 100m — **450m**, up from 400m |
+
+**What this proves.** The digest in the log and the digest in ECR are the same string, which is the check that
+matters: step 14 signs a digest, and a tag could be overwritten between the push and the signature. The tools
+image pulled without a node-role change beyond the one added for defect 13, and the CI role reached STS from
+inside the `tools` container.
+
+**The ECR token was printed into the build log in full.**
+
+```
++ PASS='eyJwYXlsb2FkIjoi…'
++ AUTH='QVdTOmV5SndZWGxzYjJGa0lqb2l…'
+```
+
+Jenkins runs every `sh` step as `/bin/sh -xe`, so each command is echoed with its variables already expanded.
+The authorization token is valid for 12 hours and grants push and pull across the registry. Nothing in the
+guide mentions this; its only sentence about masking (`3-pipeline.md:914`) is about `withCredentials`, a
+different mechanism used three steps later. Fixed in the `Jenkinsfile` with `set +x` at the top of that block;
+the guide still carries the version that leaks.
+
+**Build 16 confirmed the fix and measured the cache.** Same shape, `set +x` in place:
+
+| Check | Build 14 (cache empty) | Build 16 (cache present) |
+|---|---|---|
+| `Log in to ECR` output | `+ PASS='eyJwYXlsb2FkIjoi…'`, `+ AUTH='QVdTOmV5…'`, then the ARN | `+ set +x` then the ARN, **nothing else** |
+| Cache import | `…:buildcache: not found` | `inferred cache manifest type: application/vnd.oci.image.manifest.v1+json done` in 0.2 s |
+| `Build and push` | 20:21:50 → 20:22:34, **44 s** | 20:35:54 → 20:36:13, **19 s** |
+| `exporting to image` | 15.2 s | 0.2 s, every `runtime` layer `CACHED` |
+| Image digest | `sha256:9e67e4d1a1ffdcc7953caa2d3d1932f07494385aab498a6e3e500eabddd29a2b` | **the same digest**, under the new tag `506766b8a86d` |
+
+The identical digest across two commits is stronger than anything the step asks for: the only change between
+them was the `Jenkinsfile`, which is not copied into the image, so the runtime content is byte-identical and
+BuildKit reused it. The new tag is a second label on the same image, which the repository's
+`IMMUTABLE_WITH_EXCLUSION` setting permits because the tag itself is new.
+
+Both builds ran on `main` rather than the temporary branch, so both exported the cache. The step's claim that
+a branch build imports but never exports is therefore **still unexercised**.
+
+## Step 12 — The gate: no image with a fixable CRITICAL
+
+Build 17, again on `main` rather than a temporary branch. The scan ran, the report was archived, and the gate
+crashed on a flag that does not exist.
+
+| Check | Result |
+|---|---|
+| Image scanned | by digest, `medical-rag@sha256:9e67e4d1a1ff…`, so the tag could not be moved underneath it |
+| Debian findings | **Total 263** — UNKNOWN 1, LOW 102, MEDIUM 100, **HIGH 55**, **CRITICAL 5** |
+| Python findings | Total 6 — LOW 1, MEDIUM 5, HIGH 0, CRITICAL 0, all in `pip` 25.0.1 |
+| Against step 1 | **identical**: 5 CRITICAL and 55 HIGH, on the same image content |
+| The five CRITICAL | `libsqlite3-0` CVE-2025-7458; `perl-base` CVE-2026-13221, CVE-2026-42496, CVE-2026-8376; `zlib1g` CVE-2023-45853. Every one has an empty `Fixed Version` and a status of `affected`, `will_not_fix` or `fix_deferred` |
+| Gate | `FATAL Fatal error unknown flag: --ignore-unfixed`, build `FAILURE` |
+| `archiveArtifacts` in `post { always }` | ran anyway — `Archiving artifacts`, `Recording fingerprints` |
+| Scan duration | 20:41:37 → 20:42:00, about 23 s, of which 13 s was downloading the vulnerability database |
+
+**What this proves even though the build failed.** The counts reproduce step 1 exactly, so the scan is reading
+the image the pipeline built and nothing drifted. And the step's own design argument held under the only test
+that could check it: the report was written before the gate, the gate failed, and the report was still archived.
+
+**The gate command does not exist.** `--ignore-unfixed` is a flag of Trivy's *scan* commands. `trivy convert`
+re-reads an existing report and offers only `--severity`, `--exit-code`, `--ignore-policy` and `--ignorefile` —
+Trivy's own usage output, printed by the failure, lists them. With `--severity CRITICAL --exit-code 1` alone the
+gate would fail every build on five findings nobody can act on, which is the outcome the step explicitly sets
+out to avoid. Fixed by counting in the report instead, in the `tools` container because that is the one with
+`jq`: CRITICAL findings whose `FixedVersion` is non-empty, which must be `0`. The count is echoed, so the gate
+reports a number rather than passing silently.
+
+**The corrected gate passed, on the branch.** Build 1 of `jenkins/step-12`, the first build in this phase to
+run anywhere but `main`:
+
+| Check | Result |
+|---|---|
+| Gate | `CRITICAL with a fix available: 0`, then `[ 0 -eq 0 ]` — `SUCCESS` |
+| Counts | `Total: 263 … HIGH: 55, CRITICAL: 5` for the third build running, unchanged |
+| `trivy-report.json` | archived again, this time from a passing build |
+| Branch cache behaviour | `[ jenkins/step-12 = main ]` was false, the `buildctl` line carried `--import-cache` and **no** `--export-cache`, and no `exporting cache to registry` step ran |
+| `Build and push` | 20:47:39 → 20:47:43, **4 s** — against 19 s on `main` with the export and 44 s with the cache cold |
+
+**That settles the branch-cache claim.** `3-pipeline.md:419` says branch builds import the cache but never
+export it, so a branch cannot poison what `main` builds from. Nothing had tested it: builds 11 to 17 all ran on
+`main`, where the export always fires. This build is the first negative case, and the 15 seconds it saves are
+the export that did not happen.
+
+**The gate now reports a number.** The original returned only an exit code, so a gate that never ran and a gate
+that found nothing were the same observation. The replacement echoes the count first.
+
+**What the gate still has not done is fail.** All five CRITICAL findings are unfixed, so `0` is the only answer
+it can give today, and passing proves it does not block wrongly — not that it blocks. A positive control is
+cheap and remains untaken: run one build with the severity lowered to `MEDIUM`, where `pip` carries five
+findings that *do* have fixed versions, and the gate should go red.
+
+**A cache that is not a cache.** `TRIVY_CACHE_DIR` points at `/home/jenkins/agent/.trivy`, which is on
+`workspace-volume` — an `emptyDir` created fresh for every build pod. The 114.8 MiB vulnerability database is
+therefore downloaded on every single build. The variable does do its other job, giving a container that runs as
+uid 1000 somewhere writable, since Trivy's default `/.cache/trivy` is not. Not fixed; recorded.
+
+## Step 13 — Fewer findings in the base image
+
+Both base images moved from Debian 12 (bookworm) to Debian 13 (trixie), each pinned by the digest of its
+multi-platform index.
+
+```
+FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256:9a59bb7206905ccaae4f7dab222fbac47c125a21e5fc16f43f427cd6c940ade3 AS builder
+FROM python:3.12-slim-trixie@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS runtime
+```
+
+**Criterion #9, before and after.** Both columns are the same command over the archived `trivy-report.json`
+of two builds, so they compare directly. The counts include both `Results` arrays — the Debian packages and
+the Python ones — which is why they are six higher than the Debian table printed in the console.
+
+| Severity | Debian 12.15 | Debian 13 | Δ |
+|---|---|---|---|
+| **CRITICAL** | **5** | **0** | **−5** |
+| HIGH | 55 | 44 | −11 |
+| MEDIUM | 105 | 54 | −51 |
+| LOW | 103 | 58 | −45 |
+| UNKNOWN | 1 | 2 | +1 |
+| **Total** | **269** | **158** | **−111, or −41%** |
+| Fixable CRITICAL | 0 | 0 | — |
+
+**All five CRITICAL findings are gone**: `libsqlite3-0` CVE-2025-7458, `perl-base` CVE-2026-13221,
+CVE-2026-42496 and CVE-2026-8376, and `zlib1g` CVE-2023-45853. Trixie ships patched versions of all of them.
+
+**And the gate could never have done this.** It reported `0` both before and after, correctly: every one of the
+five had an empty `Fixed Version` *in Debian 12*, so `--ignore-unfixed` — in any spelling — was always going to
+pass them. Moving the base is the only action that reaches findings of that shape. The gate's job is to stop
+the day a fix exists and the image was built without it; the base bump is the job of noticing that the whole
+distribution moved on. This step is the clearest evidence in the phase that the two are different controls.
+
+**The step gives no way to fetch what it asks you to compare.** Its check reads *"on the workstation, against
+the two archived reports"*, and `trivy-report.json` is a Jenkins build artifact on the controller's PVC, not a
+file in the workstation's clone. Running the `jq` line as written answers
+`jq: error: Could not open file trivy-report.json`. What works:
+
+```bash
+kubectl -n jenkins exec jenkins-0 -c jenkins --   sh -c 'ls -1t /var/jenkins_home/jobs/medical-rag/branches/*/builds/*/archive/trivy-report.json'
+kubectl -n jenkins exec jenkins-0 -c jenkins -- cat "$PATH_FROM_ABOVE" > /tmp/after.json
+```
+
+`jq` then runs on the workstation, because the controller image does not have it.
+
+**`--format` was ignored.** The step reads the digests with
+`docker buildx imagetools inspect <tag> --format '{{.Manifest.Digest}}'`; on this workstation's buildx the flag
+had no effect and the full manifest listing was printed instead. The `Digest:` line at the top of that output
+is the index digest, which is the value the step wants, so the step still works — but its expected output,
+"two `sha256:…` lines", is not what appears.
+
+## Step 14 — Sign what was built
+
+**The branch build behaved as designed.** `Stage "SBOM and signature" skipped due to when conditional`, then
+`Finished: SUCCESS`. This answers a question the guide's own asymmetry raised: step 12's `archiveArtifacts`
+carries `allowEmptyArchive: true` and step 14's does not, so a `post { always }` that ran on a skipped stage
+would have failed the build with `No artifacts found`. It does not run. Declarative skips the `post` section of
+a stage its `when` rejects, and the missing flag is harmless.
+
+**cosign matches between workstation and pipeline:** `v3.1.3` in both, the same version `ci/Dockerfile` pins,
+so a flag verified on the workstation is a flag the build will have.
+
+| Flag | `sign` | `attest` | `verify` |
+|---|---|---|---|
+| `--key`, including `awskms://[ENDPOINT]/[ID/ALIAS/ARN]` | yes | yes | yes |
+| `--predicate` | — | yes | — |
+| `--type`, with `spdxjson` among the allowed values | — | yes | — |
+| `--insecure-ignore-tlog` | — | — | yes |
+| `--tlog-upload` | in an **example line only**, not in the flag list | **not shown at all** | — |
+
+**The stage failed on `main`, on that flag.** Build output:
+
+```
++ cosign sign --yes '--tlog-upload=false' --key awskms:///alias/medical-rag-cosign …/medical-rag@sha256:f5b6789a…
+Flag --tlog-upload has been deprecated, prefer using a --signing-config file with no transparency log services
+Error: --tlog-upload=false is not supported with --signing-config or --use-signing-config.
+```
+
+It failed cleanly: `sign` refused before doing anything and `sh -e` stopped the stage, so `attest` never ran and
+no half-made signature was left behind.
+
+**What cosign v3 actually offers.** Measured from `--help` on the same v3.1.3 the pipeline uses:
+
+| | `sign` | `attest` |
+|---|---|---|
+| `--tlog-upload` | present but **deprecated**, and rejected in practice | **absent** |
+| `--rekor-url`, `--offline` | — | **absent** |
+| `--signing-config` | present | present |
+| `--use-signing-config` | present, **defaults to `true`** | present, **defaults to `true`** |
+
+That default is the conflict: nothing passed `--signing-config`, but v3 enables one anyway. Per-service URL flags
+are gone; v3 moved all of it into a signing config for signing and a trusted root for verifying. So there is no
+flag that turns the transparency log off — the guide's approach cannot be repaired by renaming a flag.
+
+**The remedy, and it is cheap.** `cosign signing-config create --out FILE` builds a config from scratch, and every
+service flag is optional. With none given it writes:
+
+```json
+{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json","rekorTlogConfig":{},"tsaConfig":{}}
+```
+
+No Rekor service, no Fulcio, no TSA — which is precisely the intent, since signing uses a KMS key and needs none
+of them. Passing that file to both `sign` and `attest` replaces the removed flags. It is generated inside the
+stage rather than baked into the tools image: it always matches the cosign that reads it, and creating it needs
+no network, so it adds no dependency.
+
+**Proved before it went near `main`,** with the real key and the real image:
+
+```
+cosign sign --yes --signing-config /tmp/sc.json --key awskms:///alias/medical-rag-cosign …@sha256:f5b6789a…
+Pushing signature to: 242834061265.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag
+```
+
+**This signature was made from the workstation by the operator, not by the pipeline.** It counts as evidence that
+the command shape works and that the key is reachable; it is not evidence that the stage works. The pipeline's
+own signature is still owed.
+
+**A side effect worth recording:** the push succeeded against a repository set to `IMMUTABLE_WITH_EXCLUSION`, so
+the `sha256-*` exclusion filter in `infra/terraform/shared/registry.tf` does what it was written for. Nothing had
+tested that until now.
+
+**The pipeline then did it.** The stage on `main`, end to end:
+
+```
++ trivy image --format spdx-json --output sbom.spdx.json …@sha256:f5b6789a…
+INFO  "--format spdx-json" disables security scanning…
+INFO  Detected OS  family="debian" version="13.7"
++ cosign signing-config create --out signing-config.json
++ cosign sign --yes --signing-config signing-config.json --key awskms:///alias/medical-rag-cosign …
+Signing artifact...
+Pushing signature to: 242834061265.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag
++ cosign attest --yes --signing-config signing-config.json --type spdxjson --predicate sbom.spdx.json --key … …
+Using payload from: sbom.spdx.json
+Signing artifact...
+```
+
+`attest` was the part nothing had exercised — `sign` had been proved by hand, `attest` had not. It works with the
+same signing config.
+
+**`debian 13.7`, from the image the pipeline built.** That closes step 13's remaining question: the trixie
+digests took effect in the built image, not only in the `FROM` lines. `--format spdx-json` turns vulnerability
+scanning off, which is why this run reports no counts; the `Scan` stage is where those come from.
+
+**The verification pair, which is the actual evidence:**
+
+| Command | Result |
+|---|---|
+| `cosign verify --key … --insecure-ignore-tlog …@sha256:f5b6789a…` | `The cosign claims were validated`, `The signatures were verified against the specified public key` |
+| `cosign verify --key … --insecure-ignore-tlog …:1eaa43bf3512` | `Error: no signatures found` |
+
+The second is what makes the first mean something. A lone passing `verify` cannot tell "this signature is valid"
+from "cosign accepts anything"; the app-phase image, never signed, is the negative control.
+
+`--insecure-ignore-tlog` still exists in v3 and works, unlike `--tlog-upload`. It prints a warning, and the
+output still lists `Existence of the claims in the transparency log was verified offline` — wording that reads
+oddly next to a warning saying tlog verification was skipped.
+
+**Three payload entries, and they are not all the pipeline's:**
+
+| Type | Origin |
+|---|---|
+| `https://sigstore.dev/cosign/sign/v1` | the operator's signature, made from the workstation while testing the remedy |
+| `https://sigstore.dev/cosign/sign/v1` | the pipeline's signature |
+| `https://spdx.dev/Document` | the pipeline's SBOM attestation |
+
+Both signatures use the same KMS key on the same digest, so `verify` accepts either, and the two cannot be told
+apart from the payload. Anyone reading this later should know that **a second, hand-made signature exists on
+`sha256:f5b6789a…`** and that only the later two entries are the pipeline's work.
 
 ## Problems found and fixed
 
@@ -449,7 +756,10 @@ appears in Part 3 below, and it is the rule that was written to fix the third.
    message that says nothing about redirects.
    Fixed: `curl -fsSL`, a line count that must be four, and a troubleshooting row with the literal error.
 
-**Part 3 so far.** Four, all defects in the guide, none in the cluster.
+**Part 3 so far.** Fourteen, all defects in the guide, none in the cluster. One is a disclosed credential, and
+three are commands that cannot do what the step says — two of them flags removed or deprecated by the tool since
+the guide was written. One of them — the split Declarative
+suite — cost four builds and two wrong diagnoses before it was measured.
 
 6. **Rule 5's grep cannot see half the placeholders it was written for.** `grep -n '<[A-Za-z][A-Za-z0-9_-]*>'`
    has no space in its character class, so `<aws-cli version>` — the next placeholder the guide hands over
@@ -467,7 +777,66 @@ appears in Part 3 below, and it is the rule that was written to fix the third.
    expected output nor in any failure branch; `troubleshooting.md` has no row for it. A 19-second image pull was
    read as a hung build, and the diagnosis that followed — that the Kubernetes cloud might not exist — was
    wrong, and was only disproved by four extra reads.
-9. **Step 10 does not state that it depends on step 9.** Step 9 is what proves a build pod can start at all and
+9. **The Declarative suite split a second time, below the plugin-load check.** After the three plugins the
+   startup log named were pinned, the check returned `1` and `0` and the next real build failed with
+   `java.lang.NullPointerException: Cannot invoke method call() on null object`. Reading each plugin's
+   `META-INF/MANIFEST.MF` showed why: `pipeline-model-api` and `pipeline-model-extensions` were at
+   `2.2277.v00573e73ddf1` while `pipeline-model-definition` and `pipeline-stage-tags-metadata` were still at
+   `2.2218.v56d0cda_37c72`. Those four are released together from one repository and share a version string; a
+   mixed set loads without complaint and then calls across the gap at run time. **The plugin-load check is
+   structurally blind to this** — it reads declared minimums, and every declared minimum was satisfied. Fixed by
+   pinning all four; the check that would have caught it is a version-equality read across the suite, which the
+   guide does not have. *Which* build the NPE stack trace belongs to was never captured — the controller log was
+   rotated away by the pod restart — so the link from the split to that exact exception is **inferred from the
+   symptom's shape and from the fix working**, not proven.
+10. **Step 10 expects the wrong number of stage lines.** The Check says "**two** `[Pipeline] stage` lines, one
+   per stage". A Declarative build emits three: `Declarative: Checkout SCM` is a stage the plugin adds before
+   the ones in the file. Counting by the guide would read a correct build as broken.
+11. **Step 10's `Test` stage cannot use the cache it asks for.** `--import-cache type=registry,ref=…:buildcache`
+   needs a registry login, and the step's whole argument is that no credential exists yet; `Log in to ECR` is
+   step 11 and comes after. Every build prints
+   `ERROR: failed to configure registry cache importer: … 401 Unauthorized`, BuildKit ignores it, and the guide
+   does not say the line is expected.
+12. **Step 11 never creates the ECR repository it pushes to.** `make ci-image` pushes to
+   `<account>.dkr.ecr.<region>.amazonaws.com/medical-rag-ci`, and `infra/terraform/shared/registry.tf`
+   defines only `aws_ecr_repository.app`. ECR does not create a repository on push, so the target fails with
+   `name unknown`. The step's Workstation section expects `make shared` to report **2 to add**, which means the
+   Terraform was meant to change — but the step's `| File | Change |` table lists only `ci/Dockerfile`,
+   `Makefile` and `Jenkinsfile`, and no HCL for the repository appears anywhere in the guide.
+13. **The node role cannot pull the tools image.** `infra/terraform/cluster/iam.tf` scopes every ECR read to
+   `data.aws_ecr_repository.app.arn`. The kubelet pulls `image: ${CI_TOOLS}` with the node role, so even once
+   the repository exists the `tools` container would sit in `ImagePullBackOff`. This is in a different stack
+   from defect 12, so step 11 needs a second `terraform apply` that the guide does not mention at all.
+   Fixed here by adding `aws_ecr_repository.ci` and its lifecycle policy to the shared stack, and a
+   `data "aws_ecr_repository" "ci"` plus its ARN in the node policy's `EcrPullPush` statement.
+14. **Step 11 prints the ECR token into the build log.** Jenkins runs every `sh` step as `/bin/sh -xe`, so
+   each line is echoed with its variables already expanded. The `Log in to ECR` block assigns the password to
+   `PASS` and its base64 form to `AUTH`, and build 14's console carries both in full. The token is valid for
+   twelve hours and allows push and pull across the whole registry; anyone who can read a build log can use it.
+   The guide never mentions shell tracing — its one sentence about masking is about `withCredentials`, a
+   different mechanism introduced five steps later. Fixed in the `Jenkinsfile` with `set +x`, which suppresses
+   the trace without hiding stdout, so the caller identity still prints. **Mitigation owed:** build 14's log
+   still holds the token until it rotates out or the build is deleted.
+15. **Step 12's gate uses a flag `trivy convert` does not have.**
+   `trivy convert --severity CRITICAL --ignore-unfixed --exit-code 1` exits `FATAL … unknown flag:
+   --ignore-unfixed`, so the stage can never pass, in any cluster, on any image. `--ignore-unfixed` belongs to
+   the scan commands. This one is unusual for this phase: it fails loudly, names its own cause, and would have
+   been caught by running the command once anywhere. Fixed with a `jq` count over the archived report.
+16. **Step 13 cannot fetch the reports it tells you to compare.** The check runs `jq` against
+   `trivy-report.json` "on the workstation", but that file is a Jenkins build artifact living on the
+   controller's PVC. As written the command answers `Could not open file`. The step needs the two
+   `kubectl exec` lines that read the artifact out of `/var/jenkins_home/jobs/…/archive/`.
+17. **Step 13's digest command prints something else.** `docker buildx imagetools inspect <tag> --format
+   '{{.Manifest.Digest}}'` ignored the flag on this workstation and printed the whole manifest listing. The
+   value is still there, on the `Digest:` line, but the step's stated expected output — "two `sha256:…` lines"
+   — does not match what a reader sees.
+18. **Step 14 signs with flags cosign v3 has removed.** `cosign sign --tlog-upload=false` is deprecated and
+   refuses to run beside v3's default signing config; `cosign attest` has no `--tlog-upload` at all, and no
+   `--rekor-url` or `--offline` either. The stage fails on `main`, where the signature is real. The step's own
+   pre-flight check would not have caught it: it greps `sign --help` and `verify --help` and never `attest`,
+   and the flag it greps for does appear in `sign`'s help — inside an example line kept from v2. Fixed with a
+   service-free signing config created in the stage.
+19. **Step 10 does not state that it depends on step 9.** Step 9 is what proves a build pod can start at all and
    carries the CI role; step 10's `Jenkinsfile` deliberately drops the `cloud 'kubernetes'` and
    `namespace 'jenkins-agents'` lines *because* step 9 has already proved them. Skipping step 9 therefore turns
    a loud error into a silent queue, and step 10 has no "Before you start" line saying so, unlike the Parts.
@@ -477,11 +846,16 @@ itself (an unset variable in the Ansible command, and one in step 2's gate), whi
 
 ## Still to check
 
-- **A build that runs both of step 10's stages:** two `[Pipeline] stage` lines, BuildKit's `DONE` lines and
-  `26 passed`. Step 9's single stage ran, and step 10's skip guard ran, so the Declarative suite is working;
-  what has never happened in this phase is a build that reaches the `Test` stage.
-- **The three `promq` readings** of what the build pod asked for (step 10), and which of the step's three
-  no-output cases applies if they come back empty.
+- **Nothing checks that a block the guide hands over actually landed.** Rule 5 greps a file you filled in for
+  leftover placeholders; it cannot see a block you never pasted. In step 11 the `aws-token` volume was missed
+  while its `volumeMount` was not, which the API server would have rejected at pod creation with
+  `spec.containers[1].volumeMounts[0].name: Not found`, after a push and a scan. A check exists — extract every
+  fenced block from the guide and assert it appears in the file — and it is not in `guide.md`.
+- **A positive control for step 12's gate.** It has never returned anything but `0`. Lowering the severity to
+  `MEDIUM` for one build would exercise the failure path against `pip`'s five fixable findings.
+- **Whether `--import-cache` should be in the `Test` stage at all,** given that no login exists there. Either
+  it moves after `Log in to ECR`, or it goes, or the step says the `401` is expected. Measured cost today: none,
+  beyond a full rebuild every time and an `ERROR` line that reads like a failure.
 - **Which plugin requires `pipeline-model-extensions` >= 2.2277.** The init container's log records the
   resolution but never names the requester, so this is still open; the update centre's dependency table is the
   remaining read. It no longer blocks anything — the remedy is measured to work either way.
