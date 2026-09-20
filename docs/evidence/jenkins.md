@@ -715,6 +715,104 @@ Both signatures use the same KMS key on the same digest, so `verify` accepts eit
 apart from the payload. Anyone reading this later should know that **a second, hand-made signature exists on
 `sha256:f5b6789a…`** and that only the later two entries are the pipeline's work.
 
+## Step 15 — Notice when the corpus changes
+
+**Caught before the build ran: the stage calls a step this controller does not have.** The guide's stage reads
+the two values files with `readYaml`, which comes from the `pipeline-utility-steps` plugin.
+`deploy/argocd/values/jenkins.yaml` installs fourteen plugins and that is not one of them, and nothing in
+`workflow-aggregator`'s tree pulls it in. The stage would have failed with `No such DSL method 'readYaml' found
+among steps`, in the same shape as the three command-level defects already recorded — except this one was found
+by reading the plugin list instead of by a red build.
+
+Two ways out, and the choice is not symmetric:
+
+| | Add `pipeline-utility-steps` | Read the field with `yq` |
+|---|---|---|
+| Cost | another plugin, another install round, another chance of a suite split | none; `ci/Dockerfile` already installs `yq` |
+| Risk | plugin resolution on this controller has already failed twice | `yq -r` is proved to work here |
+| Works if the plugin turns out to be present after all | yes | **yes** |
+
+`yq` was taken, because it is the only one of the two that is correct whichever the plugin list actually holds.
+The guide's own comment — *"readYaml runs on the controller, so no container needs yq for this comparison"* — is
+the reasoning that produced the defect: it optimises away a tool that is already there in favour of one that is
+not installed.
+
+**Prerequisites checked, all present:** `data/` holds one 12 MB PDF; `deploy/envs/{dev,prod}/values.yaml` both
+carry `index.version: "cc759ae1a093"`, the value the step's expected output names; `python -m app.index version`
+prints one line; and `corpus_dir()` falls back to `DATA_PATH` when `CORPUS_STORE` is unset, so the build stage
+needs no network and no credentials.
+
+**Case 1, nothing changed:**
+
+```
+index version: built=cc759ae1a093 dev=cc759ae1a093 prod=cc759ae1a093
+```
+
+All three equal, so `INDEX_CHANGED_DEV` and `INDEX_CHANGED_PROD` are both `no` and the checksum comparison
+against S3 never runs. The `yq` substitution reads the same values `readYaml` would have.
+
+**The build-context cost is negligible, which was worth measuring rather than assuming.** Removing `data/` from
+`.dockerignore` puts the 12 MB PDF into the context of every `buildctl` call, three per build:
+
+```
+#7 [internal] load build context
+#7 transferring context: 12.24MB 0.1s done
+```
+
+**0.1 s.** The context travels between two containers in the same pod, so 12 MB costs nothing measurable
+against a build that takes tens of seconds. The concern recorded before the run was misplaced.
+
+**Case 2, a chunk setting changed** (`CHUNK_SIZE` default 500 → 501, nothing else):
+
+```
+index version: built=255b7be51bed dev=cc759ae1a093 prod=cc759ae1a093
+corpus local=Gy4ax6EuP5qXu9mXly8nyxN4beJW3oNielHmnQkgiXM= s3=Gy4ax6EuP5qXu9mXly8nyxN4beJW3oNielHmnQkgiXM=
+```
+
+The version moved on a setting alone, the PDF untouched, so the checksum block ran and both sides matched. The
+stage passed. That is the distinction the step exists to draw: a new index version does not imply a new corpus.
+
+**Case 3, a corpus that S3 does not have — and the build went red, which is the point:**
+
+```
+index version: built=510fa9c0f86e dev=cc759ae1a093 prod=cc759ae1a093
+corpus local=Gy4ax6EuP5qXu9mXly8nyxN4beJW3oNielHmnQkgiXM= s3=missing
+The corpus in S3 is not the PDF in Git. Upload it first (app guide step 13), then rerun.
++ exit 1   →   Finished: FAILURE
+```
+
+**This is the only positive control in Part 3.** Step 12's gate has never returned anything but `0`; this one
+was shown refusing something. A gate that has never refused has only been shown not to refuse wrongly.
+
+**Done by renaming the PDF, not by editing a byte as the step says.** `compute_version` hashes `pdf.name`
+before the bytes (`src/app/index.py:33`), so a rename moves the version just as an edit would, and `LOCAL` came
+back **unchanged** at `Gy4ax…giXM=`, which is the proof that only the name moved. Two reasons to prefer it: a
+one-byte edit of a 12 MB binary writes a second 12 MB blob into Git history for ever, and a rename also
+exercises the missing-object path rather than the mismatched-checksum path.
+
+**One claim in the step is still unmeasured, and trying to measure it found a worse defect.** The Why says a
+missing object answers `403`, not `404`, because the role cannot list the bucket. The stage cannot show that:
+`aws s3api head-object … 2>/dev/null || echo missing` discards the error and the log jumps straight to
+`+ echo missing`. Running it by hand on the workstation answered `An error occurred (404)`, which settles
+nothing — the workstation is not the CI role and evidently does have `ListBucket`. Only a build pod can answer
+it.
+
+**The defect: `2>/dev/null` reports every failure as a wrong corpus.** An expired token, a mistyped bucket
+name, a network fault and a genuinely absent object all become `REMOTE=missing`, and all four print *"The
+corpus in S3 is not the PDF in Git. Upload it first"*. Someone would re-upload 12 MB of PDF to fix a
+credential. That is the same shape as the false passes catalogued in this file, inverted: a confident
+diagnosis of a cause the check never established.
+
+Fixed in the `Jenkinsfile`: the command's output is captured with `2>&1`, success and failure are told apart by
+exit status, and a failure prints `head-object did not answer: <the error>` before falling back to `missing`.
+The next time case 3 runs it will also say whether the answer was 403 or 404, which closes the open claim as a
+side effect rather than as a separate test. The guide still carries the `2>/dev/null` form.
+
+**Stage times, from the branch build** (whole run about 1 min 32 s): checkout 3 s, `Skip guard` 1 s, `Test`
+30 s, `Log in to ECR` 2 s, `Build and push` 13 s, `Scan` 22 s, `SBOM and signature` **0 ms** — the `when`
+skip costs nothing — and `Index version` 9 s, of which the `buildctl` export was 5 s and each `yq` about
+0.64 s.
+
 ## Problems found and fixed
 
 **Part 2.** Five. Four are purely defects in the guide; the first also had a real cause in the account — the

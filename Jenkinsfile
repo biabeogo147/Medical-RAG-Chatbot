@@ -301,9 +301,17 @@ spec:
                 set -e
                 PDF=$(ls data/*.pdf | head -1)
                 LOCAL=$(openssl dgst -sha256 -binary "$PDF" | base64)
-                REMOTE=$(aws s3api head-object --bucket "medical-rag-artifacts-${AWS_ACCOUNT}" \
+                # Keep the error. Discarding it makes an expired token, a wrong bucket name and a
+                # genuinely absent object indistinguishable, and all three would then be reported as
+                # "the corpus is wrong" - sending someone to re-upload 12 MB to fix a credential.
+                if OUT=$(aws s3api head-object --bucket "medical-rag-artifacts-${AWS_ACCOUNT}" \
                   --key "corpus/$(basename "$PDF")" --checksum-mode ENABLED \
-                  --query ChecksumSHA256 --output text 2>/dev/null || echo "missing")
+                  --query ChecksumSHA256 --output text 2>&1); then
+                  REMOTE="$OUT"
+                else
+                  echo "head-object did not answer: $OUT"
+                  REMOTE=missing
+                fi
                 echo "corpus local=$LOCAL s3=$REMOTE"
                 test "$LOCAL" = "$REMOTE" || {
                   echo "The corpus in S3 is not the PDF in Git. Upload it first (app guide step 13), then rerun."
