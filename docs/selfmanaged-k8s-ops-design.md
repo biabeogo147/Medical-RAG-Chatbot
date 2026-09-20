@@ -337,6 +337,22 @@ deploy/
 
 Images are referenced **by digest** in values as `tag@sha256:...`, so what was signed is exactly what runs.
 
+**Changed in the Jenkins phase** (`docs/jenkins/README.md`):
+- Build pods get their own IRSA role, `medical-rag-ci` (ECR push, KMS sign, corpus checksum), instead of the node
+  role; the node role later loses ECR push and KMS sign.
+- Two namespaces: `jenkins` (controller, `restricted`) and `jenkins-agents` (build pods). The second's Pod Security
+  level is set by measuring rootless BuildKit on the nodes: `baseline` with node-installed profiles, or `privileged`
+  narrowed by a ValidatingAdmissionPolicy.
+- The Multibranch job also builds `jenkins/step-N` branches; only `main` signs and promotes.
+- Jenkins is Argo CD wave 3, after the app.
+- The ECR lifecycle policy keeps the last 10 `release-*` images (every image that reached prod's values) in a first,
+  higher-priority rule, then 30 tagged images in total.
+- One build pod at a time through the Kubernetes cloud's cap, since a per-job limit does not span Multibranch branches.
+- Tests run in the Dockerfile's `test` target inside BuildKit, so there is no separate Python agent container, and
+  hadolint is left out.
+- Trivy writes the SBOM (SPDX JSON) instead of Syft, and cosign, `gh`, `git`, `yq` and the AWS CLI live in one small
+  image built from `ci/Dockerfile` and pushed with `make ci-image`: their upstream images have no shell.
+
 ### 4.6 Day-2 operations (P1)
 - **etcd backup:**
   - A CronJob on control-plane nodes (nodeSelector + toleration, hostPath `/etc/kubernetes/pki/etcd`).

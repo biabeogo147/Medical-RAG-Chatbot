@@ -1,103 +1,69 @@
+// Step 9 only: prove that a build pod gets the CI role and cannot reach the node's metadata service.
+// Part 3 replaces this with the real pipeline.
 pipeline {
-    agent any
-
-    environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub')
-        IMAGE_NAME = "biabeogo147/medical-rag-chatbot-app"
-        VERSION = "v1.0.${env.BUILD_NUMBER}"
-        K8S_NAMESPACE = "medical-rag-chatbot"
-        DEPLOY_FILE = "k8s.yaml"
+  agent {
+    kubernetes {
+      // Named explicitly, so a cloud misconfigured in step 8 fails here instead of quietly starting the pod
+      // in the wrong namespace.
+      cloud 'kubernetes'
+      namespace 'jenkins-agents'
+      defaultContainer 'tools'
+      yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-agent
+  automountServiceAccountToken: false
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+  containers:
+    - name: tools
+      # The tag you verified in app guide step 7: `aws --version` on the workstation prints it.
+      image: public.ecr.aws/aws-cli/aws-cli:<aws-cli version>
+      # `cat` with a tty keeps the container alive for the whole build, however long it takes; `sleep 3600`
+      # would end it after an hour.
+      command: ["cat"]
+      tty: true
+      env:
+        # The same four variables the app's pods use (app guide step 7), for the CI role.
+        - name: AWS_ROLE_ARN
+          value: arn:aws:iam::242834061265:role/medical-rag-ci
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/aws/token
+        - name: AWS_REGION
+          value: ap-southeast-1
+        - name: AWS_STS_REGIONAL_ENDPOINTS
+          value: regional
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+      volumeMounts:
+        - name: aws-token
+          mountPath: /var/run/secrets/aws
+          readOnly: true
+  volumes:
+    - name: aws-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: sts.amazonaws.com
+              expirationSeconds: 3600
+              path: token
+'''
     }
-
-    stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main', credentialsId: 'github', url: 'https://github.com/biabeogo147/Medical-RAG-Chatbot.git'
-            }
-        }
-
-        stage('Docker Login') {
-            steps {
-                script {
-                    echo "🔐 Logging into Docker Hub..."
-                    withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                        sh '''
-                        #!/bin/bash
-                        set -eux
-
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Build Docker image') {
-            steps {
-                sh '''
-                echo "🧱 Building Docker image $IMAGE_NAME:$VERSION ..."
-                docker build -t $IMAGE_NAME:$VERSION .
-                docker tag $IMAGE_NAME:$VERSION $IMAGE_NAME:latest
-                '''
-            }
-        }
-
-        stage('Push to DockerHub') {
-            steps {
-                script {
-                    echo "🚀 Pushing $IMAGE_NAME:$VERSION to Docker Hub..."
-                    withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                        sh '''
-                        echo "🚀 Pushing $IMAGE_NAME:$VERSION..."
-                        docker push $IMAGE_NAME:$VERSION
-
-                        echo "🚀 Pushing $IMAGE_NAME:latest..."
-                        docker push $IMAGE_NAME:latest
-
-                        echo "🔒 Logging out..."
-                        docker logout
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Cleanup') {
-            steps {
-                sh '''
-                echo "🧹 Cleaning up local Docker images..."
-                docker rmi -f $IMAGE_NAME:$VERSION || true
-                docker rmi -f $IMAGE_NAME:latest || true
-
-                echo "🧹 Cleaning up dangling data..."
-                docker system prune -af || true
-                '''
-            }
-        }
-
-        stage('Deploy to Kubernetes') {
-            steps {
-                sh '''
-                echo "📦 Deploying to Kubernetes cluster..."
-                # Create a temp file instead of editing in-place
-                sed "s|biabeogo147/medical-rag-chatbot-app:.*|$IMAGE_NAME:$VERSION|g" $DEPLOY_FILE > deploy-temp.yaml
-
-                # Debug check
-                kubectl config current-context || true
-                kubectl get ns | grep $K8S_NAMESPACE || kubectl create ns $K8S_NAMESPACE
-
-                kubectl apply -f deploy-temp.yaml -n $K8S_NAMESPACE
-                '''
-            }
-        }
+  }
+  options { disableConcurrentBuilds() }
+  stages {
+    stage('Who am I') {
+      steps {
+        sh 'aws sts get-caller-identity'
+        sh 'curl -sS -m 3 http://169.254.169.254/latest/meta-data/ || echo "IMDS unreachable, exit=$?"'
+      }
     }
-
-    post {
-        success {
-            echo "✅ Successfully deployed version $VERSION to $K8S_NAMESPACE!"
-        }
-        failure {
-            echo "❌ Deployment failed at some stage. Check logs for details."
-        }
-    }
+  }
 }
