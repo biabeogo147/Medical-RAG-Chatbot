@@ -15,8 +15,18 @@ locals {
     app-dev       = ["medical-rag-dev:medical-rag"]
     app-prod      = ["medical-rag-prod:medical-rag"]
     index-builder = ["medical-rag-dev:medical-rag-index-builder", "medical-rag-prod:medical-rag-index-builder"]
+    ci            = ["jenkins-agents:jenkins-agent"] # the Jenkins build pods (Jenkins guide step 3)
+  }
+
+  # Role name suffix => its permissions policy.
+  irsa_policies = {
+    app-dev       = data.aws_iam_policy_document.index_read.json
+    app-prod      = data.aws_iam_policy_document.index_read.json
+    index-builder = data.aws_iam_policy_document.index_build.json
+    ci            = data.aws_iam_policy_document.ci.json
   }
 }
+
 
 data "aws_iam_policy_document" "irsa_trust" {
   for_each = local.irsa_roles
@@ -111,12 +121,55 @@ data "aws_iam_policy_document" "index_build" {
   }
 }
 
+# The Jenkins build pods: push the image, sign it, and read the corpus checksum. Nothing else, and in
+# particular no secret: the GitHub token reaches Jenkins through External Secrets, not through this role.
+data "aws_iam_policy_document" "ci" {
+  # The only ECR action AWS cannot scope to a repository: it is registry-wide.
+  statement {
+    sid       = "EcrLogin"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  # Push and pull on this repository only: layers, manifests, and the BuildKit cache.
+  statement {
+    sid = "EcrPushPull"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:DescribeImages",
+      "ecr:InitiateLayerUpload",
+      "ecr:UploadLayerPart",
+      "ecr:CompleteLayerUpload",
+      "ecr:PutImage",
+    ]
+    resources = [aws_ecr_repository.app.arn]
+  }
+
+  # Ask KMS to sign image digests with the cosign key. The private key never leaves KMS.
+  statement {
+    sid       = "CosignSign"
+    actions   = ["kms:Sign", "kms:GetPublicKey", "kms:DescribeKey"]
+    resources = [aws_kms_key.cosign.arn]
+  }
+
+  # Read the stored SHA-256 of the corpus (head-object with checksum mode), to compare it with Git's copy.
+  # No ListBucket: a missing PDF then answers 403 instead of 404, and the pipeline treats both as "not
+  # there". The pipeline never writes the corpus.
+  statement {
+    sid       = "ReadCorpusChecksum"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/corpus/*"]
+  }
+}
+
 resource "aws_iam_role_policy" "irsa" {
   for_each = local.irsa_roles
 
   name   = "${local.name}-${each.key}"
   role   = aws_iam_role.irsa[each.key].id
-  policy = each.key == "index-builder" ? data.aws_iam_policy_document.index_build.json : data.aws_iam_policy_document.index_read.json
+  policy = local.irsa_policies[each.key]
 }
 
 output "irsa_role_arns" {
