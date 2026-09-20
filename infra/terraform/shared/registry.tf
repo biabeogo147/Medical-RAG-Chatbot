@@ -33,17 +33,34 @@ resource "aws_ecr_lifecycle_policy" "app" {
   # Counts tagged images only. Cosign v3 stores signatures and SBOM attestations as untagged OCI
   # referrers, so a rule with tagStatus "any" would count them and could delete the signature of an
   # image that is still running.
+  #
+  # Rule 1 comes first on purpose: an image selected by a higher-priority rule can never be expired by a
+  # lower one. Every image that reaches prod's values is tagged "release-<tag>" (Jenkins guide step 17),
+  # so prod's image survives however many builds run after it. Rule 2 still counts those images.
   policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Keep the last 20 tagged images"
-      selection = {
-        tagStatus      = "tagged"
-        tagPatternList = ["*"]
-        countType      = "imageCountMoreThan"
-        countNumber    = 20
-      }
-      action = { type = "expire" }
-    }]
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep the last 10 images that reached prod"
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = ["release-*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = 10
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep the last 30 tagged images in total"
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = ["*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = 30
+        }
+        action = { type = "expire" }
+      },
+    ]
   })
 }
