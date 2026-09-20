@@ -80,6 +80,22 @@ spec:
         - name: aws-token
           mountPath: /var/run/secrets/aws
           readOnly: true
+    - name: trivy
+      image: aquasec/trivy:0.74.0
+      command: ["sleep"]
+      args: ["3600"]
+      env:
+        # Trivy reads the registry login the tools container wrote.
+        - name: DOCKER_CONFIG
+          value: /home/jenkins/agent/.docker
+        - name: TRIVY_CACHE_DIR
+          value: /home/jenkins/agent/.trivy
+      resources:
+        requests:
+          cpu: 50m
+          memory: 384Mi
+        limits:
+          memory: 1Gi
   volumes:
     - name: buildkitd
       # BuildKit's local cache. Bounded, so a runaway build cannot fill the node's disk.
@@ -185,6 +201,23 @@ spec:
             script: 'grep -o \'"containerimage.digest": *"[^"]*"\' build-metadata.json | cut -d\\" -f4').trim()
           echo "Image ${IMAGE}:${env.GIT_TAG}@${env.IMAGE_DIGEST}"
         }
+      }
+    }
+
+    stage('Scan') {
+      steps {
+        container('trivy') {
+          // Scan once, into a report. The gate then reads that report, so the record exists even when the
+          // gate fails; scanning first and failing second is the only order that keeps both.
+          sh "trivy image --scanners vuln --format json --output trivy-report.json ${IMAGE}@${env.IMAGE_DIGEST}"
+          sh "trivy convert --format table trivy-report.json"
+          // The gate. Unfixed findings are ignored on purpose: nothing can be done about them today, and a
+          // gate that can never pass is a gate people switch off (concepts §2).
+          sh "trivy convert --severity CRITICAL --ignore-unfixed --exit-code 1 trivy-report.json"
+        }
+      }
+      post {
+        always { archiveArtifacts artifacts: 'trivy-report.json', fingerprint: true, allowEmptyArchive: true }
       }
     }
 
