@@ -243,7 +243,7 @@ spec:
           // The public Rekor log is not used: these images are private, so their digests, repository
           // name and account id have no business in a public log, and verification here uses the key.
           //
-          // cosign v3 removed the way the guide says to do that. `--tlog-upload=false` is deprecated on
+          // cosign v3 removed the flags that used to say so. `--tlog-upload=false` is deprecated on
           // `sign` and refuses to run alongside the signing config v3 enables by default; on `attest` the
           // flag is gone entirely, and so are --rekor-url and --offline. What replaces them is a signing
           // config listing the services to use. Created with no services at all, it names no transparency
