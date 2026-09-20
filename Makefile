@@ -161,3 +161,18 @@ image:
 	docker buildx build --target runtime --provenance=false --sbom=false --tag $(IMAGE_REPO):$(IMAGE_TAG) --push .
 	aws ecr describe-images --region $(REGION) --repository-name $(PROJECT) --image-ids imageTag=$(IMAGE_TAG) \
 	  --query 'imageDetails[0].[imageTags[0],imageDigest]' --output text
+
+
+# The pipeline's tools image, built on the workstation. It changes only when a tool version changes, so it is
+# not built by the pipeline itself; that would need the tools it is building.
+CI_IMAGE_TAG = $(shell git rev-parse --short=12 HEAD)
+
+.PHONY: ci-image
+
+ci-image:
+	@test -z "$$(git status --porcelain)" || { echo "Uncommitted changes: commit and push first"; exit 1; }
+	aws ecr get-login-password --region $(REGION) | docker login --username AWS --password-stdin $(REGISTRY)
+	docker buildx build --progress=plain --provenance=false --sbom=false \
+	  --tag $(REGISTRY)/$(PROJECT)-ci:$(CI_IMAGE_TAG) --push ci
+	aws ecr describe-images --region $(REGION) --repository-name $(PROJECT)-ci \
+	  --image-ids imageTag=$(CI_IMAGE_TAG) --query 'imageDetails[0].[imageTags[0],imageDigest]' --output text
