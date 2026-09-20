@@ -37,7 +37,8 @@ data "aws_iam_policy_document" "nodes" {
     resources = ["*"]
   }
 
-  # Pull for the nodes, push for the Jenkins build pods. This repository only.
+  # Pull for the nodes, push for the Jenkins build pods. Two repositories: the app image, and the
+  # pipeline's tools image, which the kubelet pulls for every build pod. Nothing else in the registry.
   statement {
     sid = "EcrPullPush"
     actions = [
@@ -51,7 +52,7 @@ data "aws_iam_policy_document" "nodes" {
       "ecr:CompleteLayerUpload",
       "ecr:PutImage",
     ]
-    resources = [data.aws_ecr_repository.app.arn]
+    resources = [data.aws_ecr_repository.app.arn, data.aws_ecr_repository.ci.arn]
   }
 
   # The cluster's own buckets: etcd snapshots and the Ansible transfer bucket. The artifacts bucket is not

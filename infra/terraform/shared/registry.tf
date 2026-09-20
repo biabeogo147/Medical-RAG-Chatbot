@@ -27,6 +27,44 @@ resource "aws_ecr_repository" "app" {
   }
 }
 
+# The pipeline's own tools image (Jenkins guide step 11). A separate repository, because the app
+# repository's lifecycle rules count images and the tools image is not an app release.
+resource "aws_ecr_repository" "ci" {
+  name = "${local.name}-ci"
+
+  # Mutable on purpose, unlike the app repository: `make ci-image` tags by the commit it was built from,
+  # and a second run on the same commit — after a push that failed halfway — must be able to replace it.
+  # Nothing trusts the tag: the Jenkinsfile pins the tools image by digest.
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "ci" {
+  repository = aws_ecr_repository.ci.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep the last 5 tools images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 5
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
 resource "aws_ecr_lifecycle_policy" "app" {
   repository = aws_ecr_repository.app.name
 

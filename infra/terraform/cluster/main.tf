@@ -32,6 +32,12 @@ data "aws_ecr_repository" "app" {
   name = var.project
 }
 
+# The pipeline's tools image. The kubelet pulls it with the node role, so the node policy must name it
+# (Jenkins guide step 11). Created by the shared stack.
+data "aws_ecr_repository" "ci" {
+  name = "${var.project}-ci"
+}
+
 # Reading the alias, not the key, means the key can be rotated without touching this code.
 data "aws_kms_alias" "cosign" {
   name = "alias/${var.project}-cosign"
