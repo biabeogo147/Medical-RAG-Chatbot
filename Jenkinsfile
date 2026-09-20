@@ -324,5 +324,35 @@ spec:
       }
     }
 
+    stage('Promote to dev') {
+      when { branch 'main' }
+      steps {
+        container('tools') {
+          withCredentials([usernamePassword(credentialsId: 'github',
+                                            usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+            sh """
+              set -e
+              git config user.name jenkins-bot
+              git config user.email jenkins-bot@users.noreply.github.com
+              yq -i '.image.tag = "${env.GIT_TAG}@${env.IMAGE_DIGEST}"' deploy/envs/dev/values.yaml
+              if [ "${env.INDEX_CHANGED_DEV}" = "yes" ]; then
+                yq -i '.index.version = "${env.INDEX_VERSION}"' deploy/envs/dev/values.yaml
+              fi
+              git add deploy/envs/dev/values.yaml
+              git diff --cached --quiet && { echo "dev already runs this image"; exit 0; }
+              git commit -m "dev: ${env.GIT_TAG}"
+              # Someone may have pushed while this build ran; rebase and try again, three times.
+              for i in 1 2 3; do
+                git pull --rebase --quiet "https://\${GIT_USER}:\${GIT_TOKEN}@github.com/biabeogo147/Medical-RAG-Chatbot.git" main && \
+                git push --quiet "https://\${GIT_USER}:\${GIT_TOKEN}@github.com/biabeogo147/Medical-RAG-Chatbot.git" HEAD:main && exit 0
+                sleep 5
+              done
+              echo "could not push after three tries"; exit 1
+            """
+          }
+        }
+      }
+    }
+
   }
 }
