@@ -1,12 +1,9 @@
 # dev: the first environment every change reaches. Its index Job is the one that embeds a new corpus
 # version; prod's finds it already built.
 environment: dev
-
 image:
-  tag: "1eaa43bf3512@sha256:c10cd57eb4b22d025f2daf772743e7a79f3285233921ef4236e532a75e166769"   # app guide step 11
-
+  tag: "a0c71e643a75@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e" # app guide step 11
 index:
-  version: "cc759ae1a093"                  # app guide step 12
-
+  version: "cc759ae1a093" # app guide step 12
 ingress:
-  host: dev.recruitai.io.vn            # app guide step 14
+  host: dev.recruitai.io.vn # app guide step 14
