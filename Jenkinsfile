@@ -121,6 +121,35 @@ spec:
   }
 
   stages {
+    // First, because the commit that merges a prod pull request changes only deploy/, which the skip guard
+    // below ends as NOT_BUILT. This stage has to run before it (Jenkins guide step 17).
+    stage('Tag the image prod runs') {
+      when {
+        allOf {
+          branch 'main'
+          changeset "deploy/envs/prod/values.yaml"
+        }
+      }
+      steps {
+        container('tools') {
+          sh '''
+            set -e
+            PROD=$(yq '.image.tag' deploy/envs/prod/values.yaml | tr -d '"')
+            TAG=${PROD%@*}
+            if aws ecr describe-images --repository-name medical-rag --image-ids imageTag="release-$TAG" >/dev/null 2>&1; then
+              echo "release-$TAG already exists"; exit 0
+            fi
+            IMG=$(aws ecr batch-get-image --repository-name medical-rag --image-ids imageTag="$TAG" --output json)
+            MANIFEST=$(echo "$IMG" | jq -r '.images[0].imageManifest')
+            MEDIA=$(echo "$IMG" | jq -r '.images[0].imageManifestMediaType')
+            aws ecr put-image --repository-name medical-rag --image-tag "release-$TAG" \
+              --image-manifest "$MANIFEST" --image-manifest-media-type "$MEDIA" \
+              --query 'image.imageId.imageDigest' --output text
+          '''
+        }
+      }
+    }
+
     stage('Skip guard') {
       steps {
         script {
@@ -348,6 +377,47 @@ spec:
                 sleep 5
               done
               echo "could not push after three tries"; exit 1
+            """
+          }
+        }
+      }
+    }
+
+    stage('Prod pull request') {
+      when { branch 'main' }
+      steps {
+        container('tools') {
+          withCredentials([usernamePassword(credentialsId: 'github',
+                                            usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+            sh """
+              set -e
+              export GH_TOKEN="\${GIT_TOKEN}"
+              BRANCH="bot/prod-${env.GIT_TAG}"
+              git checkout -b "\$BRANCH"
+              yq -i '.image.tag = "${env.GIT_TAG}@${env.IMAGE_DIGEST}"' deploy/envs/prod/values.yaml
+              if [ "${env.INDEX_CHANGED_PROD}" = "yes" ]; then
+                yq -i '.index.version = "${env.INDEX_VERSION}"' deploy/envs/prod/values.yaml
+              fi
+              git add deploy/envs/prod/values.yaml
+              git diff --cached --quiet && { echo "prod already runs this image"; exit 0; }
+              git commit -m "prod: ${env.GIT_TAG}"
+              git push --quiet "https://\${GIT_USER}:\${GIT_TOKEN}@github.com/biabeogo147/Medical-RAG-Chatbot.git" "\$BRANCH"
+              SUMMARY=\$(jq -r '[.Results[]?.Vulnerabilities[]?] | group_by(.Severity)
+                          | map("\\(.[0].Severity) \\(length)") | join(", ")' trivy-report.json)
+              {
+                echo "Image: ${IMAGE}:${env.GIT_TAG}@${env.IMAGE_DIGEST}"
+                echo "Index version: ${env.INDEX_VERSION}"
+                echo "Trivy: \$SUMMARY"
+                echo "Dev has been running this image since build ${env.BUILD_NUMBER}."
+              } > pr-body.md
+              # One pull request at a time: if an earlier one is still open, update it instead of opening another.
+              if gh pr list --repo biabeogo147/Medical-RAG-Chatbot --head "\$BRANCH" --state open --json number \
+                   | grep -q number; then
+                gh pr edit --repo biabeogo147/Medical-RAG-Chatbot "\$BRANCH" --body-file pr-body.md
+              else
+                gh pr create --repo biabeogo147/Medical-RAG-Chatbot --base main --head "\$BRANCH" \
+                  --title "prod: ${env.GIT_TAG}" --body-file pr-body.md
+              fi
             """
           }
         }
