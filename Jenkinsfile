@@ -240,11 +240,21 @@ spec:
         }
         container('tools') {
           // The key never leaves KMS; the pipeline may only ask it to sign (Jenkins guide step 3).
-          // The public Rekor log is not used: these images are private, and verification uses the key.
+          // The public Rekor log is not used: these images are private, so their digests, repository
+          // name and account id have no business in a public log, and verification here uses the key.
+          //
+          // cosign v3 removed the way the guide says to do that. `--tlog-upload=false` is deprecated on
+          // `sign` and refuses to run alongside the signing config v3 enables by default; on `attest` the
+          // flag is gone entirely, and so are --rekor-url and --offline. What replaces them is a signing
+          // config listing the services to use. Created with no services at all, it names no transparency
+          // log, which is exactly the intent. It is generated here rather than baked into the tools image
+          // so that it always matches the cosign that reads it, and building it needs no network.
           sh """
-            cosign sign --yes --tlog-upload=false \
+            cosign signing-config create --out signing-config.json
+            cosign sign --yes --signing-config signing-config.json \
               --key awskms:///alias/medical-rag-cosign ${IMAGE}@${env.IMAGE_DIGEST}
-            cosign attest --yes --tlog-upload=false --type spdxjson --predicate sbom.spdx.json \
+            cosign attest --yes --signing-config signing-config.json \
+              --type spdxjson --predicate sbom.spdx.json \
               --key awskms:///alias/medical-rag-cosign ${IMAGE}@${env.IMAGE_DIGEST}
           """
         }
