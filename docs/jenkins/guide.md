@@ -33,7 +33,7 @@ No step installs a tool.
 **Every step has the same shape:** problem now → why it matters → this step → after it (what works, what proves
 it, what is still missing) → files → checks → record.
 
-The rules from the earlier guides still hold, plus rule 5, which this phase added after an unfilled
+The rules from the earlier guides still hold, plus rules 5 and 6, which this phase added after an unfilled
 placeholder reached the cluster:
 
 1. **Check before it takes effect.** For Terraform, a plan with an exact count: if the count differs, type
@@ -52,10 +52,27 @@ placeholder reached the cluster:
    and the obvious pattern without it matches nothing and reports success. It also matches prose — step 11's
    Terraform carries `"release-<tag>"` and `_acme-challenge.<domain>` inside comments — so read each hit and
    decide: a slot, or a sentence describing a shape. Presence is not content either: a value that is well-formed
-   but wrong passes this, so each of those steps also proves its value resolves. What the grep cannot see at
-   all is a block you never pasted — for that, compare the file with the guide's own fenced blocks.
-6. **Expected output is specific:** a count, a string, an ARN.
-7. **Full resource names in kubectl:** `applications.argoproj.io`, not `app`.
+   but wrong passes this, so each of those steps also proves its value resolves.
+6. **A block you never pasted is invisible to rule 5.** That grep finds what you left unfilled, not what
+   you left out, and the second is worse: the file still parses, the push still goes, and the failure
+   arrives much later. Here it was step 11's `aws-token` volume, missed while its `volumeMount` was not;
+   the API server would have refused the pod with `volumeMounts[0].name: Not found`, one scan and one
+   build after the mistake. So on the **workstation**, in step 2 of the loop below, after
+   `git checkout --detach origin/jenkins/step-N` and before moving `main`:
+   ```bash
+   python3 docs/jenkins/check-blocks.py <the step's guide file> <step number> <the files in its table>
+   ```
+   After step 15, for example:
+   ```bash
+   python3 docs/jenkins/check-blocks.py docs/jenkins/guide/3-pipeline.md 15 Dockerfile Jenkinsfile .dockerignore
+   ```
+   Expected: `step 15: all 3 blocks present (0 skipped)`. It runs on the workstation because that is where
+   Python is; the laptop has only Git and an editor. Run it **for that step, at that time** — later steps
+   edit earlier steps' blocks on purpose, so the same check afterwards reports as missing what is merely
+   newer. Blocks carrying a `<placeholder>` are skipped and named, because rule 5 covers those; a step whose
+   changes are given in prose reports `NO BLOCKS to check` rather than a pass.
+7. **Expected output is specific:** a count, a string, an ARN.
+8. **Full resource names in kubectl:** `applications.argoproj.io`, not `app`.
 
 **Versions:** Kubernetes 1.36.4, Argo CD v3.5.3, Jenkins Helm chart 5.9.63, BuildKit v0.33.0, Trivy 0.74.0,
 cosign v3.1.3, gh 2.100.0. Region `ap-southeast-1`.
@@ -119,8 +136,9 @@ change is first pushed to a temporary branch and checked on the workstation; onl
 the same commit. The branches are named `jenkins/step-N`:
 
 1. **Laptop:** `git push origin HEAD:jenkins/step-N`.
-2. **Workstation:** `git fetch origin`, then `git checkout --detach origin/jenkins/step-N`, then the step's
-   check before the push.
+2. **Workstation:** `git fetch origin`, then `git checkout --detach origin/jenkins/step-N`, then
+   `python3 docs/jenkins/check-blocks.py <guide file> <step> <the files in the step's table>` (rule 6), then
+   the step's check before the push.
 3. **Laptop,** only if every check passed: `git push origin HEAD:main`, then
    `git push origin --delete jenkins/step-N`.
 4. **Workstation:** `git checkout main`, then `git pull`, then `git log -1 --oneline`, which must show the

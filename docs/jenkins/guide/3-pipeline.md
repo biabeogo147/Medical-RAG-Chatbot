@@ -291,8 +291,11 @@ built once from a Dockerfile in this repository and pinned by digest, keeps ever
 # The tools the pipeline needs, in a container with a shell. cosign and gh publish images without one, and the
 # Jenkins Kubernetes plugin runs every step through a shell, so they are collected here instead.
 # Everything is pinned and checked against a published checksum, like the ops workstation's own setup.
-# Pinned by digest, for the same reason as the app's base image (step 13). `docker manifest inspect
-# alpine:3.22 | jq -r '.manifests[0].digest'` on the workstation prints the digest to paste here.
+# Pinned by digest, for the same reason as the app's base image (step 13). On the workstation,
+# `docker buildx imagetools inspect alpine:3.22` prints it on the `Digest:` line, above `Manifests:`.
+# Take that one: it is the digest of the whole multi-platform index. The indented `Name: …@sha256:…`
+# lines below it are single architectures and attestation manifests, and pinning one of those pins
+# the image to one platform or to something that is not the image at all.
 FROM alpine:3.22@sha256:<digest>
 
 ARG COSIGN_VERSION=v3.1.3
@@ -455,6 +458,13 @@ Then add two stages after `Test`:
   shell has no such variable.
 - **The digest comes from BuildKit's metadata, not from a tag.** That is the digest step 14 signs: a tag could be
   overwritten between push and signature.
+- **One tag per build, and not one image per tag.** A commit that reaches this stage but changes nothing that
+  enters the runtime image — the `Jenkinsfile` itself, `ci/`, `infra/` — is rebuilt to the same content, and
+  the push adds another tag to an image that already exists. Ten tags on one digest is normal and is the
+  reproducibility working. (A `docs/` or `deploy/` commit never gets this far: the skip guard ends it as
+  `NOT_BUILT` and no tag is added.) Two things follow: the tag records which commit *built* an image, not
+  which commit *changed* it, and step 2's lifecycle rules count images rather than tags, so ten tags occupy
+  one of the thirty places, not ten.
 - **Branches import the cache but never export it.** A malicious branch cannot change what a later `main` build
   starts from.
 - **The same commit cannot be pushed twice.** ECR tags are immutable, so rebuilding a commit whose image already
@@ -503,7 +513,8 @@ resource "aws_ecr_lifecycle_policy" "ci" {
 repository only, so without this the `tools` container sits in `ImagePullBackOff` however correct the rest
 is. In `infra/terraform/cluster/main.tf`, next to the existing `data "aws_ecr_repository" "app"`:
 ```hcl
-# The pipeline's tools image. The kubelet pulls it with the node role, so the node policy must name it.
+# The pipeline's tools image. The kubelet pulls it with the node role, so the node policy must name it
+# (Jenkins guide step 11). Created by the shared stack.
 data "aws_ecr_repository" "ci" {
   name = "${var.project}-ci"
 }
@@ -659,6 +670,12 @@ Add these stages after `Build and push`:
   gate fails — which is not hypothetical: the first run of this step failed at the gate and the report survived.
 - **Unfixed findings ignored by the gate only.** The report counts everything, so criterion #9 can show both
   numbers; only the gate filters on `FixedVersion`.
+- **`TRIVY_CACHE_DIR` gives Trivy somewhere to write; it is not a cache between builds.** It points into the
+  workspace, which is an `emptyDir` made fresh for each build pod, so the vulnerability database — 114.8 MiB
+  when this was measured — is downloaded on every build: 13 seconds of a 23-second `Scan` stage. The variable
+  still earns its place: the container runs as uid 1000 and Trivy's default `/.cache/trivy` is not writable.
+  Putting it on a volume that outlives the pod would save the download, and is not done here because nothing
+  else in this phase keeps state between builds.
 - **`archiveArtifacts` in `post { always }`.** The report survives a failed build.
 
 **Check**, on a temporary branch: the `Scan` stage passes, the console shows the table **and the line
@@ -898,7 +915,8 @@ decides whether step 16 may write the new version, or must stop.
 | File | Change |
 |---|---|
 | `.dockerignore` | `data/` no longer excluded |
-| `Jenkinsfile` | The `Index version` stage |
+| `Dockerfile` | Two stages: `indexversion` and `indexversion-out` |
+| `Jenkinsfile` | The `Index version` stage, and `AWS_ACCOUNT` in the tools container |
 
 **Laptop.** In `.dockerignore`, remove the `data/` line, and add a comment:
 ```
@@ -919,14 +937,20 @@ Add this stage after `SBOM and signature`:
             --opt target=indexversion-out \
             --output type=local,dest=version-out
         '''
-        script {
-          env.INDEX_VERSION = readFile('version-out/version.txt').trim()
-          // readYaml runs on the controller, so no container needs yq for this comparison.
-          env.DEV_VERSION  = readYaml(file: 'deploy/envs/dev/values.yaml').index.version.toString()
-          env.PROD_VERSION = readYaml(file: 'deploy/envs/prod/values.yaml').index.version.toString()
-          env.INDEX_CHANGED_DEV  = (env.INDEX_VERSION == env.DEV_VERSION) ? 'no' : 'yes'
-          env.INDEX_CHANGED_PROD = (env.INDEX_VERSION == env.PROD_VERSION) ? 'no' : 'yes'
-          echo "index version: built=${env.INDEX_VERSION} dev=${env.DEV_VERSION} prod=${env.PROD_VERSION}"
+        container('tools') {
+          // `readYaml` would be shorter, but it comes from pipeline-utility-steps and this controller
+          // installs only the plugins listed in deploy/argocd/values/jenkins.yaml. The tools image already
+          // carries yq, so nothing new has to be installed to read two fields.
+          script {
+            env.INDEX_VERSION = readFile('version-out/version.txt').trim()
+            env.DEV_VERSION   = sh(returnStdout: true,
+              script: "yq -r '.index.version' deploy/envs/dev/values.yaml").trim()
+            env.PROD_VERSION  = sh(returnStdout: true,
+              script: "yq -r '.index.version' deploy/envs/prod/values.yaml").trim()
+            env.INDEX_CHANGED_DEV  = (env.INDEX_VERSION == env.DEV_VERSION) ? 'no' : 'yes'
+            env.INDEX_CHANGED_PROD = (env.INDEX_VERSION == env.PROD_VERSION) ? 'no' : 'yes'
+            echo "index version: built=${env.INDEX_VERSION} dev=${env.DEV_VERSION} prod=${env.PROD_VERSION}"
+          }
         }
         script {
           if (env.INDEX_CHANGED_DEV == 'yes' || env.INDEX_CHANGED_PROD == 'yes') {
@@ -937,9 +961,21 @@ Add this stage after `SBOM and signature`:
                 set -e
                 PDF=$(ls data/*.pdf | head -1)
                 LOCAL=$(openssl dgst -sha256 -binary "$PDF" | base64)
-                REMOTE=$(aws s3api head-object --bucket "medical-rag-artifacts-${AWS_ACCOUNT}" \
+                # Keep the error, but out of the value. Discarding stderr makes an expired token, a
+                # wrong bucket name and a genuinely absent object indistinguishable, and all three
+                # would then be reported as "the corpus is wrong" - sending someone to re-upload
+                # 12 MB to fix a credential. Merging stderr into the value is no better: a warning on
+                # a successful call would end up in REMOTE and fail the comparison the same way.
+                ERRFILE=$(mktemp)
+                if REMOTE=$(aws s3api head-object --bucket "medical-rag-artifacts-${AWS_ACCOUNT}" \
                   --key "corpus/$(basename "$PDF")" --checksum-mode ENABLED \
-                  --query ChecksumSHA256 --output text 2>/dev/null || echo "missing")
+                  --query ChecksumSHA256 --output text 2>"$ERRFILE"); then
+                  if [ -s "$ERRFILE" ]; then echo "head-object warned: $(cat "$ERRFILE")"; fi
+                else
+                  echo "head-object did not answer: $(cat "$ERRFILE")"
+                  REMOTE=missing
+                fi
+                rm -f "$ERRFILE"
                 echo "corpus local=$LOCAL s3=$REMOTE"
                 test "$LOCAL" = "$REMOTE" || {
                   echo "The corpus in S3 is not the PDF in Git. Upload it first (app guide step 13), then rerun."
@@ -977,8 +1013,11 @@ COPY --from=indexversion /version.txt /version.txt
 - **The version is computed, never typed.** The same code, the same corpus, the same settings as the image.
 - **A build stage, not a container run.** The build pod has no way to run an image; BuildKit can.
 - **The checksum comparison uses the value S3 stored at upload** (app guide step 13), so no download is needed.
-  A missing object answers `403`, not `404`, because the role cannot list the bucket
-  ([concepts §20](0-concepts.md#20-the-index-version-in-ci)); both are treated as "not there".
+  A missing object is expected to answer `403` rather than `404`, because the role cannot list the bucket
+  ([concepts §20](0-concepts.md#20-the-index-version-in-ci)) — **expected, not measured**: the only hand-run
+  of `head-object` was from the workstation, whose identity can list and therefore answered `404`. The stage
+  keeps the error now, so the first build that hits this path prints which it was. Either way both are
+  treated as "not there".
 - **The pipeline never uploads the corpus.** Putting 12 MB of new data into the bucket stays a deliberate step.
 
 **Check**, on a temporary branch, three cases. The first two are quick; the third needs a change you will revert.
@@ -1054,7 +1093,12 @@ dev's values, commits as `jenkins-bot` and pushes, retrying on a rebase.
 
 **Why:**
 
-- **`yq -i`, not `sed`.** It edits the value and leaves every comment in place.
+- **`yq -i`, not `sed`.** It edits the value and keeps every comment, which `sed` on a YAML file cannot be
+  trusted to do. It does not leave the file untouched: it re-emits the whole document, so the first bot
+  commit also drops the blank lines between sections, collapses the padding before end-of-line comments,
+  and writes LF where the file had CRLF. Measured here: 3 blank lines gone, 12 CRLF down to 2. Later bot
+  commits are a one-line diff. `.gitattributes` does not cover `*.yaml`; adding `*.yaml text eol=lf` would
+  stop the line-ending half of that churn.
 - **The bot's own name and address.** The skip guard recognises the author, so this commit does not start another
   build ([concepts §18](0-concepts.md#18-writing-back-to-git)).
 - **Nothing to commit is a success.** Rebuilding the same commit twice must not fail the pipeline.
@@ -1068,10 +1112,37 @@ git log -1 --format='%H %cI' origin/main          # your commit, and its time
 In the UI the build runs; then on the workstation:
 ```bash
 kubectl -n argocd annotate applications.argoproj.io medical-rag-dev argocd.argoproj.io/refresh=normal --overwrite
+kubectl -n medical-rag-dev rollout status deploy/medical-rag --timeout=5m
 kubectl -n medical-rag-dev get pods -l app.kubernetes.io/component=web -o json \
-  | jq -r '.items[] | [.metadata.creationTimestamp, (.status.conditions[] | select(.type=="Ready") | .lastTransitionTime), .spec.containers[0].image] | @tsv'
+  | jq -r '.items[] | [.metadata.creationTimestamp,
+      ((.status.conditions[] | select(.type=="Ready" and .status=="True")
+        | .lastTransitionTime) // "not-ready-yet"),
+      .spec.containers[0].image] | @tsv'
 ```
-Expected: a pod whose image ends in the digest from the build, with its creation and Ready times.
+Expected: `deployment ... successfully rolled out`, then a pod whose image ends in the digest from the
+build, with its creation and Ready times.
+
+**Three details here, each of which has produced a wrong number once.**
+
+First, `.status=="True"`. A pod that has not started still carries a `Ready` condition with `status: False`,
+and its `lastTransitionTime` is roughly when the pod was created. Without the test the command answers with
+a plausible time for a pod that is not running; criterion #8 came out eleven seconds short that way.
+
+Second, the `// "not-ready-yet"` fallback. Once the test is there, a pod that is not ready yields *nothing*
+for that slot, and `@tsv` then prints two columns instead of three — the image quietly moves into the Ready
+column. The fallback keeps three columns and names the pod that is not there yet.
+
+Third, `rollout status` rather than a wait on Argo CD. `kubectl wait … =Synced` returns at once, because at
+the moment you ask, the Application is still `Synced` against the *previous* commit; and `Synced` means the
+manifests were applied, not that the new pod serves. `rollout status` blocks until the new ReplicaSet is up,
+which is the moment criterion #8 measures.
+
+To see the startup sequence on one pod:
+```bash
+kubectl -n medical-rag-dev get pod POD -o jsonpath="{range .status.conditions[*]}{.type}={.status} {.lastTransitionTime}{'\n'}{end}"
+```
+It lists `PodScheduled`, `PodReadyToStartContainers`, `Initialized`, `ContainersReady` and `Ready`, each
+with its own time — eleven seconds end to end here, with an init container fetching the index.
 
 **Record** for criterion #8: your commit's time, the build's stage durations (the build page's *Stage View*, or
 `curl -s <build-url>/wfapi/describe | jq`), and the dev pod's Ready time. The difference is "commit to running".
@@ -1105,7 +1176,7 @@ must survive ECR's clean-up ([concepts §19](0-concepts.md#19-promotion-by-pull-
 
 First, the stage that tags the image. It goes at the **top** of the pipeline, right after `stages {` and before
 `stage('Skip guard')`:
-```groovy
+```text
   stages {
     // ↓ the new stage goes here ↓
 
@@ -1197,8 +1268,13 @@ Then, after `Promote to dev`:
   because the commit that merges a prod pull request changes only `deploy/`, which the skip guard stops.
 - **Merge the pull request with "Squash and merge".** The skip guard reads the files of one commit, and a merge
   commit lists none, so an ordinary merge would look like "unknown" and run the whole pipeline again. A squash
-  merge produces one commit that changes only prod's values, which is what both stages above expect. Set it as the
-  repository's default in *Settings → General → Pull Requests*.
+  merge produces one commit that changes only prod's values, which is what both stages above expect. GitHub has
+  no "default merge method" setting; clear *Allow merge commits* and *Allow rebase merging* in
+  *Settings → General → Pull Requests* and squash is the only button left.
+- **The merge commit is authored by whoever pressed the button, not by the bot.** So on a prod merge the skip
+  guard's author test never fires; what ends the build is the other half of the guard, "only docs or deploy
+  files changed". Expect a message naming *you*, not `jenkins-bot`. Both reach `NOT_BUILT`, but only one of
+  them is doing the work, and the author test protects the dev push in step 16, not this.
 - **`ecr:PutImage` is a permission the CI role already has.** Re-tagging is the same call as pushing a manifest.
 - **The body carries the digest and the scan summary.** What you review is what was scanned and signed.
 

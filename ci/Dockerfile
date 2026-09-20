@@ -1,8 +1,11 @@
 # The tools the pipeline needs, in a container with a shell. cosign and gh publish images without one, and the
 # Jenkins Kubernetes plugin runs every step through a shell, so they are collected here instead.
 # Everything is pinned and checked against a published checksum, like the ops workstation's own setup.
-# Pinned by digest, for the same reason as the app's base image (step 13). `docker manifest inspect
-# alpine:3.22 | jq -r '.manifests[0].digest'` on the workstation prints the digest to paste here.
+# Pinned by digest, for the same reason as the app's base image (step 13). On the workstation,
+# `docker buildx imagetools inspect alpine:3.22` prints it on the `Digest:` line, above `Manifests:`.
+# Take that one: it is the digest of the whole multi-platform index. The indented `Name: …@sha256:…`
+# lines below it are single architectures and attestation manifests, and pinning one of those pins
+# the image to one platform or to something that is not the image at all.
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 ARG COSIGN_VERSION=v3.1.3
