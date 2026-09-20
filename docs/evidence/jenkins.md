@@ -733,9 +733,9 @@ Two ways out, and the choice is not symmetric:
 | Works if the plugin turns out to be present after all | yes | **yes** |
 
 `yq` was taken, because it is the only one of the two that is correct whichever the plugin list actually holds.
-The guide's own comment — *"readYaml runs on the controller, so no container needs yq for this comparison"* — is
-the reasoning that produced the defect: it optimises away a tool that is already there in favour of one that is
-not installed.
+The guide's comment at the time — *"readYaml runs on the controller, so no container needs yq for this
+comparison"* — is the reasoning that produced the defect: it optimises away a tool that is already there in
+favour of one that is not installed. Both the stage and that comment have since been replaced in the guide.
 
 **Prerequisites checked, all present:** `data/` holds one 12 MB PDF; `deploy/envs/{dev,prod}/values.yaml` both
 carry `index.version: "cc759ae1a093"`, the value the step's expected output names; `python -m app.index version`
@@ -806,12 +806,201 @@ diagnosis of a cause the check never established.
 Fixed in the `Jenkinsfile`: the command's output is captured with `2>&1`, success and failure are told apart by
 exit status, and a failure prints `head-object did not answer: <the error>` before falling back to `missing`.
 The next time case 3 runs it will also say whether the answer was 403 or 404, which closes the open claim as a
-side effect rather than as a separate test. The guide still carries the `2>/dev/null` form.
+side effect rather than as a separate test. **Fixed in the guide since**, along with a second defect the
+first version introduced: capturing with `2>&1` merges stderr into the value on the *success* path too, so a
+warning on a call that exited 0 would have failed the comparison and printed the same wrong diagnosis. Now
+stderr goes to its own file.
 
 **Stage times, from the branch build** (whole run about 1 min 32 s): checkout 3 s, `Skip guard` 1 s, `Test`
 30 s, `Log in to ECR` 2 s, `Build and push` 13 s, `Scan` 22 s, `SBOM and signature` **0 ms** — the `when`
 skip costs nothing — and `Index version` 9 s, of which the `buildctl` export was 5 s and each `yq` about
 0.64 s.
+
+## Step 16 — The bot updates dev
+
+**A second queue message that looks like a failure.** Build 31 printed
+
+```
+Still waiting to schedule task
+All nodes of label 'medical-rag_main_31-9cwcm' are offline
+```
+
+and at that moment `kubectl -n jenkins-agents get pods` showed
+`medical-rag-main-31-9cwcm-vt281-42fhw   4/4   Running`, scheduled 54 s earlier with all four containers
+started, and the controller log carried `Created Pod`. So the build was fine. Jenkins creates the node object
+first and the agent connects once `jnlp` is up; in between, the queue describes the node as offline. It belongs
+with `Still waiting to schedule task` — alarming wording for an ordinary wait. The guide covers that one, in
+step 10 and in a troubleshooting row. **`All nodes of label '…' are offline` it does not**, in either place,
+and that is the gap.
+
+**Where the CPU actually went, measured from the three nodes:**
+
+| Node | Requests | Free | Notes |
+|---|---|---|---|
+| `medical-rag-node-1` | 1690m of 2000m (84%) | **310m** | 250m more than step 1.2 measured: this is where the Jenkins controller runs |
+| `medical-rag-node-2` | 1725m (86%) | 275m | includes the 500m build pod; **775m** when idle |
+| `medical-rag-node-3` | 1280m (64%) | **720m** | unchanged since step 1.2 |
+
+**Step 1.2's prediction held exactly.** It said the controller would take about 250m and a build pod at least
+400m, that each fits the smallest gap of 560m, and that the two together fit only on different nodes. The
+controller landed on node 1 and left it 310m — too little for the build pod, which now asks 500m after step 12
+added Trivy. Build pods therefore have two nodes to choose from, not three, and that was decided by a
+measurement taken before Jenkins existed.
+
+**The margin is narrowing.** The build pod went from 400m at step 10 to 500m at step 12. One more container of
+the same size would leave only node 3 able to host it.
+
+**The bot wrote to `main` and the loop closed.**
+
+| | |
+|---|---|
+| The bot's commit | `6fb3638  dev: a0c71e643a75`, authored `jenkins-bot`, `2026-09-20T15:50:33Z` |
+| What it wrote | `tag: "a0c71e643a75@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e"` — the Debian 13 image from steps 13 and 14 |
+| `index.version` | untouched at `cc759ae1a093`, because `INDEX_CHANGED_DEV` was `no` |
+| The next build | `Nothing to build: author=jenkins-bot, only docs or deploy files changed`, `NOT_BUILT` |
+
+That last row is the anti-loop mechanism working, and it is the only way to see it work: the guard has to
+recognise a commit the pipeline itself made. Until now nothing had made one.
+
+**Before this, dev had been running the same image since 02:19 that morning** — `1eaa43bf3512@sha256:c10cd57e…`,
+the one the app phase put there by hand, while the pipeline pushed a new image on every commit. That gap is
+exactly what the step exists to close, and it was visible for a day.
+
+**`yq -i` rewrites the file, which the step's Why understates.** It says *"it edits the value and leaves every
+comment in place"*. The comments do survive; the document does not:
+
+| | Before | After |
+|---|---|---|
+| Blank lines grouping the sections | 3 | 0 |
+| Comment alignment | padded into columns | collapsed to one space |
+| Line endings | 12 CRLF | 2 CRLF and **7 LF** |
+
+So the first bot commit rewrites the whole file, and the file is left with mixed line endings — the two leading
+comment lines kept their CRLF, everything `yq` regenerated came back LF. Functionally nothing is wrong and
+later bot commits are a one-line diff, but the next person editing this from Windows gets a noisy diff, and the
+blank-line grouping the author used is gone for good. A `.gitattributes` line such as `*.yaml text eol=lf`
+would stop the churn; not done, because it changes the whole repository and belongs to a decision of its own.
+
+**Criterion #8, commit to running: 19 minutes 8 seconds.**
+
+| Moment | Time | Leg |
+|---|---|---|
+| The commit, `a0c71e6` | `2026-09-20T15:36:13Z` | — |
+| The bot's commit, `6fb3638` | `15:50:33Z` | **14 m 20 s** in the pipeline |
+| The dev pod `Ready` | `15:55:21Z` | **4 m 48 s** through Argo CD and the rollout |
+| Image it runs | `medical-rag:a0c71e643a75@sha256:f5b6789a…` | the digest the build produced |
+
+**Two caveats, both of which make this number soft.**
+
+The second leg was not hands-off: `argocd.argoproj.io/refresh=normal` was annotated by hand while waiting, and
+that is very likely what triggered the sync. Argo CD's own poll would have taken up to its interval. So 4 m 48 s
+is a *nudged* number, not the one a release gets when nobody is watching.
+
+And the pipeline leg, 14 m 20 s, is far above the 1 m 32 s a branch build took at step 15. Three stages run only
+on `main`, and `containerCap: 1` means a build can queue behind another; how much of the 14 minutes was waiting
+rather than working was not separated. The build's *Stage View* would split it and was not captured.
+
+**The step's own check command reports the wrong time, and that is how the number came out too low.** The
+first reading gave `creationTimestamp` and `Ready` as the same second, `15:55:10Z`, which cannot be right: the
+app has an init container that fetches the index. Reading the conditions individually:
+
+```
+PodScheduled=True                15:55:10Z
+PodReadyToStartContainers=True   15:55:11Z
+Initialized=True                 15:55:13Z
+ContainersReady=True             15:55:21Z
+Ready=True                       15:55:21Z
+```
+
+Eleven seconds from scheduled to ready, not zero. The guide's command filters
+`select(.type=="Ready") | .lastTransitionTime` **without also requiring `.status=="True"`**. A pod that is not
+ready yet still has a `Ready` condition — with `status: False` — and its `lastTransitionTime` is when it became
+False, which is about when the pod was created. So the command answers with a plausible timestamp for a pod
+that has not started, and criterion #8 comes out 11 seconds short. It needs
+`select(.type=="Ready" and .status=="True")`, and a reader should not accept a `Ready` time that equals
+`creationTimestamp`.
+
+The previous pod from `02:19:01Z` was still listed at the time of the read, so the rollout was still in
+progress — another reason the first reading was taken too early.
+
+## Step 17 — Prod by pull request
+
+The `Jenkinsfile` carries all ten stages in the order the guide's *finished pipeline* lists, with
+`Tag the image prod runs` first — ahead of the skip guard, because the commit that merges a prod pull request
+changes only `deploy/` and the guard would otherwise end the build before the tag was written.
+
+| Check | Result |
+|---|---|
+| The pull request | `#2  prod: b79a4531d5cb`, from `bot/prod-b79a4531d5cb` |
+| Its body | `Image: …/medical-rag:b79a4531d5cb@sha256:f5b6789a…`, `Index version: cc759ae1a093`, `Trivy: HIGH 44, LOW 58, MEDIUM 54, UNKNOWN 2`, `Dev has been running this image since build 35.` |
+| Its diff | one file, `deploy/envs/prod/values.yaml` |
+| Merged | `bcd556a  prod: b79a4531d5cb (#2)` — the `(#2)` suffix is GitHub's squash-merge form, so the repository setting took |
+| `Tag the image prod runs` | ran, and `release-b79a4531d5cb` now exists |
+| The tagged image | `sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e` |
+| The build after the merge | `NOT_BUILT` |
+| Prod's pods | all three on `b79a4531d5cb@sha256:f5b6789a…` |
+
+**The digest prod runs is the one the whole chain agreed on.** `f5b6789a…` is the Debian 13 image step 13
+measured at **0 CRITICAL**, the image step 14 signed and `cosign verify` accepted, and the image whose scan
+summary the pull request carried for review. Until this step, prod had been running `c10cd57e…`, placed by hand
+during the app phase.
+
+**The skip guard stopped that build for the other reason.** Its message was
+`Nothing to build: author=Le Nguyen Phuoc Thanh, only docs or deploy files changed` — **not** `jenkins-bot`. A
+squash merge is authored by whoever pressed the button, so the author test never fires on a merge; what caught
+it was `onlyDocs`. Both conditions lead to `NOT_BUILT`, and the step's Why says as much, but a reader skimming
+it may conclude the bot's name is what protects against the loop. On a prod merge it is not.
+
+**One image, ten tags.**
+
+```
+sha256:f5b6789a…  →  a5a04d8c2e71, 0f3586e8c8fb, b79a4531d5cb, da86f9a711c6, 03a094343291,
+                     release-b79a4531d5cb, a0c71e643a75, 8efe125bbf62, 02d44eff3b6e, ee9ae14b4efe
+```
+
+Every commit since the base moved to Debian 13 that **reached** `Build and push` touched only files outside
+the runtime image — the `Jenkinsfile` itself, `ci/`, `infra/` — so BuildKit reproduced the same content each
+time and each build added a tag to it. Commits under `docs/` or `deploy/` produced no tag at all: the skip
+guard ends those as `NOT_BUILT` before the build stage, which is the same mechanism that stops the bot's own
+commits looping. Nothing is wrong — it is the reproducibility first seen at step 11, at scale — but two things
+follow that the guide does not mention. The tag says which commit *built* an image, not which commit *changed*
+it. And step 2's lifecycle rules count images, not tags, so ten tags on one image consume one of the thirty
+places, not ten.
+
+## Step 18 — Take push and sign away from the node role (in progress)
+
+Edited, not yet applied. `infra/terraform/cluster/iam.tf` loses four ECR write actions and the whole
+`CosignSign` statement; the node role keeps only reads.
+
+**The step's own block would have undone step 11.** It gives the replacement statement as
+
+```hcl
+    resources = [data.aws_ecr_repository.app.arn]
+```
+
+— the app repository alone. But step 11 added `data.aws_ecr_repository.ci.arn` to that same statement so the
+kubelet could pull the tools image, and without it the `tools` container goes back to `ImagePullBackOff`. Step
+18 was written before step 11 had a node-role change at all, which it did not until this run. Both ARNs kept.
+
+**Removing `CosignSign` orphans a data source the step does not mention.**
+`data "aws_kms_alias" "cosign"` in `infra/terraform/cluster/main.tf` existed only to give that statement its key
+ARN. Terraform does not fail on an unused data source, it just reads it on every plan for nothing. Removed.
+Data sources are not counted in the plan summary, so the step's expected `0 to add, 1 to change, 0 to destroy`
+still holds.
+
+**What the change is, exactly:**
+
+| | Before | After |
+|---|---|---|
+| ECR statement | `EcrPullPush` — 5 read actions plus `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage` | `EcrPull` — the 5 reads |
+| ECR resources | app repo + ci repo | **unchanged**: app repo + ci repo |
+| KMS | `kms:Sign`, `kms:GetPublicKey`, `kms:DescribeKey` on the cosign key | statement gone |
+| `ecr:GetAuthorizationToken` | `*` | **unchanged** — the kubelet needs it to pull at all |
+
+**Still owed:** `make infra` with a plan that is 1 to change; `simulate-principal-policy` showing
+`ecr:PutImage implicitDeny`, `kms:Sign implicitDeny`, and the two pull actions still `allowed`; the same denial
+from a real pod on a node; and a green pipeline build afterwards, which is the part that matters — if the build
+pod were quietly using the node role, this step is what would expose it.
 
 ## Problems found and fixed
 
@@ -854,9 +1043,10 @@ appears in Part 3 below, and it is the rule that was written to fix the third.
    message that says nothing about redirects.
    Fixed: `curl -fsSL`, a line count that must be four, and a troubleshooting row with the literal error.
 
-**Part 3 so far.** Fourteen, all defects in the guide, none in the cluster. One is a disclosed credential, and
-three are commands that cannot do what the step says — two of them flags removed or deprecated by the tool since
-the guide was written. One of them — the split Declarative
+**Part 3.** Seventeen, all defects in the guide, none in the cluster. One is a disclosed credential; four are
+commands that cannot do what the step says, three of them flags the tool removed or deprecated after the guide
+was written. Five are checks that passed while the thing they guarded was broken — the fifth is item 20 below,
+found only because its answer was implausible. One of them — the split Declarative
 suite — cost four builds and two wrong diagnoses before it was measured.
 
 6. **Rule 5's grep cannot see half the placeholders it was written for.** `grep -n '<[A-Za-z][A-Za-z0-9_-]*>'`
@@ -944,6 +1134,22 @@ suite — cost four builds and two wrong diagnoses before it was measured.
    `namespace 'jenkins-agents'` lines *because* step 9 has already proved them. Skipping step 9 therefore turns
    a loud error into a silent queue, and step 10 has no "Before you start" line saying so, unlike the Parts.
 
+20. **Step 16's readiness check accepts a pod that is not ready.** It filtered the `Ready` condition by type
+   and not by status, so a pod still starting answered with the time its `Ready` condition went *False* —
+   about when the pod was created. Criterion #8 came out eleven seconds short, and the only reason it was
+   caught is that `creationTimestamp` and `Ready` were the same second, which is not credible for a pod with
+   an init container. **The fifth check in this phase that passed while the thing it guarded was broken.**
+   Fixed with `.status=="True"`, which introduced a second problem the fix had to cover: the filter then
+   yields nothing for a pod that is not ready, `@tsv` prints two columns instead of three, and the image
+   slides into the Ready column. A `// "not-ready-yet"` fallback keeps the shape.
+21. **Step 16's wait on Argo CD does not wait.** `kubectl wait … {.status.sync.status}=Synced` is satisfied by
+   the *previous* commit's sync and returns at once, so the reader measures the pod on its way out. And
+   `Synced` is not "the new pod serves" in any case. Replaced with `kubectl rollout status`.
+22. **Step 18 would have undone step 11.** Its replacement ECR statement lists the app repository alone, but
+   step 11 had added the tools repository to that same statement so the kubelet could pull the `tools`
+   image. Following step 18 literally puts that container back into `ImagePullBackOff`, three steps away from
+   the change that caused it. Step 18 predates step 11 having any node-role change at all.
+
 **Part 1.** None: every check of Part 1 behaved as the guide expected, except the two shell mistakes in the guide
 itself (an unset variable in the Ansible command, and one in step 2's gate), which were fixed in the guide.
 
@@ -952,8 +1158,8 @@ itself (an unset variable in the Ansible command, and one in step 2's gate), whi
 - **Nothing checks that a block the guide hands over actually landed.** Rule 5 greps a file you filled in for
   leftover placeholders; it cannot see a block you never pasted. In step 11 the `aws-token` volume was missed
   while its `volumeMount` was not, which the API server would have rejected at pod creation with
-  `spec.containers[1].volumeMounts[0].name: Not found`, after a push and a scan. A check exists — extract every
-  fenced block from the guide and assert it appears in the file — and it is not in `guide.md`.
+  `spec.containers[1].volumeMounts[0].name: Not found`, after a push and a scan. **Closed since:** rule 6 in
+  `guide.md`, with `docs/jenkins/check-blocks.py`, run on the workstation as step 2 of the push loop.
 - **A positive control for step 12's gate.** It has never returned anything but `0`. Lowering the severity to
   `MEDIUM` for one build would exercise the failure path against `pip`'s five fixable findings.
 - **Whether `--import-cache` should be in the `Test` stage at all,** given that no login exists there. Either
