@@ -38,11 +38,6 @@ data "aws_ecr_repository" "ci" {
   name = "${var.project}-ci"
 }
 
-# Reading the alias, not the key, means the key can be rotated without touching this code.
-data "aws_kms_alias" "cosign" {
-  name = "alias/${var.project}-cosign"
-}
-
 data "aws_secretsmanager_secret" "app" {
   for_each = toset(["llm", "github", "rancher", "rancher-tls", "alertmanager", "wildcard-tls", "app-dev", "app-prod"])
   name     = "${var.project}/${each.key}"

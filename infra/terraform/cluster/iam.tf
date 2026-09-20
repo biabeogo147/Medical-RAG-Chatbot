@@ -37,20 +37,17 @@ data "aws_iam_policy_document" "nodes" {
     resources = ["*"]
   }
 
-  # Pull for the nodes, push for the Jenkins build pods. Two repositories: the app image, and the
-  # pipeline's tools image, which the kubelet pulls for every build pod. Nothing else in the registry.
+  # Pull only. The Jenkins build pods push with their own role (shared/irsa.tf, Jenkins guide step 3), and
+  # no pod on a node may push through the node role any more. Both repositories stay readable: the kubelet
+  # pulls the app image and, for every build pod, the pipeline's tools image.
   statement {
-    sid = "EcrPullPush"
+    sid = "EcrPull"
     actions = [
       "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer",
       "ecr:DescribeImages",
       "ecr:ListImages",
-      "ecr:InitiateLayerUpload",
-      "ecr:UploadLayerPart",
-      "ecr:CompleteLayerUpload",
-      "ecr:PutImage",
     ]
     resources = [data.aws_ecr_repository.app.arn, data.aws_ecr_repository.ci.arn]
   }
@@ -124,12 +121,6 @@ data "aws_iam_policy_document" "nodes" {
     resources = ["*"]
   }
 
-  # Sign, not decrypt: the CI pipeline asks KMS to sign image digests with the cosign key.
-  statement {
-    sid       = "CosignSign"
-    actions   = ["kms:Sign", "kms:GetPublicKey", "kms:DescribeKey"]
-    resources = [data.aws_kms_alias.cosign.target_key_arn]
-  }
 }
 
 resource "aws_iam_role_policy" "nodes" {
