@@ -36,10 +36,10 @@ controller:
     - configuration-as-code:2121.v86fe99d4b_b_a_b_  # this file
     # The four below are added by this project. Put the versions the command in "Check before" prints, in
     # the same "name:version" form; do not guess them.
-    - job-dsl:<version>                  # the job below, as code
-    - credentials-binding:<version>      # withCredentials
-    - pipeline-stage-view:<version>      # stage durations for criterion #8
-    - timestamper:<version>              # timestamps in the log
+    - job-dsl:3732.v9a_c49a_61a_313                 # the job below, as code
+    - credentials-binding:728.v902a_273b_8947       # withCredentials
+    - pipeline-stage-view:2.41                      # stage durations for criterion #8
+    - timestamper:1.30                              # timestamps in the log
 
   jenkinsUrl: https://jenkins.recruitai.io.vn
 
