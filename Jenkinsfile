@@ -211,9 +211,20 @@ spec:
           // gate fails; scanning first and failing second is the only order that keeps both.
           sh "trivy image --scanners vuln --format json --output trivy-report.json ${IMAGE}@${env.IMAGE_DIGEST}"
           sh "trivy convert --format table trivy-report.json"
-          // The gate. Unfixed findings are ignored on purpose: nothing can be done about them today, and a
-          // gate that can never pass is a gate people switch off (concepts §2).
-          sh "trivy convert --severity CRITICAL --ignore-unfixed --exit-code 1 trivy-report.json"
+        }
+        // The gate, in the tools container because it is the one with jq. `trivy convert` has no
+        // --ignore-unfixed: that flag belongs to the scan commands, and convert only offers --severity
+        // and --exit-code, which together would fail every build on findings nobody can act on. So the
+        // gate counts them here instead: CRITICAL findings that carry a fixed version. Unfixed ones are
+        // ignored on purpose — a gate that can never pass is a gate people switch off (concepts §2).
+        container('tools') {
+          sh """
+            N=\$(jq '[.Results[]?.Vulnerabilities[]?
+                        | select(.Severity == "CRITICAL")
+                        | select(.FixedVersion != null and .FixedVersion != "")] | length' trivy-report.json)
+            echo "CRITICAL with a fix available: \$N"
+            [ "\$N" -eq 0 ]
+          """
         }
       }
       post {
