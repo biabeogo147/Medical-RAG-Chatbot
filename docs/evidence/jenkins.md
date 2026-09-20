@@ -161,30 +161,46 @@ Not needed: the BuildKit test of 1.4 succeeded on these nodes.
 | ExternalSecrets in `jenkins` | `jenkins-admin` `SecretSynced True`; `jenkins-github` **`SecretSyncedError False`** on the first try |
 | Secrets | `jenkins-admin jenkins-admin-password,jenkins-admin-user`; `jenkins-github` **not found** |
 | Namespace enforce levels | `jenkins baseline`, `jenkins-agents privileged` |
+| IMDS from a throwaway pod, both namespaces | `wget: download timed out`, `exit=1` in `jenkins` and in `jenkins-agents` |
+
+The IMDS pod raised `Warning: would violate PodSecurity "restricted:latest"` in `jenkins` only — the loop runs
+`jenkins` first, and the warning precedes its `pod/imds-test created`. Read the other way round, those two
+outputs *are* the measurement of the `warn` labels, which the check's own jsonpath does not print (it reads
+`enforce` only): `jenkins` warns at `restricted`, and `jenkins-agents` does not, which matches
+`namespaces.yaml`. A plain busybox pod violates `restricted` on exactly the four fields named and satisfies
+`baseline`, so silence in `jenkins-agents` is the expected result, not a missing check.
 
 **What this changes.** `medical-rag/github` had no value: Terraform creates it empty, and the app phase never
 used it. The value was then stored with `put-secret-value`; **the re-sync has not been recorded yet** (Still to
 check). Step 6 now checks the secret has a version and a `token` key *before* the ExternalSecret is written,
-because step 3's `simulate-principal-policy` passes on an empty secret — permission to read is not the same as
-something to read.
+Nothing in Part 1 had looked at the secret's **contents**: step 3 simulated a different principal, the CI role,
+and returned `implicitDeny` for this very ARN — by design, because the ExternalSecret reads it through the node
+role. That result says nothing either way about whether there is a value to read.
 
 ## Step 7 — Narrow what the build namespace accepts
 
 | Check | Result |
 |---|---|
-| `hostPath` pod, first attempt | **Accepted** — `pod/policy-test created (server dry run)`, with only the namespace's `baseline` PodSecurity warning |
+| `hostPath` pod, first attempt | **Accepted** — `Warning: would violate PodSecurity "baseline:latest": hostPath volumes (volume "host")`, then `pod/policy-test created (server dry run)`. A warning from the namespace's `warn` label, not a refusal |
 | `hostPath` pod, same manifest re-run later | Refused: `ValidatingAdmissionPolicy 'jenkins-agents-restrictions' with binding 'jenkins-agents-restrictions' denied request: hostPath volumes are not allowed in jenkins-agents` |
 | Policy and binding | Present, 7 validations, `validationActions: ["Deny"]`, selector matches `kubernetes.io/metadata.name: jenkins-agents` |
 | `jenkins-platform` | `Synced` `Healthy` at `cf5f8aa`, the commit that added the policy |
+| A build-pod-shaped pod, accepted | `pod/policy-test created (server dry run)` with `Warning: would violate PodSecurity "baseline:latest": forbidden AppArmor profile …, seccompProfile …` |
+
+The warning on the accepted pod names `baseline`, which is `jenkins-agents`' **warn** label; the namespace
+enforces `privileged`, so `Unconfined` is admitted. That is the relaxation this namespace exists to allow, and
+the policy of step 7 is what takes back everything else.
 
 **What this changes.** Nothing was edited between the two attempts: the reads above were taken *between* them
 and showed the policy, its seven validations, the binding's `Deny` and a matching selector already in place, with
-the Application `Synced` at the commit that added them. The only variable was elapsed time, so the first attempt
-ran before the API server had the policy compiled and enforcing. `observedGeneration` was not read at the time,
-which is why the gate now exists. The guide's checks could not distinguish "loaded" from "listed", and an
+the Application `Synced` at the commit that added them. The only variable was elapsed time. The explanation that the first
+attempt ran before the API server had compiled the policy is therefore **inferred, not measured**:
+`observedGeneration` was never read. It is the most likely reading of the two attempts, and the gate now exists
+so that the next run measures it instead of inferring it. The guide's checks could not distinguish "loaded" from "listed", and an
 accepted pod is exactly what a pass looks like. Step 7 now waits until `status.observedGeneration` equals
-`metadata.generation` before any dry run, and tests one pod per expression shape instead of only `hostPath`, so
-the six untested rules are exercised too.
+`metadata.generation` before any dry run, and tests one pod per expression shape instead of only the volume
+shape. That exercises all three shapes and three of the seven rules; `hostPID`, `hostIPC`, `capabilities.add`
+and `hostPort` still get no pod of their own, which is a deliberate trade rather than full coverage.
 
 ## Step 8 — Jenkins itself
 
@@ -196,33 +212,84 @@ the six untested rules are exercised too.
 | First install | `jenkins-0` `Init:CrashLoopBackOff`, init container `init` exit 1 after 6 restarts |
 | Init container log | `java.net.URISyntaxException: Illegal character in path at index 64: https://updates.jenkins.io/download/plugins/pipeline-stage-view/<version>/pipeline-stage-view.hpi` |
 
+### Plugin versions, and the core they need
+
+| Plugin | Version pinned | `requiredCore` |
+|---|---|---|
+| `credentials-binding` | `728.v902a_273b_8947` | 2.479.3 |
+| `job-dsl` | `3732.v9a_c49a_61a_313` | 2.479.3 |
+| `pipeline-stage-view` | `2.41` | 2.479.1 |
+| `timestamper` | `1.30` | 2.479.3 |
+
+Controller image: **`docker.io/jenkins/jenkins:2.568.3-jdk21`**. The highest requirement among these four is
+2.479.3 and the core is 2.568.3, so all four fit with room to spare, and the `/stable/` fallback was not needed.
+Two limits on that conclusion: the four plugins the chart pins by default were not checked; and these
+`requiredCore` values are the ones the update centre publishes for each plugin's *latest* version, which here
+happens to be the version pinned, so the comparison is exact rather than an upper bound.
+
+All **eight** pinned versions exist in the update centre: each
+`https://updates.jenkins.io/download/plugins/<name>/<version>/<name>.hpi` answered `302`, a redirect to a
+mirror. The request was `curl -I` without `-L`, so this shows the path is not a `404`; the `.hpi` files
+themselves were not fetched.
+
+### The Multibranch job reaches GitHub
+
+```
+Seen branch in repository origin/main
+Seen 1 remote branch
+Obtained Jenkinsfile from b05409f7636d4dd5e287114205cb149fba528d9f
+[Pipeline] Start of Pipeline
+[Pipeline] End of Pipeline
+Finished: SUCCESS
+```
+
+**What this proves,** and it is the strongest evidence in this section that step 8 worked: the controller is past
+its init container, so the plugin fix took; the plugins installed; JCasC applied the `jobs` configScript and
+`job-dsl` created `medical-rag` with the right remote; and the controller resolved and reached `github.com` on
+443, so step 6's NetworkPolicy egress and DNS work from the `jenkins` namespace. The branch source carries no
+`credentialsId` (`deploy/argocd/values/jenkins.yaml`) and the log shows no credential, so the repository is
+readable without one.
+
+**What is not established.** `main` at `b05409f` holds step 9's identity-test `Jenkinsfile`, not an empty one,
+and that file still carries the unfilled placeholder `public.ecr.aws/aws-cli/aws-cli:<aws-cli version>`. A
+pipeline with an `agent { kubernetes … }` block and a `stage('Who am I')` cannot produce `Start of Pipeline` →
+`End of Pipeline` with no stage lines, and an unresolvable image should have failed pod creation rather than
+succeeded. Either the pasted console was truncated or something else ran. Why that build reported `SUCCESS` is
+**not known** (Still to check).
+
 **What this changes.** The four `<version>` placeholders were never replaced, and nothing in the step could have
 caught it: the values file is valid YAML with them in place and `helm template` renders. The server dry run
 never got that far — it failed first on the namespace — but it would not have caught them either. The guide now
 greps for leftovers before the push, over every file in the step's table, and `guide.md` carries it as a
 standing rule because steps 11 and 13 hand over files the same way (`<tag>`, `<digest>`). A presence test is not
-enough on its own, so step 8 now also fetches each pinned version and expects `200`.
+enough on its own, so step 8 now also asks the update centre for each pinned version and expects `200` or `302`,
+treating `404` as the failure.
 
 ## Problems found and fixed
 
-**Part 2.** Five, all of them defects in the guide rather than in the cluster, in two shapes. **Three were
+**Part 2.** Five. Four are purely defects in the guide; the first also had a real cause in the account — the
+AWS secret was genuinely empty — and the guide's defect was having no check for it. In two shapes. **Three were
 checks that passed while the thing they guarded was broken:** the empty secret, the uncompiled policy, the
 unfilled placeholder. **Two failed loudly but pointed away from the cause:** `jq: Invalid numeric literal` for a
 307 redirect, and a namespace mismatch for a values change made three steps earlier.
 
 1. **`medical-rag/github` was empty.** The guide assumed the value was already there — `0-concepts.md` said "You
    put it there once" and the runbook carried the command, but no step in this phase checked it, and Part 1's
-   permission simulation passes on an empty secret. Fixed: a pre-check at the top of step 6, a troubleshooting
+   permission simulation looked at a different principal and returned `implicitDeny` for this ARN, so it could
+   not have told you either way. Fixed: a pre-check at the top of step 6, a troubleshooting
    row with the literal `SecretSyncedError`, and the token's required permissions written into concepts §14,
    which previously said what to store and not what it needed to be allowed to do.
-2. **Step 7's check could not fail.** The dry runs ran before the API server had compiled the
-   ValidatingAdmissionPolicy, so the dangerous pod was admitted and the guide had no gate to catch it. The step's
+2. **Step 7's check could not fail.** The dangerous pod was admitted on the first attempt and refused on a
+   re-run with nothing changed in between; the explanation — that the API server had not yet compiled the
+   ValidatingAdmissionPolicy — is inferred, because `observedGeneration` was never read. Either way the guide
+   had no gate that could tell "listed" from "enforcing". The step's
    second test — the *accepted* pod — is worse: on its own it cannot tell "the policy allows this" from "there is
    no policy". Fixed: a compile gate on `observedGeneration`, three refusals covering the three expression
    shapes, and the accept moved last with a sentence saying why its order matters.
 3. **Nothing caught an unfilled placeholder.** `deploy/argocd/values/jenkins.yaml` went to `main` with four
-   literal `<version>` strings. `jenkins-plugin-cli` then built
-   `…/pipeline-stage-view/<version>/pipeline-stage-view.hpi` and the init container crash-looped. The step's
+   literal `<version>` strings. The init container's plugin installer then built
+   `…/pipeline-stage-view/<version>/pipeline-stage-view.hpi` — the log quotes a `java.net.URISyntaxException`
+   and names no tool — and crash-looped. The step's
    pre-flight could not catch it — a placeholder is valid YAML — which is presence without content. Fixed: a
    `grep -c '<version>'` gate that must print `0`, a standing rule in `guide.md` covering every step that hands
    over a file to fill in, and two troubleshooting rows.
@@ -230,9 +297,12 @@ unfilled placeholder. **Two failed loudly but pointed away from the cause:** `jq
    renders a Role and RoleBinding into `jenkins-agents`, and `kubectl apply -n jenkins` refuses them. The fix
    that moved the cloud did not reach the command that checks it. Fixed: render to a file, apply without `-n`,
    and assert the set of namespaces the chart renders into rather than assuming one.
-5. **Step 8's plugin-version command used `curl -s`.** `updates.jenkins.io` answers `307` and redirects to a
-   mirror, so `curl` returned a 318-byte HTML redirect page and `jq` failed with
-   `parse error: Invalid numeric literal at line 1, column 10` — a message that says nothing about redirects.
+5. **Step 8's plugin-version command used `curl -s`.** Measured with
+   `curl -sS -o /tmp/uc.json -w 'http=%{http_code} size=%{size_download} redirect=%{redirect_url}'`:
+   `http=307 size=318 redirect=https://mirrors.updates.jenkins.io/current/update-center.actual.json`. So `curl`
+   returned a 318-byte HTML redirect page and `jq` failed with
+   `parse error: Invalid numeric literal at line 1, column 10` — index 10 of `<!DOCTYPE HTML PUBLIC …`, a
+   message that says nothing about redirects.
    Fixed: `curl -fsSL`, a line count that must be four, and a troubleshooting row with the literal error.
 
 **Part 1.** None: every check of Part 1 behaved as the guide expected, except the two shell mistakes in the guide
@@ -240,11 +310,30 @@ itself (an unset variable in the Ansible command, and one in step 2's gate), whi
 
 ## Still to check
 
-- `jenkins-github` `Ready=True` and the Secret carrying the key `token`, after the `force-sync` annotation
-  (step 6).
-- The three per-shape refusals and the accept, run in order after the compile gate (step 7).
-- Whether the repository is public and whether `main` carries a ruleset: the job-dsl in step 8 clones anonymously
-  and step 16 pushes straight to `main`, and neither is checked anywhere yet (step 8).
+- **Why the `main` build reported `SUCCESS` with no stage lines.** `main` at `b05409f` holds step 9's
+  identity-test `Jenkinsfile`, which has a `kubernetes` agent and one stage, and whose image tag is still the
+  unfilled `public.ecr.aws/aws-cli/aws-cli:<aws-cli version>`. That file should not produce an empty pipeline,
+  and an unresolvable image should fail pod creation. Step 9's own `Record` — both build results — is still
+  owed, and this has to be resolved before it.
+- **Step 7's gate outputs:** `metadata.generation`, `status.observedGeneration` and `status.typeChecking`. The
+  gate did not exist when the step was run, so none were taken.
+- **Step 8's remaining `Record` items:** the wait's duration, a `jenkins-0 2/2 Running` line, and that
+  `https://jenkins.recruitai.io.vn` opened **only** with WireGuard and the admin password logged in. Nothing in
+  this file yet records that Jenkins is running after the fix, only that its job scanned GitHub.
+- **A successful pre-flight dry run.** The only one recorded failed on the namespace; the corrected form
+  (render to a file, apply without `-n`, every line ending in `(server dry run)`) has not been run.
+- **DNS from the two namespaces.** Step 6's "Proven by" claims DNS still works while IMDS is blocked, but the
+  IMDS test uses a literal address and proves nothing about DNS.
+
+- `jenkins-github` `Ready=True` and the Secret carrying the key `token` (step 6). The Jenkins build above used
+  no credential, so it says nothing about whether JCasC resolved the placeholder — if it did not, the credential
+  is the literal string `${jenkins-github-token}` and step 16 will fail.
+- The `hostNetwork` and `privileged` refusals (step 7). Only the `hostPath` refusal and the accept were run, so
+  **six** of the policy's seven rules are still unexercised.
+- The rest of step 8's post-sync checks: admin password length, the PVC on `gp3`, the StorageClass reclaim
+  policy, and two Roles plus two RoleBindings in `jenkins-agents`.
+- Whether `main` carries a ruleset. The anonymous clone shows the repository is readable without a credential,
+  but nothing yet shows a direct push to `main` is allowed, which step 16 depends on.
 
 - The stage durations and the commit-to-Ready time of criterion #8 (step 16).
 - Trivy counts of the hardened image, as the "after" of criterion #9 (step 13).

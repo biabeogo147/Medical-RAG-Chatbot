@@ -1,14 +1,22 @@
-// Step 9 only: prove that a build pod gets the CI role and cannot reach the node's metadata service.
-// Part 3 replaces this with the real pipeline.
+// The pipeline for this repository (Jenkins guide, Part 3). Every tool version is pinned here, so a change
+// of tool is a commit like any other.
+//
+// Stages that write anything outside the build pod run only on main: signing, the dev bump and the prod pull
+// request. Branch builds test, build and scan, and stop there.
+
+// Values that appear in more than one place. No `def`: that would make them local to one method, and the
+// closures below (the pod definition, every sh line) would not see them.
+ACCOUNT   = '242834061265'
+REGION    = 'ap-southeast-1'
+REGISTRY  = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+IMAGE     = "${REGISTRY}/medical-rag"
+BUILDKIT  = 'moby/buildkit:v0.33.0-rootless'
+
 pipeline {
   agent {
     kubernetes {
-      // Named explicitly, so a cloud misconfigured in step 8 fails here instead of quietly starting the pod
-      // in the wrong namespace.
-      cloud 'kubernetes'
-      namespace 'jenkins-agents'
-      defaultContainer 'tools'
-      yaml '''
+      defaultContainer 'buildkit'
+      yaml """
 apiVersion: v1
 kind: Pod
 spec:
@@ -19,50 +27,73 @@ spec:
     runAsGroup: 1000
     runAsNonRoot: true
   containers:
-    - name: tools
-      # The tag you verified in app guide step 7: `aws --version` on the workstation prints it.
-      image: public.ecr.aws/aws-cli/aws-cli:<aws-cli version>
-      # `cat` with a tty keeps the container alive for the whole build, however long it takes; `sleep 3600`
-      # would end it after an hour.
-      command: ["cat"]
-      tty: true
+    - name: buildkit
+      image: ${BUILDKIT}
+      command: ["sleep"]
+      args: ["3600"]
       env:
-        # The same four variables the app's pods use (app guide step 7), for the CI role.
-        - name: AWS_ROLE_ARN
-          value: arn:aws:iam::242834061265:role/medical-rag-ci
-        - name: AWS_WEB_IDENTITY_TOKEN_FILE
-          value: /var/run/secrets/aws/token
-        - name: AWS_REGION
-          value: ap-southeast-1
-        - name: AWS_STS_REGIONAL_ENDPOINTS
-          value: regional
+        - name: BUILDKITD_FLAGS
+          value: --oci-worker-no-process-sandbox
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+        appArmorProfile:
+          type: Unconfined
       resources:
         requests:
-          cpu: 50m
-          memory: 128Mi
+          cpu: 300m
+          memory: 1Gi
         limits:
-          memory: 512Mi
+          memory: 3Gi
       volumeMounts:
-        - name: aws-token
-          mountPath: /var/run/secrets/aws
-          readOnly: true
+        - name: buildkitd
+          mountPath: /home/user/.local/share/buildkit
   volumes:
-    - name: aws-token
-      projected:
-        sources:
-          - serviceAccountToken:
-              audience: sts.amazonaws.com
-              expirationSeconds: 3600
-              path: token
-'''
+    - name: buildkitd
+      # BuildKit's local cache. Bounded, so a runaway build cannot fill the node's disk.
+      emptyDir:
+        sizeLimit: 8Gi
+"""
     }
   }
-  options { disableConcurrentBuilds() }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+  }
+
   stages {
-    stage('Who am I') {
+    stage('Skip guard') {
       steps {
-        sh 'aws sts get-caller-identity'
-        sh 'curl -sS -m 3 http://169.254.169.254/latest/meta-data/ || echo "IMDS unreachable, exit=$?"'
+        script {
+          // The author of the newest commit, and the files it changed.
+          def author = sh(returnStdout: true, script: 'git log -1 --format=%an').trim()
+          def files  = sh(returnStdout: true, script: 'git show --pretty= --name-only HEAD').trim()
+          def onlyDocs = files && files.split('\\n').every { f ->
+            f.startsWith('deploy/') || f.startsWith('docs/') || f.endsWith('.md')
+          }
+          // An empty list means "unknown", and unknown counts as a build: skipping on doubt hides changes.
+          if (author == 'jenkins-bot' || onlyDocs) {
+            currentBuild.result = 'NOT_BUILT'
+            error("Nothing to build: author=${author}, only docs or deploy files changed")
+          }
+        }
+      }
+    }
+
+    stage('Test') {
+      steps {
+        // The Dockerfile's test target runs ruff and pytest. No registry login exists yet, so the
+        // repository's own code runs with no credential of any kind.
+        sh """
+          buildctl-daemonless.sh build \
+            --frontend dockerfile.v0 \
+            --local context=. \
+            --local dockerfile=. \
+            --opt target=test \
+            --import-cache type=registry,ref=${IMAGE}:buildcache
+        """
       }
     }
   }

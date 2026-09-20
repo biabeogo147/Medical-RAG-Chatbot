@@ -71,8 +71,10 @@ aws secretsmanager put-secret-value --secret-id medical-rag/github \
 ```
 
 > **Why this check and not the one in Part 1.** Step 3 simulated `secretsmanager:GetSecretValue` on this ARN and
-> it passed — on an empty secret. Being allowed to read is not the same as there being something to read, and the
-> ExternalSecret below fails with `SecretSyncedError` rather than saying so.
+> got `implicitDeny` — correctly, because it simulated the *CI role*, which must not read this secret; the
+> ExternalSecret reads it through the *node* role. So Part 1 proved nothing about this secret in either
+> direction, and it never looked at its contents at all. A permission check and a content check are different
+> questions, and the ExternalSecret reports the missing content as `SecretSyncedError` without saying which.
 
 **Laptop.** Create `deploy/argocd/manifests/jenkins/namespaces.yaml`:
 ```yaml
