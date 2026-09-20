@@ -343,6 +343,14 @@ alone inside single quotes (`'...'`, `'''...'''`). A `sh """..."""` block is the
 first and by the shell second, so anything the *shell* must expand is written `\${...}`. A `sh '''...'''` block
 reaches the shell untouched, which is right when no Groovy value is needed.
 
+**Downloaded is not loaded.** Plugins are fetched by an init container into a reference directory, and the
+controller image copies each one into its home volume — in the stock image, only when the file is not already
+there. Jenkins then loads them at startup and *refuses* any whose dependencies are at the wrong versions. A
+refused plugin is on disk, listed by `ls`, and absent at runtime — the controller starts anyway and the feature
+is simply missing. Because dependencies are installed at their minimum required version, one plugin can raise a
+single member of a shared suite above its siblings and split it; that is a startup failure, not a download
+failure, and only a check on the controller's own log sees it.
+
 **Where it appears.** The new `Jenkinsfile` replaces the old one. Every change to the pipeline is a commit,
 reviewed like code.
 

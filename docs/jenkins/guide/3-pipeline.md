@@ -169,16 +169,49 @@ spec:
 
 **Check** on a temporary branch (`git push origin HEAD:jenkins/step-10`). In the UI, the branch builds:
 
-1. The `Skip guard` stage passes, because this commit changes `Jenkinsfile`.
-2. The `Test` stage ends with BuildKit's `DONE` lines, and the log contains `26 passed`.
+1. The console log contains **two** `[Pipeline] stage` lines, one per stage. **`Finished: SUCCESS` on its own
+   proves nothing:** a declarative `pipeline { … }` whose plugin was refused at startup is a call nobody
+   answers, so the build runs the constants, skips every stage and reports success, going straight from
+   `[Pipeline] Start of Pipeline` to `[Pipeline] End of Pipeline`. If that is what you see, the pipeline is
+   fine and Jenkins is not: go to
+   [step 8's plugin-load check](2-jenkins.md#step-8--jenkins-itself). Note what this does *not* prove: the
+   `stage` step comes from `pipeline-stage-step`, which loads independently, so stage lines mean "a stage ran",
+   not "the Declarative plugin is healthy" — that is what the plugin-load check is for.
+2. The `Skip guard` stage passes, because this commit changes `Jenkinsfile`.
+3. The `Test` stage ends with BuildKit's `DONE` lines, and the log contains `26 passed`.
 
-While it runs, read what the pod actually asks for, on the workstation:
+Then read what the pod actually asked for. Do **not** try to catch it with `kubectl get pods`: `podRetention:
+Never` deletes it the moment the build ends, and an empty table looks exactly like "no pod was ever created".
+Read it from Prometheus instead, where kube-state-metrics keeps the series after the pod is gone — the same
+`promq` helper the app guide used, since this cluster has no metrics-server
+([app guide step 16](../../app/guide/3-dev.md)):
 ```bash
-kubectl -n jenkins-agents get pods -o custom-columns=NAME:.metadata.name,CONTAINERS:.spec.containers[*].name,CPU:.spec.containers[*].resources.requests.cpu
+promq() {
+  local q
+  q=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1")
+  kubectl get --raw "/api/v1/namespaces/monitoring/services/http:kube-prometheus-stack-prometheus:9090/proxy/api/v1/query?query=$q" \
+    | jq -r '.data.result[] | "\(.metric.pod) \(.metric.container // "-") \(.value[1])"'
+}
+promq 'max_over_time(kube_pod_container_resource_requests{namespace="jenkins-agents",resource="cpu"}[3h])'
+promq 'sum by (pod) (max_over_time(kube_pod_container_resource_requests{namespace="jenkins-agents",resource="cpu"}[3h]))'
+kubectl -n jenkins-agents get events --sort-by=.lastTimestamp | tail -20
 ```
-Expected: one pod, whose container list includes `jnlp` besides the one you wrote. Add the CPU requests up: that
-sum is what the build pod costs a node, and it must stay under 560m, the smallest gap step 1 measured. Record it;
-steps 11 and 12 add a container each, so the sum grows.
+Expected: one line per container, including a `jnlp` you did not write, then one line with the pod's total and
+`-` in place of a container name. The metric is in **cores**, not millicores: `0.4` means 400m. That total is
+what the build pod costs a node, and it must fit the free CPU of whichever node scheduled it — step 1.2 measured
+560m, 775m and 720m **before** Jenkins existed, and the controller has since taken 250m of one of them. Steps 11
+and 12 add a container each, so the total grows.
+
+**If the first two commands print nothing, that is not a pass.** The events separate three cases, and only the
+last is a step 8 problem:
+- `Scheduled` / `Created` / `Started` for a `medical-rag-…` pod, and the build was short: the pod may simply
+  have lived less than one scrape interval, so no sample exists. Run a longer build and repeat.
+- The same events, and the build was not short: the series is missing, so check kube-state-metrics was scraping
+  *at that time* — `promq 'count_over_time(up{job="kube-state-metrics"}[3h])'`, not `up`, which only speaks for
+  now.
+- No such events at all: the cloud never created a pod, which belongs to step 8.
+
+Record which of the three.
 
 Then push a docs-only commit to the same branch, for example a line added to `docs/evidence/jenkins.md`:
 Expected: the build ends `NOT_BUILT`, with `Nothing to build: author=…` in the log, and no `Test` stage.

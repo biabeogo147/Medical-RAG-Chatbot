@@ -655,9 +655,10 @@ come from Git, so that a rebuilt cluster returns the same Jenkins.
 | `deploy/argocd/apps/jenkins.yaml` | New: the Application, wave 4 |
 
 **Workstation, first.** The values file below pins four plugin versions that this project adds. Read them from
-the update centre Jenkins itself uses, and keep the four lines to paste:
+the **stable** channel: the chart's own four pins are built for an LTS core, and the weekly channel can hand
+you a plugin built against a newer one. Keep the four lines to paste:
 ```bash
-curl -fsSL https://updates.jenkins.io/current/update-center.actual.json \
+curl -fsSL https://updates.jenkins.io/stable/update-center.actual.json \
   | jq -r '.plugins | to_entries[]
            | select(.key == "job-dsl" or .key == "credentials-binding"
                     or .key == "pipeline-stage-view" or .key == "timestamper")
@@ -668,6 +669,11 @@ Expected: **four** lines, one per plugin, then `4`. The names come from the filt
 plugin was renamed or dropped upstream — stop and find out which before pinning anything. Versions are not all
 `1.x`: `job-dsl` and `credentials-binding` publish incrementals such as `3732.v9a_c49a_61a_313`, which is a
 version like any other.
+
+**The channel is not a guarantee.** It settles *plugin against core*. It does not settle *plugin against
+plugin*: these four and the chart's four are resolved independently, and one of them can raise a single member
+of a shared dependency suite above its siblings. That split is invisible until Jenkins starts, which is why
+step 8 ends with a check on what actually **loaded**.
 
 `-fsSL` matters, one letter at a time: `-L` because `updates.jenkins.io` answers **307** and redirects to a
 mirror, so without it `curl` returns the redirect's HTML page; `-f` so an HTTP error exits non-zero instead of
@@ -706,17 +712,30 @@ controller:
   installLatestPlugins: false
   installLatestSpecifiedPlugins: false
   installPlugins:
+    # Three groups: what the chart needs, what this project adds, and what the resolver had to be told about.
     # The first four are the chart's own defaults for 5.9.63, kept as they are.
     - kubernetes:4557.ve746270f672f      # build pods
     - workflow-aggregator:608.v67378e9d3db_1  # declarative pipelines
     - git:5.10.1                         # checkout
     - configuration-as-code:2121.v86fe99d4b_b_a_b_  # this file
     # The four below are added by this project. Put the versions the command in "Check before" prints, in
-    # the same "name:version" form; do not guess them.
+    # the same "name:version" form; do not guess them, and read them from the **stable** channel.
+    # `installLatestPlugins: false` above means dependencies are installed at their *minimum* required
+    # version. A plugin here that needs a newer member of a suite the four above already carry raises that one
+    # member and not its siblings, and the split shows up as a refusal at startup, not a download failure.
     - job-dsl:<version>                  # the job below, as code
     - credentials-binding:<version>      # withCredentials
     - pipeline-stage-view:<version>      # stage durations for criterion #8
     - timestamper:<version>              # timestamps in the log
+    # Left empty on the first pass. `installLatestPlugins: false` installs every dependency at its *minimum*
+    # required version, so a plugin above can raise one member of a shared suite and leave its siblings
+    # behind. Jenkins refuses the split at startup and names, by version, what each one must reach; those
+    # lines go here. See "Two passes" under Check before the push. Nothing goes here by guesswork.
+    # What the pins buy is that nothing upgrades behind your back. They do not guarantee that a future
+    # install resolves the same set of files: only these eleven are pinned, the rest are chosen at install
+    # time, and a withdrawn version, a rebuilt controller image or a home volume that survived a previous
+    # install all change the outcome. Step 19's rebuild is the only clean-volume test of it.
+    # - <raised-plugin>:<version>        # delete this line on the first pass; fill it on the second
 
   jenkinsUrl: https://jenkins.recruitai.io.vn
 
@@ -861,6 +880,29 @@ spec:
 - **The volumes label and the finalizer.** `make down` releases the EBS volume before the cluster stack is
   destroyed, exactly as for Prometheus.
 
+**Two passes, expected.** Mixing a pinned chart default list with plugins of your own can leave Jenkins refusing
+a plugin at startup, and nothing before the install detects it (part 2 below says why). So plan for two: the
+first install may be refused, the plugin-load check at the end of this step names exactly what to raise, you add
+those lines to the third group of `installPlugins`, and the second install is the one that counts. That is not a
+failure of the step; it is the step.
+
+> **Before the second pass, settle two things — the loop does not converge without them.**
+> 1. **Where the init container writes, and whether it overwrites.** The controller image copies a reference
+>    plugin into `$JENKINS_HOME/plugins` only when the file is **absent**, unless the chart's
+>    `controller.overwritePlugins` is set. It defaults to `false` and this values file does not set it. On a
+>    volume that already holds the old version, raising a pin then changes nothing and the log repeats
+>    unchanged. Read it before you loop:
+>    ```bash
+>    helm show values jenkins/jenkins --version 5.9.63 | yq '.controller | {overwritePlugins, overwritePluginsFromImage}'
+>    kubectl -n jenkins get sts jenkins -o yaml | yq '.spec.template.spec.initContainers[].args'
+>    ```
+>    If the copy is conditional, the second pass also needs `controller.overwritePlugins: true`, or a deleted
+>    volume.
+> 2. **Which of two causes you actually have.** The split may come from dependency resolution, or from an
+>    earlier failed install leaving older plugin files on the volume — this project's first install
+>    crash-looped six times before it succeeded. `kubectl -n jenkins logs jenkins-0 -c init` records the
+>    resolution and distinguishes them. Fixing the wrong one wastes a full pass.
+
 **Check before the push**, on the temporary branch, on the workstation, in four parts.
 
 **1. No placeholder is left.** The chart does not validate a plugin version, and `job-dsl:<version>` is valid
@@ -884,8 +926,12 @@ while IFS=: read -r NAME VER; do
 done < /tmp/plugins.txt
 ```
 Expected: `8`, then eight lines each ending in `200` or `302`. A `404` is the version that does not exist, named
-for you — which is the whole failure mode, caught before the push instead of inside an init container. This is
-the check to trust: a version can be well-formed, present and still wrong, and only fetching it proves otherwise.
+for you — caught before the push instead of inside an init container.
+
+**What neither part of this pre-flight can see.** All eight versions can exist, be fetchable and satisfy the
+core, and Jenkins can still refuse three of them at startup, because a plugin's *dependencies* are resolved
+separately from the plugin itself. Nothing before the install proves the resolved set is internally consistent.
+The check that catches that is the plugin-load check after the sync.
 
 Then the core, which is a weaker check but cheap:
 ```bash
@@ -893,7 +939,7 @@ helm template jenkins jenkins --repo https://charts.jenkins.io --version 5.9.63 
   -f deploy/argocd/values/jenkins.yaml --namespace jenkins > /tmp/jenkins-render.yaml
 yq 'select(.kind=="StatefulSet") | .spec.template.spec.containers[] | select(.name=="jenkins") | .image' \
   /tmp/jenkins-render.yaml
-curl -fsSL https://updates.jenkins.io/current/update-center.actual.json \
+curl -fsSL https://updates.jenkins.io/stable/update-center.actual.json \
   | jq -r '.plugins | to_entries[]
            | select(.key=="job-dsl" or .key=="credentials-binding"
                     or .key=="pipeline-stage-view" or .key=="timestamper")
@@ -901,9 +947,10 @@ curl -fsSL https://updates.jenkins.io/current/update-center.actual.json \
 ```
 Expected: a controller image whose Jenkins version is at least every `requiredCore`. The update centre only
 publishes the *latest* version's `requiredCore`, and a plugin's requirement never goes down, so this is an upper
-bound: if the latest fits, the version you pinned fits too. If one does not fit, that is the weekly-versus-LTS
-mismatch — `/current/` is the weekly channel while this chart installs LTS — and the versions should be re-read
-from `https://updates.jenkins.io/stable/update-center.actual.json`.
+bound: if the latest fits, the version you pinned fits too. This is the same channel the versions were read
+from, so "latest" and "pinned" are normally the same string; if they differ, the file has drifted from the
+channel and the comparison is only an upper bound. A `requiredCore` above the image's version means the plugin
+needs a newer Jenkins than this chart installs — record it and stop.
 
 **3. What the chart renders, and where.**
 ```bash
@@ -950,8 +997,64 @@ kubectl -n argocd wait applications.argoproj.io/jenkins --for=jsonpath='{.status
 # first, because `wait` cannot tell "slow" from "crash-looping".
 kubectl -n jenkins get pods
 ```
-Expected: `condition met`, then one `jenkins-0` pod `2/2 Running`. The first start downloads the plugins, so it can
-take several minutes.
+Expected: `condition met`, then one `jenkins-0` pod `2/2 Running`. The first start downloads the plugins, so it
+can take several minutes.
+
+**Then check the plugins *loaded*, not that they downloaded.** A plugin whose dependencies are at the wrong
+versions is written to disk, appears in `ls`, and is refused at startup. Jenkins keeps running, the pod stays
+`2/2 Running`, the UI opens and the job exists — and a feature is simply absent.
+```bash
+kubectl -n jenkins logs jenkins-0 -c jenkins | grep -c "Jenkins is fully up and running"
+kubectl -n jenkins logs jenkins-0 -c jenkins | grep -cE "Failed Loading plugin|Failed to load:|Failed to initialize plugin"
+kubectl -n jenkins logs jenkins-0 -c jenkins | grep -A 6 "Failed Loading plugin" | head -40
+kubectl -n jenkins logs jenkins-0 -c init | tail -20
+```
+Expected: `1`, then `0`, then nothing from the third command, and an init log ending without an error.
+
+**Read the first number first.** The second grep is a *negative* assertion — it passes when the evidence is
+absent — and the evidence goes absent for three innocent reasons: the boot has not reached the plugin phase yet
+(`argocd wait … Healthy` is satisfied while Jenkins is still starting), the pod restarted since
+(`kubectl logs` shows only the current instance; add `--previous`), or the startup block aged out of the
+kubelet's rotated log. `Jenkins is fully up and running` must be present **in the same output**, or `0` means
+nothing. A plugin disabled rather than refused prints no line at all, which this cannot see either.
+
+Any non-zero: **stop**, and read the third command — Jenkins names the plugin and the exact version each
+dependency must reach (`Update required: … to be updated to … or higher`). Do not fix it in the UI. Then, per
+round:
+
+1. Put each named plugin in the **third group** as `name:version`. If it is already there from an earlier round,
+   **raise that line** — never add a second entry for the same name. Before pushing:
+   `yq '.controller.installPlugins[]' deploy/argocd/values/jenkins.yaml | cut -d: -f1 | sort | uniq -d`
+   must print nothing.
+2. Push, then **wait for Argo CD** before touching the pod — the plugin list travels in a ConfigMap, and a pod
+   deleted before the sync comes back with the old list and an identical log, which reads as "the fix did
+   nothing":
+   `kubectl -n argocd wait applications.argoproj.io/jenkins --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m`,
+   then confirm the new version string is in the ConfigMap.
+3. `kubectl -n jenkins delete pod jenkins-0`, and repeat this check.
+4. Confirm the file on disk changed:
+   `kubectl -n jenkins exec jenkins-0 -c jenkins -- ls /var/jenkins_home/plugins | grep <the plugin>`.
+
+**Two exits that are not another round.** A demanded version whose `requiredCore` is above the controller
+image's version cannot be satisfied by any pin — the answer is a newer chart or image, not another pass. And an
+unchanged `.jpi` at point 4 means the copy is conditional, not that the pin is wrong: go back to the box above.
+
+**And `0` is not the end.** It proves every declared minimum is satisfied, not that the combination was ever
+tested together, and a plugin *disabled* rather than refused prints nothing at all. The check that closes this
+is step 10's requirement of two `[Pipeline] stage` lines in a real build.
+
+To find out *which* plugin asked for the newer member, ask the update centre who depends on it:
+```bash
+curl -fsSL https://updates.jenkins.io/stable/update-center.actual.json \
+  | jq -r --arg dep '<the plugin named in the first SEVERE line>' \
+      '.plugins | to_entries[] | .key as $k | .value.dependencies[]?
+       | select(.name == $dep) | "\($k) needs \($dep) >= \(.version)"'
+```
+Expected: one line per plugin that depends on it, with the version each requires. The one asking for the
+version in the log is the plugin that split the suite — **probably**: this file publishes the dependency table
+of each plugin's *latest* version only, and seven of the eight pins need not be latest, so it answers "who
+depends on it today". The version-exact answer is in the init container's own resolution log. Add `.optional`
+to the output if you extend it: an optional dependency still imposes its floor once the plugin is present.
 
 **Check.** The password, and the volume:
 ```bash
@@ -971,7 +1074,9 @@ job `medical-rag` exists. Open it: after the first scan, the branch `main` is li
 branch appears at all, which shows the job can reach GitHub. That first build may pass, fail or end `NOT_BUILT`,
 because `main` still holds the old `Jenkinsfile`; step 9 replaces it.
 
-**Record** the wait's duration, the pod line, the PVC line, and that the UI opened only with the VPN.
+**Record** the wait's duration, the pod line, the PVC line, that the UI opened only with the VPN, and **both
+numbers from the plugin-load check** — `1` for the boot line and `0` for the failures. The third group is empty
+on a first pass and empty on a skipped second pass, and nothing else in this step tells them apart.
 
 ---
 
