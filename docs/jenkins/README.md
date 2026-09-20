@@ -52,8 +52,8 @@ role.
 |---|---|---|
 | `jnlp` | Talks to the controller | No |
 | `buildkit` | Runs the tests in a build with no registry login; then builds the `runtime` image and pushes it with the cache | No. It holds the ECR login only for the push, after the tests have passed |
-| `trivy` | The gate, the report and the SBOM, all by digest from ECR | No; it reads the registry login the tools container wrote |
-| `tools` | ECR login, cosign sign and attest, corpus checksum, git, yq, gh | Yes: role `medical-rag-ci` |
+| `trivy` | The report and the SBOM, both by digest from ECR | No; it reads the registry login the tools container wrote |
+| `tools` | ECR login, the gate, cosign sign and attest, corpus checksum, git, yq, gh | Yes: role `medical-rag-ci` |
 
 **`medical-rag-ci`** trusts only the ServiceAccount `jenkins-agent` in `jenkins-agents`. It may push and pull on the
 one repository, ask KMS to sign with the one key, and read objects under `corpus/`. It reads no secret: the GitHub
@@ -73,8 +73,11 @@ changed ([evidence](../evidence/jenkins.md)).
 
 ## 5. The gate, the SBOM and the signature
 
-- **Gate:** Trivy fails the build on a CRITICAL vulnerability that has a fix, before anything is signed or promoted.
-  A second run writes the full report.
+- **Gate:** the build fails on a CRITICAL vulnerability that has a fix, before anything is signed or promoted.
+  Trivy scans **once**, into `trivy-report.json`; the gate then counts that report with `jq`. Scanning first and
+  failing second is the only order that keeps the record when the gate goes red. The count is done in `jq`
+  because `trivy convert` has no `--ignore-unfixed` — that flag belongs to the scan commands — and `--severity`
+  with `--exit-code` would instead fail every build on findings nobody can act on.
 - **Criterion #9 compares like with like.** The earlier "before" came from ECR's scanner. Step 1 measures the same
   image with Trivy 0.74.0; step 13 measures the hardened image with the same version.
 - **SBOM:** Trivy, SPDX JSON, archived and attached as a signed attestation. Syft publishes no image with a shell, and Trivy writes the same format from the scan it already runs.
@@ -85,9 +88,9 @@ changed ([evidence](../evidence/jenkins.md)).
 
 | Stage | On `main` | On `jenkins/step-N` |
 |---|---|---|
-| Skip guard, tests, build, scan, SBOM | Yes | Yes |
+| Skip guard, tests, build, scan | Yes | Yes |
 | Write the build cache | Yes | No: branches only read it |
-| Sign, attest | Yes | No |
+| SBOM, sign, attest | Yes | No: one stage, `when { branch 'main' }` |
 | Index version check | Yes | Yes, without writing anything |
 | Commit the new tag to dev's values | Yes, as `jenkins-bot`, with `git pull --rebase` and up to 3 tries | No |
 | Open the prod pull request | Yes | No |
