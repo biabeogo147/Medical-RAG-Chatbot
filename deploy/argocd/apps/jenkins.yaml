@@ -1,0 +1,37 @@
+# Jenkins, from its Helm chart, with the values file above. Wave 4: after jenkins-platform (wave 3), which
+# creates the namespace, the credentials and the build pods' ServiceAccount.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jenkins
+  namespace: argocd
+  labels:
+    # The home volume must be released before the cluster stack is destroyed (GitOps guide step 12).
+    medical-rag/volumes: "true"
+    medical-rag/report-failed-sync: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://charts.jenkins.io
+      chart: jenkins
+      targetRevision: 5.9.63
+      helm:
+        releaseName: jenkins
+        valueFiles:
+          - $values/deploy/argocd/values/jenkins.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: jenkins
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
