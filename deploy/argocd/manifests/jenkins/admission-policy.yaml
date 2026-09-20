@@ -1,0 +1,49 @@
+# The namespace is at Pod Security level "privileged" so that rootless BuildKit can ask for Unconfined
+# seccomp and AppArmor (Jenkins guide step 1.4). This policy takes back everything else that "privileged"
+# would allow. It is built into Kubernetes; nothing is installed.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: jenkins-agents-restrictions
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: "!has(object.spec.hostNetwork) || object.spec.hostNetwork == false"
+      message: "hostNetwork is not allowed in jenkins-agents"
+    - expression: "!has(object.spec.hostPID) || object.spec.hostPID == false"
+      message: "hostPID is not allowed in jenkins-agents"
+    - expression: "!has(object.spec.hostIPC) || object.spec.hostIPC == false"
+      message: "hostIPC is not allowed in jenkins-agents"
+    - expression: "!has(object.spec.volumes) || object.spec.volumes.all(v, !has(v.hostPath))"
+      message: "hostPath volumes are not allowed in jenkins-agents"
+    - expression: >-
+        (object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])).all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) || c.securityContext.privileged == false)
+      message: "privileged containers are not allowed in jenkins-agents"
+    - expression: >-
+        (object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])).all(c,
+          !has(c.securityContext) || !has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add)
+          || c.securityContext.capabilities.add.size() == 0)
+      message: "added capabilities are not allowed in jenkins-agents"
+    - expression: >-
+        (object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])).all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort)))
+      message: "host ports are not allowed in jenkins-agents"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: jenkins-agents-restrictions
+spec:
+  policyName: jenkins-agents-restrictions
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: jenkins-agents
