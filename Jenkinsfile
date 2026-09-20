@@ -188,6 +188,9 @@ spec:
         container('tools') {
           // The token in the pod is exchanged for the CI role here; the login lands in the shared workspace,
           // so BuildKit can push with it. The tests above ran before this existed.
+          //
+          // Since step 18 the node role can no longer PutImage or kms:Sign, so this exchange is the only
+          // way the push and the signature can succeed. A green build is now the proof, not an assumption.
           sh """
             # Jenkins runs every sh step as `/bin/sh -xe`, which echoes each command with its variables
             # already expanded. Without this line the ECR password and the base64 auth string are both
