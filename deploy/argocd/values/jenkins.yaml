@@ -45,6 +45,13 @@ controller:
     - pipeline-model-api:2.2277.v00573e73ddf1
     - workflow-job:1546.v62a_c59c112dd
     - pipeline-stage-step:322.vecffa_99f371c
+    # Raised after the first real build failed with NullPointerException. These four plugins are released
+    # together from one repository and share a version string; the resolver had left definition and
+    # stage-tags-metadata at 2.2218 while api and extensions moved to 2.2277. A split suite loads without
+    # error and then calls across the gap at runtime, so the plugin-load check cannot see it.
+    - pipeline-model-definition:2.2277.v00573e73ddf1
+    - pipeline-model-extensions:2.2277.v00573e73ddf1
+    - pipeline-stage-tags-metadata:2.2277.v00573e73ddf1
     
   jenkinsUrl: https://jenkins.recruitai.io.vn
 
