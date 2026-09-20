@@ -797,12 +797,17 @@ suite — cost four builds and two wrong diagnoses before it was measured.
    step 11 and comes after. Every build prints
    `ERROR: failed to configure registry cache importer: … 401 Unauthorized`, BuildKit ignores it, and the guide
    does not say the line is expected.
-12. **Step 11 never creates the ECR repository it pushes to.** `make ci-image` pushes to
-   `<account>.dkr.ecr.<region>.amazonaws.com/medical-rag-ci`, and `infra/terraform/shared/registry.tf`
-   defines only `aws_ecr_repository.app`. ECR does not create a repository on push, so the target fails with
-   `name unknown`. The step's Workstation section expects `make shared` to report **2 to add**, which means the
-   Terraform was meant to change — but the step's `| File | Change |` table lists only `ci/Dockerfile`,
-   `Makefile` and `Jenkinsfile`, and no HCL for the repository appears anywhere in the guide.
+12. **Step 11's `| File | Change |` table omits the Terraform the step hands over.** The table lists only
+   `ci/Dockerfile`, `Makefile` and `Jenkinsfile`, while the step body also gives an `aws_ecr_repository "ci"`
+   block for `infra/terraform/shared/registry.tf` and expects `make shared` to report **2 to add**. Rule 2 says
+   `git status --short` must list exactly the files in the table, so following the table leaves the repository
+   uncreated and `make ci-image` fails with `name unknown`.
+   **Correction, 2026-09-20:** this entry first claimed no HCL for the repository appeared anywhere in the
+   guide. That was wrong — the block is in step 11, below the `Why` section, and the search that missed it
+   looked for the literal `medical-rag-ci` while the block writes `${local.name}-ci`. Acting on the wrong
+   premise put a second, conflicting copy of the same resources into the step; it has been removed and the
+   original kept, including its `IMMUTABLE` choice and the paragraph above it that explains why one commit is
+   one image. `infra/terraform/shared/registry.tf` was changed to match that original.
 13. **The node role cannot pull the tools image.** `infra/terraform/cluster/iam.tf` scopes every ECR read to
    `data.aws_ecr_repository.app.arn`. The kubelet pulls `image: ${CI_TOOLS}` with the node role, so even once
    the repository exists the `tools` container would sit in `ImagePullBackOff`. This is in a different stack
