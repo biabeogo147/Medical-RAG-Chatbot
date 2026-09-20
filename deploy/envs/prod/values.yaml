@@ -2,7 +2,7 @@
 # until Jenkins opens pull requests for it, you edit this file by hand.
 environment: prod
 image:
-  tag: "46fd6bbc6c18@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e" # app guide step 11
+  tag: "c56e23857755@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e" # app guide step 11
 index:
   version: "cc759ae1a093" # the same as dev: dev's Job built it, prod's finds it
 replicas: 2
