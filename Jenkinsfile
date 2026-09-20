@@ -14,6 +14,7 @@ REGION    = 'ap-southeast-1'
 REGISTRY  = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
 IMAGE     = "${REGISTRY}/medical-rag"
 BUILDKIT  = 'moby/buildkit:v0.33.0-rootless'
+CI_TOOLS  = "${REGISTRY}/medical-rag-ci:2ed703f3a494@sha256:106f85c5a76dcd1847e1c8e20ece5933f7b733cabbe4e9d93f64b2f431e6b38f"   // printed by `make ci-image`
 
 pipeline {
   agent {
@@ -37,6 +38,8 @@ spec:
       env:
         - name: BUILDKITD_FLAGS
           value: --oci-worker-no-process-sandbox
+        - name: DOCKER_CONFIG
+          value: /home/jenkins/agent/.docker
       securityContext:
         seccompProfile:
           type: Unconfined
@@ -51,11 +54,44 @@ spec:
       volumeMounts:
         - name: buildkitd
           mountPath: /home/user/.local/share/buildkit
+    - name: tools
+      image: ${CI_TOOLS}
+      command: ["sleep"]
+      args: ["3600"]
+      env:
+        - name: AWS_ROLE_ARN
+          value: arn:aws:iam::${ACCOUNT}:role/medical-rag-ci
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/aws/token
+        - name: AWS_REGION
+          value: ${REGION}
+        - name: AWS_STS_REGIONAL_ENDPOINTS
+          value: regional
+        # Both containers read the login from the same place in the workspace.
+        - name: DOCKER_CONFIG
+          value: /home/jenkins/agent/.docker
+      resources:
+        requests:
+          cpu: 50m
+          memory: 192Mi
+        limits:
+          memory: 512Mi
+      volumeMounts:
+        - name: aws-token
+          mountPath: /var/run/secrets/aws
+          readOnly: true
   volumes:
     - name: buildkitd
       # BuildKit's local cache. Bounded, so a runaway build cannot fill the node's disk.
       emptyDir:
         sizeLimit: 8Gi
+    - name: aws-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: sts.amazonaws.com
+              expirationSeconds: 3600
+              path: token
 """
     }
   }
@@ -99,5 +135,53 @@ spec:
         """
       }
     }
+
+    stage('Log in to ECR') {
+      steps {
+        container('tools') {
+          // The token in the pod is exchanged for the CI role here; the login lands in the shared workspace,
+          // so BuildKit can push with it. The tests above ran before this existed.
+          sh """
+            aws sts get-caller-identity --query Arn --output text
+            mkdir -p "\${DOCKER_CONFIG}"
+            PASS=\$(aws ecr get-login-password --region "\${AWS_REGION}")
+            # openssl, not base64: busybox's base64 wraps long lines, which would break the JSON.
+            AUTH=\$(printf 'AWS:%s' "\${PASS}" | openssl base64 -A)
+            printf '{"auths":{"%s":{"auth":"%s"}}}' "${REGISTRY}" "\${AUTH}" > "\${DOCKER_CONFIG}/config.json"
+          """
+        }
+      }
+    }
+
+    stage('Build and push') {
+      steps {
+        script {
+          env.GIT_TAG = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
+        }
+        // The cache lives in the registry, under the mutable tag buildcache. Branch builds only read it:
+        // only main writes it, so a branch cannot poison what main builds from (README §3).
+        sh """
+          CACHE_EXPORT=""
+          if [ "\${BRANCH_NAME}" = "main" ]; then
+            CACHE_EXPORT="--export-cache type=registry,ref=${IMAGE}:buildcache,mode=max"
+          fi
+          buildctl-daemonless.sh build \
+            --frontend dockerfile.v0 \
+            --local context=. \
+            --local dockerfile=. \
+            --opt target=runtime \
+            --import-cache type=registry,ref=${IMAGE}:buildcache \
+            \${CACHE_EXPORT} \
+            --output type=image,name=${IMAGE}:\${GIT_TAG},push=true \
+            --metadata-file build-metadata.json
+        """
+        script {
+          env.IMAGE_DIGEST = sh(returnStdout: true,
+            script: 'grep -o \'"containerimage.digest": *"[^"]*"\' build-metadata.json | cut -d\\" -f4').trim()
+          echo "Image ${IMAGE}:${env.GIT_TAG}@${env.IMAGE_DIGEST}"
+        }
+      }
+    }
+
   }
 }
