@@ -1,0 +1,117 @@
+# Values for the jenkins chart. Everything about this Jenkins is here: no setting is ever made in the UI,
+# so a rebuilt cluster comes back identical (concepts §13).
+controller:
+  # The controller never runs a build: builds run in pods of their own (concepts §9).
+  numExecutors: 0
+  # Measured budget: the smallest node had 560m of CPU free before Jenkins (Jenkins guide step 1.2).
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 1536Mi
+  javaOpts: "-XX:MaxRAMPercentage=60"
+
+  # The password is generated in the cluster by External Secrets (step 6). Keep `createSecret: true`: it is
+  # what makes the chart mount an admin secret at all and define the ${chart-admin-*} variables its default
+  # JCasC uses. With `existingSecret` set, the chart mounts that Secret instead of creating one of its own.
+  admin:
+    createSecret: true
+    existingSecret: jenkins-admin
+
+  # Mounts the Secret written by External Secrets, so JCasC can read ${jenkins-github-token} below. Without
+  # this list the placeholder stays literal, and the credential becomes the string itself.
+  additionalExistingSecrets:
+    - name: jenkins-github
+      keyName: token
+
+  # Pinned, and never upgraded behind your back: an unpinned plugin update is a common way to break Jenkins.
+  installLatestPlugins: false
+  installLatestSpecifiedPlugins: false
+  installPlugins:
+    # The first four are the chart's own defaults for 5.9.63, kept as they are.
+    - kubernetes:4557.ve746270f672f      # build pods
+    - workflow-aggregator:608.v67378e9d3db_1  # declarative pipelines
+    - git:5.10.1                         # checkout
+    - configuration-as-code:2121.v86fe99d4b_b_a_b_  # this file
+    # The four below are added by this project. Put the versions the command in "Check before" prints, in
+    # the same "name:version" form; do not guess them.
+    - job-dsl:<version>                  # the job below, as code
+    - credentials-binding:<version>      # withCredentials
+    - pipeline-stage-view:<version>      # stage durations for criterion #8
+    - timestamper:<version>              # timestamps in the log
+
+  jenkinsUrl: https://jenkins.recruitai.io.vn
+
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hostName: jenkins.recruitai.io.vn
+    annotations:
+      # The same VPC-only rule as every internal UI (GitOps guide step 9).
+      nginx.ingress.kubernetes.io/allowlist-source-range: "10.10.0.0/16"
+    tls:
+      # No secretName: ingress-nginx serves the wildcard certificate it holds as its default.
+      - hosts:
+          - jenkins.recruitai.io.vn
+
+  JCasC:
+    defaultConfig: true
+    configScripts:
+      credentials: |
+        credentials:
+          system:
+            domainCredentials:
+              - credentials:
+                  - usernamePassword:
+                      scope: GLOBAL
+                      id: github
+                      username: jenkins-bot
+                      # Read from the Secret External Secrets wrote; never in Git.
+                      password: "${jenkins-github-token}"
+                      description: "Fine-grained token for this repository"
+      jobs: |
+        jobs:
+          - script: |
+              multibranchPipelineJob('medical-rag') {
+                branchSources {
+                  git {
+                    id('medical-rag')
+                    remote('https://github.com/biabeogo147/Medical-RAG-Chatbot.git')
+                    includes('main jenkins/step-*')
+                  }
+                }
+                orphanedItemStrategy { discardOldItems { numToKeep(10) } }
+                triggers { periodicFolderTrigger { interval('2m') } }
+              }
+
+# The Kubernetes cloud. The chart always writes one named "kubernetes" from these values, so it is configured
+# here and not in a configScript: two clouds with the same name collide, and the chart's would win.
+agent:
+  # No default pod template: every pipeline brings its own pod definition, so the tools and their versions
+  # live in the Jenkinsfile.
+  enabled: false
+  disableDefaultAgent: true
+  # Build pods run in the other namespace, with the ServiceAccount the CI role trusts (step 6).
+  namespace: jenkins-agents
+  serviceAccount: jenkins-agent
+  # One build pod at a time: a per-job limit would not span Multibranch branches (concepts §12), and the
+  # nodes have little CPU to spare.
+  containerCap: 1
+  podRetention: Never
+
+# The ServiceAccount for build pods is created by jenkins-platform, in the other namespace (step 6).
+serviceAccountAgent:
+  create: false
+
+rbac:
+  # Creates the controller's ServiceAccount and its permission to run build pods in agent.namespace.
+  create: true
+  # Not needed: the GitHub token reaches JCasC through additionalExistingSecrets, not by reading Secrets
+  # through the API.
+  readSecrets: false
+
+persistence:
+  enabled: true
+  storageClass: gp3
+  size: 8Gi
