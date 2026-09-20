@@ -22,6 +22,17 @@ COPY src ./src
 COPY tests ./tests
 RUN .venv/bin/ruff check src tests && .venv/bin/pytest -q
 
+# Computes the index version from the corpus in the build context, for the pipeline (Jenkins guide step 15).
+# It starts from the test stage, which is the one that has src/ and the full virtual environment, so it uses
+# exactly the code and settings of this commit.
+FROM test AS indexversion
+COPY data /data
+RUN DATA_PATH=/data PYTHONPATH=/app/src .venv/bin/python -m app.index version | tail -n 1 > /version.txt
+
+# Exported on its own, so `--output type=local` copies one small file and not a whole image.
+FROM scratch AS indexversion-out
+COPY --from=indexversion /version.txt /version.txt
+
 # ---- runtime ----
 # Debian 13 (trixie), pinned by index digest. Moving the base is a commit with a visible diff, and the
 # scan in step 12 is what says whether it moved the counts.

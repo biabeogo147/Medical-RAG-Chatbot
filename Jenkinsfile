@@ -65,6 +65,8 @@ spec:
           value: /var/run/secrets/aws/token
         - name: AWS_REGION
           value: ${REGION}
+        - name: AWS_ACCOUNT
+          value: "${ACCOUNT}"
         - name: AWS_STS_REGIONAL_ENDPOINTS
           value: regional
         # Both containers read the login from the same place in the workspace.
@@ -261,6 +263,56 @@ spec:
       }
       post {
         always { archiveArtifacts artifacts: 'sbom.spdx.json', fingerprint: true }
+      }
+    }
+
+    stage('Index version') {
+      steps {
+        // The version comes from the image's own code and the corpus in Git, exported to a local file.
+        sh '''
+          buildctl-daemonless.sh build \
+            --frontend dockerfile.v0 \
+            --local context=. \
+            --local dockerfile=. \
+            --opt target=indexversion-out \
+            --output type=local,dest=version-out
+        '''
+        container('tools') {
+          // `readYaml` would be shorter, but it comes from pipeline-utility-steps and this controller
+          // installs only the plugins listed in deploy/argocd/values/jenkins.yaml. The tools image already
+          // carries yq, so nothing new has to be installed to read two fields.
+          script {
+            env.INDEX_VERSION = readFile('version-out/version.txt').trim()
+            env.DEV_VERSION   = sh(returnStdout: true,
+              script: "yq -r '.index.version' deploy/envs/dev/values.yaml").trim()
+            env.PROD_VERSION  = sh(returnStdout: true,
+              script: "yq -r '.index.version' deploy/envs/prod/values.yaml").trim()
+            env.INDEX_CHANGED_DEV  = (env.INDEX_VERSION == env.DEV_VERSION) ? 'no' : 'yes'
+            env.INDEX_CHANGED_PROD = (env.INDEX_VERSION == env.PROD_VERSION) ? 'no' : 'yes'
+            echo "index version: built=${env.INDEX_VERSION} dev=${env.DEV_VERSION} prod=${env.PROD_VERSION}"
+          }
+        }
+        script {
+          if (env.INDEX_CHANGED_DEV == 'yes' || env.INDEX_CHANGED_PROD == 'yes') {
+            container('tools') {
+              // The Job in the cluster reads the corpus from S3, so the new version may only be deployed if
+              // S3 already holds exactly the PDF in Git. The CI role may read corpus/ and nothing else.
+              sh '''
+                set -e
+                PDF=$(ls data/*.pdf | head -1)
+                LOCAL=$(openssl dgst -sha256 -binary "$PDF" | base64)
+                REMOTE=$(aws s3api head-object --bucket "medical-rag-artifacts-${AWS_ACCOUNT}" \
+                  --key "corpus/$(basename "$PDF")" --checksum-mode ENABLED \
+                  --query ChecksumSHA256 --output text 2>/dev/null || echo "missing")
+                echo "corpus local=$LOCAL s3=$REMOTE"
+                test "$LOCAL" = "$REMOTE" || {
+                  echo "The corpus in S3 is not the PDF in Git. Upload it first (app guide step 13), then rerun."
+                  exit 1
+                }
+              '''
+            }
+          }
+        }
       }
     }
 

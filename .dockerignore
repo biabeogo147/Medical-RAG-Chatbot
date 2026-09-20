@@ -10,7 +10,8 @@
 *.egg-info
 .pytest_cache
 .ruff_cache
-data/
+# data/ stays in the build context: the pipeline computes the index version from it (Jenkins guide step 15).
+# No stage copies it into the runtime image; `docker history` on the image shows no PDF layer.
 index-store/
 logs/
 vectorstore/
