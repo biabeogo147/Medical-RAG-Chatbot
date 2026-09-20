@@ -6,7 +6,7 @@ PROJECT_ROOT = BASE_DIR.parents[2]
 
 # Corpus and chunking
 DATA_PATH = Path(os.getenv("DATA_PATH", PROJECT_ROOT / "data"))
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 500))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 501))  # TEMPORARY: Jenkins guide step 15, case 2. Revert.
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 50))
 
 # Index artifact: built once, stored in INDEX_STORE, pulled into INDEX_DIR at startup
