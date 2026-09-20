@@ -5,7 +5,7 @@
 variable "internal_ui_hosts" {
   description = "First labels of the internal UI names; each becomes <label>.<domain>."
   type        = set(string)
-  default     = ["argocd", "grafana", "prometheus", "alertmanager"]
+  default     = ["argocd", "grafana", "prometheus", "alertmanager", "jenkins"]
 }
 
 resource "aws_route53_record" "internal_ui" {
