@@ -88,10 +88,12 @@ opening a pull request.
 - A **scanner** lists the packages in an image and looks each one up in a vulnerability database. Two scanners
   use different databases and rules, so they give different numbers for the same image.
 - **Trivy** is an open-source scanner. `--ignore-unfixed` leaves out unfixed findings; `--exit-code 1` makes it
-  fail when it finds something at the chosen `--severity`.
+  fail when it finds something at the chosen `--severity`. Both belong to the *scan* commands; `trivy convert`,
+  which re-reads a report, has `--exit-code` and `--severity` but no `--ignore-unfixed`.
 
-**Where it appears.** The pipeline has a *gate*: Trivy with `--severity CRITICAL --ignore-unfixed --exit-code 1`,
-so a fixable CRITICAL stops the build before the image is signed or promoted. A second Trivy run writes the full
+**Where it appears.** The pipeline has a *gate*: it counts the CRITICAL findings in the report that carry a
+fixed version, and that count must be `0`, so a fixable CRITICAL stops the build before the image is signed or
+promoted. A second Trivy run writes the full
 report, HIGH included, without failing. The project's "before" numbers for criterion #9 (4 CRITICAL, 14 HIGH,
 8 MEDIUM) came from ECR's own scanner. Step 1 measures the same image with Trivy, so the "before" and "after"
 come from the same tool.

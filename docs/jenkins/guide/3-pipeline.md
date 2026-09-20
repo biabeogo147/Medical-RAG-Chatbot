@@ -24,6 +24,11 @@ SBOM in the same SPDX format as Syft, so Syft is not needed at all.
 
 ## Step 10 — Only build what should be built, and test it first
 
+**Before you start: step 9 must have passed.** It is what proves a build pod can start at all and that it
+carries the CI role, and the `Jenkinsfile` below drops the `cloud 'kubernetes'` and `namespace 'jenkins-agents'`
+lines *because* step 9 already named them explicitly and they worked. Skip step 9 and a missing or misnamed
+cloud stops being an error message and becomes a build that queues forever with nothing to read.
+
 **Problem now.** Jenkins builds every commit it sees on `main` and on the temporary branches. When the pipeline
 starts writing to Git, its own commits would start new builds, forever
 ([concepts §18](0-concepts.md#18-writing-back-to-git)). And nothing runs the tests before an image is built.
@@ -54,6 +59,9 @@ CPU. Tests must run before anything is pushed, so that no image exists for code 
 //
 // Stages that write anything outside the build pod run only on main: signing, the dev bump and the prod pull
 // request. Branch builds test, build and scan, and stop there.
+//
+// The pod's identity was proved separately in step 9: a build pod reaches AWS as medical-rag-ci and the
+// metadata service does not answer it. See docs/evidence/jenkins.md.
 
 // Values that appear in more than one place. No `def`: that would make them local to one method, and the
 // closures below (the pod definition, every sh line) would not see them.
@@ -169,16 +177,38 @@ spec:
 
 **Check** on a temporary branch (`git push origin HEAD:jenkins/step-10`). In the UI, the branch builds:
 
-1. The console log contains **two** `[Pipeline] stage` lines, one per stage. **`Finished: SUCCESS` on its own
-   proves nothing:** a declarative `pipeline { … }` whose plugin was refused at startup is a call nobody
-   answers, so the build runs the constants, skips every stage and reports success, going straight from
-   `[Pipeline] Start of Pipeline` to `[Pipeline] End of Pipeline`. If that is what you see, the pipeline is
-   fine and Jenkins is not: go to
+1. The console log contains **three** `[Pipeline] stage` lines: `Declarative: Checkout SCM`, which the plugin
+   adds before anything in the file, then `Skip guard` and `Test`. Counting two and stopping reads a correct
+   build as broken. **`Finished: SUCCESS` on its own proves nothing:** when the Declarative plugin
+   was refused at startup, builds here ran the constants and went straight from `[Pipeline] Start of Pipeline`
+   to `[Pipeline] End of Pipeline`, reporting success with no stage at all. *Why* that shape and not a failure
+   is **not established** — a missing step normally throws `No such DSL method` and fails the build, and no
+   such line was ever found in those consoles. Either way the observation is the signal. If that is what you
+   see, the pipeline is fine and Jenkins is not: go to
    [step 8's plugin-load check](2-jenkins.md#step-8--jenkins-itself). Note what this does *not* prove: the
    `stage` step comes from `pipeline-stage-step`, which loads independently, so stage lines mean "a stage ran",
    not "the Declarative plugin is healthy" — that is what the plugin-load check is for.
 2. The `Skip guard` stage passes, because this commit changes `Jenkinsfile`.
 3. The `Test` stage ends with BuildKit's `DONE` lines, and the log contains `26 passed`.
+
+**Two things in that log look wrong and are not.**
+
+Between `[Pipeline] node` and the pod being ready, Jenkins prints `Still waiting to schedule task` and `Waiting
+for next available executor`, once every few seconds. That is the queue, not a fault: the pod is being created
+and its images pulled, which took 19 seconds and 348 MB the first time here. The plugin waits ten minutes
+(`waitForPodSec`) before giving up. Read `kubectl -n jenkins-agents get events` if you want to watch it happen.
+
+And the `Test` stage prints an error while passing:
+
+```
+#6 importing cache manifest from …/medical-rag:buildcache
+#6 ERROR: failed to configure registry cache importer: … 401 Unauthorized
+```
+
+`--import-cache` needs a registry login, and this stage deliberately has none — that is the step's own security
+argument, and `Log in to ECR` does not exist until step 11. So the flag cannot work where it is written, in this
+build or any later one. BuildKit treats a failed cache import as non-fatal and builds from scratch. Leave it:
+step 11 puts the same flag in a stage that *is* logged in, and the two stages share the wording.
 
 Then read what the pod actually asked for. Do **not** try to catch it with `kubectl get pods`: `podRetention:
 Never` deletes it the moment the build ends, and an empty table looks exactly like "no pod was ever created".
@@ -249,6 +279,9 @@ built once from a Dockerfile in this repository and pinned by digest, keeps ever
 
 | File | Change |
 |---|---|
+| `infra/terraform/shared/registry.tf` | New: the ECR repository for the tools image, and its lifecycle rule |
+| `infra/terraform/cluster/main.tf` | New: a data source for that repository |
+| `infra/terraform/cluster/iam.tf` | The node policy's ECR statement names it too |
 | `ci/Dockerfile` | New: the tools image |
 | `Makefile` | New target `ci-image` |
 | `Jenkinsfile` | Two stages, and the tools container in the pod |
@@ -361,6 +394,11 @@ Then add two stages after `Test`:
           // The token in the pod is exchanged for the CI role here; the login lands in the shared workspace,
           // so BuildKit can push with it. The tests above ran before this existed.
           sh """
+            # Jenkins runs every sh step as `/bin/sh -xe`, which echoes each command with its variables
+            # already expanded. Without this line the ECR password and the base64 auth string are both
+            # printed into the build log in full, where they stay valid for 12 hours. stdout is not
+            # affected, so the caller identity below still prints.
+            set +x
             aws sts get-caller-identity --query Arn --output text
             mkdir -p "\${DOCKER_CONFIG}"
             PASS=\$(aws ecr get-login-password --region "\${AWS_REGION}")
@@ -461,13 +499,37 @@ resource "aws_ecr_lifecycle_policy" "ci" {
 }
 ```
 
+**Laptop.** The kubelet pulls the tools image with the *node* role, whose ECR statement names the app
+repository only, so without this the `tools` container sits in `ImagePullBackOff` however correct the rest
+is. In `infra/terraform/cluster/main.tf`, next to the existing `data "aws_ecr_repository" "app"`:
+```hcl
+# The pipeline's tools image. The kubelet pulls it with the node role, so the node policy must name it.
+data "aws_ecr_repository" "ci" {
+  name = "${var.project}-ci"
+}
+```
+and in `infra/terraform/cluster/iam.tf`, in the `EcrPullPush` statement, replace the `resources` line with:
+```hcl
+    resources = [data.aws_ecr_repository.app.arn, data.aws_ecr_repository.ci.arn]
+```
+
 **Check before the push.** Commit `ci/Dockerfile`, the Makefile target and the Terraform block, and push to `main`
 (nothing here is applied by Argo CD, so no temporary branch is needed). On the workstation:
+Two stacks change here, and they must go in this order: the cluster stack reads the repository the shared
+stack creates, so a `data` source for it fails if the repository does not exist yet.
 ```bash
 git pull
-make shared
+
+make shared-plan          # read the plan before applying it (guide.md rule 1)
+make shared               # expect 2 to add, 0 to change, 0 to destroy, then yes
+
+make plan                 # the cluster stack
+make infra                # expect 0 to add, 1 to change, 0 to destroy, then yes
 ```
-Expect **2 to add, 0 to change, 0 to destroy**, then type `yes`. Then build and push the image:
+`make infra`, **not** `make cluster` — `make cluster` runs the Ansible playbook that builds Kubernetes. The one
+change is an inline IAM policy; if the plan wants to replace a node or touch a launch template, stop.
+
+Then build and push the image:
 ```bash
 make ci-image
 ```
@@ -520,8 +582,10 @@ Keep this list in view: each step below says which stage it adds and where.
 patched package exists and the image is still built on the old one, the build stops before that image can be signed
 or promoted.
 
-**This step.** One stage that scans the image once into a report, prints the table, then applies the gate
-(`--severity CRITICAL --ignore-unfixed --exit-code 1`) to that report. The report is archived with the build.
+**This step.** One stage that scans the image once into a report, prints the table, then applies the gate to
+that report: **CRITICAL findings that carry a fixed version, counted, and the count must be `0`.** Trivy's own
+`convert` cannot express that — `--ignore-unfixed` belongs to its scan commands — so the count is a `jq` line
+over the report. The report is archived with the build either way.
 
 **After this step.**
 - Works: an image with a fixable CRITICAL never reaches the later stages.
@@ -561,9 +625,20 @@ Add these stages after `Build and push`:
           // gate fails; scanning first and failing second is the only order that keeps both.
           sh "trivy image --scanners vuln --format json --output trivy-report.json ${IMAGE}@${env.IMAGE_DIGEST}"
           sh "trivy convert --format table trivy-report.json"
-          // The gate. Unfixed findings are ignored on purpose: nothing can be done about them today, and a
-          // gate that can never pass is a gate people switch off (concepts §2).
-          sh "trivy convert --severity CRITICAL --ignore-unfixed --exit-code 1 trivy-report.json"
+        }
+        // The gate, in the tools container because it is the one with jq. `trivy convert` has no
+        // --ignore-unfixed: that flag belongs to the scan commands, and convert only offers --severity
+        // and --exit-code, which together would fail every build on findings nobody can act on. So the
+        // gate counts them here instead: CRITICAL findings that carry a fixed version. Unfixed ones are
+        // ignored on purpose — a gate that can never pass is a gate people switch off (concepts §2).
+        container('tools') {
+          sh """
+            N=\$(jq '[.Results[]?.Vulnerabilities[]?
+                        | select(.Severity == "CRITICAL")
+                        | select(.FixedVersion != null and .FixedVersion != "")] | length' trivy-report.json)
+            echo "CRITICAL with a fix available: \$N"
+            [ "\$N" -eq 0 ]
+          """
         }
       }
       post {
@@ -575,13 +650,21 @@ Add these stages after `Build and push`:
 **Why:**
 
 - **The gate scans by digest.** The tag could be moved between the push and the scan; the digest cannot.
-- **One scan, then the gate.** `trivy convert` re-reads the report with different filters, so the image is pulled
-  and scanned once. Because the report is written before the gate runs, it is archived even when the gate fails.
-- **`--ignore-unfixed` on the gate only.** The report counts everything, so criterion #9 can show both numbers.
+- **The gate has never been seen to fail.** Every CRITICAL in this image is unfixed, so `0` is the only answer
+  it can give today, and passing shows it does not block wrongly — not that it blocks. To exercise the failure
+  path once, run a throwaway build with `CRITICAL` replaced by `MEDIUM`: `pip` carries five findings that do
+  have fixed versions, and the gate should go red. Put it back afterwards.
+- **One scan, then the gate.** Everything after `trivy image` re-reads the report on disk, so the image is
+  pulled and scanned once. Because the report is written before the gate runs, it is archived even when the
+  gate fails — which is not hypothetical: the first run of this step failed at the gate and the report survived.
+- **Unfixed findings ignored by the gate only.** The report counts everything, so criterion #9 can show both
+  numbers; only the gate filters on `FixedVersion`.
 - **`archiveArtifacts` in `post { always }`.** The report survives a failed build.
 
-**Check**, on a temporary branch: the `Scan` stage passes, the console shows the table, and the build page lists
-`trivy-report.json` as an artifact. Download it (or read it on the workstation with the build's URL) and compare the
+**Check**, on a temporary branch: the `Scan` stage passes, the console shows the table **and the line
+`CRITICAL with a fix available: 0`**, and the build page lists `trivy-report.json` as an artifact. Look for that
+line, not just a green stage: a gate that found nothing and a gate that never ran both leave a green stage, and
+only the number tells them apart. Download it (or read it on the workstation with the build's URL) and compare the
 counts with step 1: the same image content gives the same numbers.
 
 **Record** the counts, and that the gate passed.
@@ -615,10 +698,16 @@ with the same Trivy version.
 docker buildx imagetools inspect ghcr.io/astral-sh/uv:python3.12-trixie-slim --format '{{.Manifest.Digest}}'
 docker buildx imagetools inspect python:3.12-slim-trixie --format '{{.Manifest.Digest}}'
 ```
-Expected: two `sha256:…` lines. These are the digests of the whole multi-platform index, which is what a `FROM`
-line must name; the first digest inside a manifest list would pin one architecture, or an attestation. If either
-tag does not exist, stop: record what the command said, and keep the current base until a tag that does exist is
-chosen.
+Expected: the digest of the whole multi-platform index for each image. That is what a `FROM` line must name;
+a digest from *inside* the manifest list would pin one architecture, or an attestation manifest, and the
+listing contains several of each.
+
+`--format` is ignored by some buildx versions, which print the full listing instead. That is fine — the value
+is the `Digest:` line at the top of each block, above `Manifests:`. Do not take one of the indented
+`Name: …@sha256:…` lines underneath.
+
+If either tag does not exist, stop: record what the command said, and keep the current base until a tag that
+does exist is chosen.
 
 **Laptop.** Then in `Dockerfile`, change the two `FROM` lines to those images with `@sha256:…` appended, keeping the stage names
 and everything else. Nothing else in the file changes.
@@ -631,13 +720,31 @@ and everything else. Nothing else in the file changes.
 - **`perl-base` stays.** It is essential in Debian and cannot be removed; whether its findings move is exactly what
   this step measures.
 
-**Check**, on a temporary branch: the build passes the tests, the gate and the scan. Compare the report with step
-12's:
+**Check**, on a temporary branch: the build passes the tests, the gate and the scan. Then compare its report
+with step 12's.
+
+`trivy-report.json` is a Jenkins **build artifact**, not a file in the workstation's clone, so fetch it first —
+it lives on the controller's volume. On the workstation:
 ```bash
-# on the workstation, against the two archived reports
-jq -r '[.Results[]?.Vulnerabilities[]?] | group_by(.Severity) | .[] | "\(.[0].Severity) \(length)"' trivy-report.json
+kubectl -n jenkins exec jenkins-0 -c jenkins --   sh -c 'ls -1t /var/jenkins_home/jobs/medical-rag/branches/*/builds/*/archive/trivy-report.json'
 ```
-Expected: the same command as step 1, so the numbers compare directly. Any change, up or down, is the result.
+Newest first. Take the line for this branch and the line for step 12's, then:
+```bash
+AFTER=...   # the step 13 path
+BEFORE=...  # the step 12 path
+kubectl -n jenkins exec jenkins-0 -c jenkins -- cat "$AFTER"  > /tmp/after.json
+kubectl -n jenkins exec jenkins-0 -c jenkins -- cat "$BEFORE" > /tmp/before.json
+
+for f in /tmp/before.json /tmp/after.json; do
+  echo "== $f"
+  jq -r '[.Results[]?.Vulnerabilities[]?] | group_by(.Severity) | .[] | "\(.[0].Severity) \(length)"' "$f"
+done
+```
+`jq` runs on the workstation; the controller image does not have it.
+
+Expected: the same command as step 1, so the numbers compare directly. These counts cover both `Results`
+arrays, the Debian packages and the Python ones, so they run higher than the Debian table the console prints —
+by six on the Debian 12 image measured here, all of them in `pip`. Any change, up or down, is the result.
 Trivy's database changes daily, so a difference of one or two in the totals is normal; a difference you cannot
 explain is not.
 
@@ -678,11 +785,21 @@ the SBOM as a signed attestation. Trivy writes SPDX JSON, so no extra tool is ne
         }
         container('tools') {
           // The key never leaves KMS; the pipeline may only ask it to sign (Jenkins guide step 3).
-          // The public Rekor log is not used: these images are private, and verification uses the key.
+          // The public Rekor log is not used: these images are private, so their digests, repository
+          // name and account id have no business in a public log, and verification here uses the key.
+          //
+          // cosign v3 removed the flags that used to say so. `--tlog-upload=false` is deprecated on
+          // `sign` and refuses to run alongside the signing config v3 enables by default; on `attest` the
+          // flag is gone entirely, and so are --rekor-url and --offline. What replaces them is a signing
+          // config listing the services to use. Created with no services at all, it names no transparency
+          // log, which is exactly the intent. It is generated here rather than baked into the tools image
+          // so that it always matches the cosign that reads it, and building it needs no network.
           sh """
-            cosign sign --yes --tlog-upload=false \
+            cosign signing-config create --out signing-config.json
+            cosign sign --yes --signing-config signing-config.json \
               --key awskms:///alias/medical-rag-cosign ${IMAGE}@${env.IMAGE_DIGEST}
-            cosign attest --yes --tlog-upload=false --type spdxjson --predicate sbom.spdx.json \
+            cosign attest --yes --signing-config signing-config.json \
+              --type spdxjson --predicate sbom.spdx.json \
               --key awskms:///alias/medical-rag-cosign ${IMAGE}@${env.IMAGE_DIGEST}
           """
         }
@@ -697,18 +814,48 @@ the SBOM as a signed attestation. Trivy writes SPDX JSON, so no extra tool is ne
 
 - **`main` only.** A branch build must not be able to produce a signature that looks like a release.
 - **Sign the digest from the build.** Not `:${GIT_TAG}`: what is signed is exactly what was pushed.
-- **`--tlog-upload=false`.** The images are private; a public transparency log entry would publish their digests
-  and names for no gain here.
+- **A signing config with no services, instead of `--tlog-upload=false`.** The images are private; a public
+  transparency log entry would publish their digests, repository name and account id for no gain here.
+  cosign v3 removed the flags that used to say so, and takes a signing config instead; one created with no
+  services names no Rekor, no Fulcio and no timestamp authority, none of which key-based signing needs.
 - **Trivy for the SBOM.** One less container, and the SBOM comes from the same scan of the same digest.
 
-**Check before the push.** cosign's flags differ between versions, so read them once on the workstation, where
-cosign v3.1.3 is installed:
+**Check before the push.** cosign's flags differ between versions, and this step has already been broken once
+by that. Read them on the workstation, where the same cosign the tools image pins is installed — confirm that
+first:
 ```bash
-cosign sign --help | grep -E 'tlog-upload|--key'
-cosign verify --help | grep -E 'insecure-ignore-tlog|--key'
+cosign version | grep GitVersion        # must match ARG COSIGN_VERSION in ci/Dockerfile
+for c in sign attest verify; do
+  echo "== $c"
+  cosign $c --help 2>&1 | grep -oE '^[[:space:]]+(-[A-Za-z], )?--[a-z0-9-]+' | grep -oE '\-\-[a-z0-9-]+' | sort -u
+done
 ```
-Expected: both flags exist. If a flag is missing or named differently, use the name this cosign prints and record
-the change.
+The second `grep -o` is there because cobra prints a flag that has a short alias as `-y, --yes`, so a pattern
+anchored on `--` alone would not see it — the same blind spot this step is being fixed for.
+
+Expected: `sign` and `attest` both list `--signing-config` and `--key`; `attest` also lists `--predicate` and
+`--type`; `verify` lists `--key` and `--insecure-ignore-tlog`.
+
+Read the **flag list**, not the examples. cosign's help keeps usage examples from older versions, so
+`--tlog-upload` still appears in an example under `sign` while being deprecated there and absent from `attest`
+altogether — which is exactly how this step came to ship a command that cannot run. And check every command the
+stage uses: greping only `sign` and `verify` misses `attest`, where the difference was.
+
+If a flag is missing or named differently, use what this cosign prints and record the change.
+
+Then prove the shape works before a real build does it — `main` is where the signature is real, and a build
+that fails there is a failed release. Two commands, the second against the key and an image already in ECR:
+```bash
+cosign signing-config create --out /tmp/sc.json && cat /tmp/sc.json
+
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+IMG=$ACCOUNT.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag@<a digest already pushed>
+cosign sign --yes --signing-config /tmp/sc.json --key awskms:///alias/medical-rag-cosign "$IMG"
+```
+Expected: JSON with no Rekor service in it, then `Pushing signature to: …`. An `AccessDenied` from KMS means
+your own identity lacks `kms:Sign` — the syntax still passed, which is what this is testing. A signature made
+this way is yours, not the pipeline's; say so when you record it, because `cosign verify` cannot tell them
+apart afterwards.
 
 **Check**, after `main` has built once:
 ```bash

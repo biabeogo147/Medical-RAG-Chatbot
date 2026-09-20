@@ -909,7 +909,7 @@ failure of the step; it is the step.
 YAML, so both a render and a server dry run pass with the placeholders still in place. The failure appears
 minutes later, inside an init container.
 ```bash
-grep -n '<[A-Za-z][A-Za-z0-9_-]*>' deploy/argocd/values/jenkins.yaml deploy/argocd/apps/jenkins.yaml
+grep -nE '<[A-Za-z][A-Za-z0-9_ -]*>' deploy/argocd/values/jenkins.yaml deploy/argocd/apps/jenkins.yaml
 ```
 Expected: no output. This is [rule 5](../guide.md#how-this-guide-works) and it covers both files the step
 changes, not only the one you remember editing. It is still only a *presence* test — a version that is
@@ -925,7 +925,8 @@ while IFS=: read -r NAME VER; do
   echo "$NAME:$VER $CODE"
 done < /tmp/plugins.txt
 ```
-Expected: `8`, then eight lines each ending in `200` or `302`. A `404` is the version that does not exist, named
+Expected: `8` on the first pass. The third group is empty then; after the loop below has added to it the
+count is higher, and this check is only asking that nothing was lost, then eight lines each ending in `200` or `302`. A `404` is the version that does not exist, named
 for you — caught before the push instead of inside an init container.
 
 **What neither part of this pre-flight can see.** All eight versions can exist, be fetchable and satisfy the
@@ -1031,17 +1032,47 @@ round:
    nothing":
    `kubectl -n argocd wait applications.argoproj.io/jenkins --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m`,
    then confirm the new version string is in the ConfigMap.
-3. `kubectl -n jenkins delete pod jenkins-0`, and repeat this check.
-4. Confirm the file on disk changed:
-   `kubectl -n jenkins exec jenkins-0 -c jenkins -- ls /var/jenkins_home/plugins | grep <the plugin>`.
+3. `kubectl -n jenkins delete pod jenkins-0`, then wait for the **replacement** pod:
+   `kubectl -n jenkins wait pod/jenkins-0 --for=condition=Ready --timeout=10m`. Do not reuse the
+   `argocd wait … Healthy` above for this: the Application is already Healthy, so it returns at once and you
+   read the log of a pod that has not finished starting — where the failure grep passes because the evidence
+   has not been written yet.
+4. Confirm the resolver took the new pin, by version and not by filename:
+   `kubectl -n jenkins logs jenkins-0 -c init | grep Downloaded | grep -E 'plugin-a|plugin-b'`, with the names
+   you raised. The line you want reads `Downloaded <name> from https://…/<version>/<name>.hpi` — the version is
+   in the URL. Without the first `grep`, the same names also appear on `Skipping dependency …`,
+   `Will install new plugin …` and `Checksum valid for: …`, several lines each, and it is not obvious which is
+   the answer. `ls /var/jenkins_home/plugins` cannot answer it at all: the file is `<name>.jpi` either way, so
+   312 and 322 look identical.
 
 **Two exits that are not another round.** A demanded version whose `requiredCore` is above the controller
 image's version cannot be satisfied by any pin — the answer is a newer chart or image, not another pass. And an
-unchanged `.jpi` at point 4 means the copy is conditional, not that the pin is wrong: go back to the box above.
+unchanged version at point 4 means the new list never reached the pod, not that the pin is wrong: the sync at
+point 2 did not finish before the pod was deleted.
 
-**And `0` is not the end.** It proves every declared minimum is satisfied, not that the combination was ever
-tested together, and a plugin *disabled* rather than refused prints nothing at all. The check that closes this
-is step 10's requirement of two `[Pipeline] stage` lines in a real build.
+**And `0` is not the end — check the suite is at one version.** The load check reads *declared minimums*. A
+plugin family released together from one repository can satisfy every minimum and still be split across two
+releases, which loads without a word of complaint and then calls across the gap at run time. That failure
+reaches you as `java.lang.NullPointerException: Cannot invoke method call() on null object` in a build, with
+nothing in the controller log to connect it. Read the versions directly:
+
+```bash
+kubectl -n jenkins exec jenkins-0 -c jenkins -- sh -c '
+for p in pipeline-model-api pipeline-model-definition pipeline-model-extensions          pipeline-stage-tags-metadata pipeline-stage-step workflow-job; do
+  printf "%-32s" "$p"
+  grep -i "^Plugin-Version" /var/jenkins_home/plugins/$p/META-INF/MANIFEST.MF 2>/dev/null || echo "(not unpacked)"
+done'
+```
+
+Expected: **the first four print the same version.** They are one plugin project — `pipeline-model-definition`
+publishes all four — so any difference between them is a split, whatever the load check said. Pin whichever of
+them is behind, at the version the others are at, and go round the loop again. `pipeline-stage-step` and
+`workflow-job` come from elsewhere and have versions of their own; they are listed only so the whole Declarative
+set is visible at once.
+
+Even after all that, `0` and one version do not prove the combination runs. A plugin *disabled* rather than
+refused prints nothing at all. What closes this step is step 10: a real build with three `[Pipeline] stage`
+lines in its console.
 
 To find out *which* plugin asked for the newer member, ask the update centre who depends on it:
 ```bash
@@ -1132,7 +1163,7 @@ spec:
       command: ["cat"]
       tty: true
       env:
-        # The same four variables the app's pods use (app guide step 7), for the CI role.
+        # The same five variables the app's pods use (app guide step 7), for the CI role.
         - name: AWS_ROLE_ARN
           value: arn:aws:iam::242834061265:role/medical-rag-ci
         - name: AWS_WEB_IDENTITY_TOKEN_FILE
@@ -1141,6 +1172,12 @@ spec:
           value: ap-southeast-1
         - name: AWS_STS_REGIONAL_ENDPOINTS
           value: regional
+        # Without this the CLI has nowhere to put its cache. The image's default user is root with
+        # HOME=/root; this pod forces runAsUser 1000, uid 1000 has no /etc/passwd entry, so HOME falls
+        # back to / and the CLI fails with `[Errno 13] Permission denied: '/.aws'`. The app's own IRSA
+        # proof pods set the same variable.
+        - name: HOME
+          value: /tmp
       resources:
         requests:
           cpu: 50m
@@ -1176,8 +1213,8 @@ spec:
 
 **Why:**
 
-- **The pod defines its own identity.** No webhook and no annotation: the projected token and the four variables
-  are written here, exactly as the app's chart does.
+- **The pod defines its own identity.** No webhook and no annotation: the projected token and the five
+  variables are written here, exactly as the app's chart does.
 - **`automountServiceAccountToken: false`.** The build never talks to the Kubernetes API.
 - **The account id and the image tag are written out.** The account id is not a secret, and a pipeline cannot read
   a values file before it has a workspace; Part 3 keeps both in one place at the top of the file. Replace
@@ -1192,8 +1229,9 @@ Expected:
 1. `aws sts get-caller-identity` prints an ARN containing `assumed-role/medical-rag-ci/`.
 2. The IMDS line prints a timeout, then `IMDS unreachable, exit=…` with a non-zero code.
 
-If the first command prints `medical-rag-nodes` instead, the pod did not use the token: stop, and compare the four
-variables with the app guide's step 7.1 troubleshooting.
+If the first command prints `medical-rag-nodes` instead, the pod did not use the token: stop, and compare the
+five variables with the app guide's step 7.1 troubleshooting. If instead it prints
+`[Errno 13] Permission denied: '/.aws'`, `HOME` is missing — the CLI has nowhere to write under `runAsUser: 1000`.
 
 **Then move `main`** to this commit and delete the branch, so that `main` also has a `Jenkinsfile` of the new
 shape. On `main`, this build runs once and does the same thing.

@@ -43,12 +43,17 @@ placeholder reached the cluster:
    says what it must print. Anything else: stop.
 4. **Nothing is assumed silently.** Step 1 measures what the later steps depend on. Parts 2–4 are written from
    its results.
-5. **A file you filled in is checked for leftovers.** Steps 8, 11 and 13 hand you a file with `<version>`,
-   `<tag>` or `<digest>` to replace. Nothing downstream validates them — they are valid YAML, valid Groovy and a
+5. **A file you filled in is checked for leftovers.** Steps 8, 9 and 11 hand you a file with `<version>`,
+   `<aws-cli version>`, `<tag>` or `<digest>` to replace. (Step 13 asks you to *append* a digest, so it hands
+   over no slot.) Nothing downstream validates them — they are valid YAML, valid Groovy and a
    valid Dockerfile line — so the failure surfaces much later, as a crash loop or a 404. Before each push:
-   `grep -n '<[A-Za-z][A-Za-z0-9_-]*>' <the files in the step's table>` must print nothing. Presence is not
-   content: a value that is well-formed but wrong passes this, so each of those steps also proves its value
-   resolves.
+   `grep -nE '<[A-Za-z][A-Za-z0-9_ -]*>' <the files in the step's table>` must print nothing you cannot
+   account for. **The space in that character class is load-bearing:** step 9 hands over `<aws-cli version>`,
+   and the obvious pattern without it matches nothing and reports success. It also matches prose — step 11's
+   Terraform carries `"release-<tag>"` and `_acme-challenge.<domain>` inside comments — so read each hit and
+   decide: a slot, or a sentence describing a shape. Presence is not content either: a value that is well-formed
+   but wrong passes this, so each of those steps also proves its value resolves. What the grep cannot see at
+   all is a block you never pasted — for that, compare the file with the guide's own fenced blocks.
 6. **Expected output is specific:** a count, a string, an ARN.
 7. **Full resource names in kubectl:** `applications.argoproj.io`, not `app`.
 
@@ -69,7 +74,7 @@ cosign v3.1.3, gh 2.100.0. Region `ap-southeast-1`.
 | [2](guide/2-jenkins.md) | [8](guide/2-jenkins.md#step-8--jenkins-itself) | No CI | Application `jenkins` at wave 4: pinned chart and plugins, JCasC (including the Multibranch job), one build pod at a time, home volume, Ingress through the VPN | Jenkins runs, configured entirely from Git | Nothing proves a build pod gets the CI role | temporary branch: `helm template` and dry run | UI opens through the VPN; `root` `Healthy`; the home volume is `gp3` with reclaim `Delete`, and the Application carries the volumes label |
 | [2](guide/2-jenkins.md) | [9](guide/2-jenkins.md#step-9--prove-the-build-pods-identity) | Nothing proves the build pods get the right identity | An identity-test `Jenkinsfile`, built on a temporary branch | The build pod's AWS identity is `medical-rag-ci`, and IMDS is closed | Nothing is built, and nothing decides which commits need a build | branch build only | `get-caller-identity` shows `medical-rag-ci`; IMDS times out |
 | [3](guide/3-pipeline.md) | [10](guide/3-pipeline.md#step-10--only-build-what-should-be-built-and-test-it-first) | Every commit would start a build, the bot's own commits included | Skip guard, and the tests in a build with no registry login | Only real code changes are built, and they are tested first | The pipeline still produces no image | branch build | A docs-only commit ends `NOT_BUILT`; the test stage passes |
-| [3](guide/3-pipeline.md) | [11](guide/3-pipeline.md#step-11--the-tools-image-and-the-app-image) | Images are built by hand | The CI tools image, then BuildKit build and push with the cache in ECR | Every commit becomes an image; cold and warm build times known | Nothing scans it | branch build | Image `<commit>` in ECR; the cache reused on the second build |
+| [3](guide/3-pipeline.md) | [11](guide/3-pipeline.md#step-11--the-tools-image-and-the-app-image) | Images are built by hand | The CI tools image, then BuildKit build and push with the cache in ECR | Every commit becomes an image; cold and warm build times known | Nothing scans it | shared plan: 2 to add; cluster plan: 1 to change | Image `<commit>` in ECR; the cache reused on the second build |
 | [3](guide/3-pipeline.md) | [12](guide/3-pipeline.md#step-12--the-gate-no-image-with-a-fixable-critical) | Images are not scanned | Trivy gate and report | A fixable CRITICAL stops the build before anything is signed or promoted | The unfixed findings are still there | branch build | The first run's result recorded as the "before" |
 | [3](guide/3-pipeline.md) | [13](guide/3-pipeline.md#step-13--fewer-findings-in-the-base-image) | 5 CRITICAL and 55 HIGH findings, none with a fix | Base image on Debian 13, pinned by digest | Fewer findings, and the next base change is deliberate; criterion #9's "after" | Images are not signed | branch build; test stage | Green run; Trivy counts before and after |
 | [3](guide/3-pipeline.md) | [14](guide/3-pipeline.md#step-14--sign-what-was-built) | Nothing proves who built an image | SBOM from Trivy, signature and attestation with the KMS key | Every image on `main` is signed; its package list is kept | Nothing checks the index version, and dev is still updated by hand | branch build, without signing: signing is first proven on `main` | `cosign verify` passes on the workstation |
