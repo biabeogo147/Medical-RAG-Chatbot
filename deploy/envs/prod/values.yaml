@@ -1,15 +1,11 @@
 # prod: what users rely on. Its values change only on purpose, after dev has run the same image and index;
 # until Jenkins opens pull requests for it, you edit this file by hand.
 environment: prod
-
 image:
-  tag: "1eaa43bf3512@sha256:c10cd57eb4b22d025f2daf772743e7a79f3285233921ef4236e532a75e166769"   # app guide step 11
-
+  tag: "b79a4531d5cb@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e" # app guide step 11
 index:
-  version: "cc759ae1a093"                # the same as dev: dev's Job built it, prod's finds it
-
+  version: "cc759ae1a093" # the same as dev: dev's Job built it, prod's finds it
 replicas: 2
 spreadAcrossNodes: true
-
 ingress:
-  host: app.recruitai.io.vn            # app guide step 14
+  host: app.recruitai.io.vn # app guide step 14
