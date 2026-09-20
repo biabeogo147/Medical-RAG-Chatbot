@@ -40,7 +40,12 @@ controller:
     - credentials-binding:728.v902a_273b_8947       # withCredentials
     - pipeline-stage-view:2.41                      # stage durations for criterion #8
     - timestamper:1.30                              # timestamps in the log
-
+    # Raised because the startup log demanded these three by name: `installLatestPlugins: false` resolves
+    # dependencies at their minimum version, so one plugin left the rest of the Declarative suite behind.
+    - pipeline-model-api:2.2277.v00573e73ddf1
+    - workflow-job:1546.v62a_c59c112dd
+    - pipeline-stage-step:322.vecffa_99f371c
+    
   jenkinsUrl: https://jenkins.recruitai.io.vn
 
   ingress:
