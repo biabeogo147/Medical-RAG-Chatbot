@@ -3,6 +3,9 @@
 //
 // Stages that write anything outside the build pod run only on main: signing, the dev bump and the prod pull
 // request. Branch builds test, build and scan, and stop there.
+//
+// The pod's identity was proved separately in step 9: a build pod reaches AWS as medical-rag-ci and the
+// metadata service does not answer it. See docs/evidence/jenkins.md.
 
 // Values that appear in more than one place. No `def`: that would make them local to one method, and the
 // closures below (the pod definition, every sh line) would not see them.
