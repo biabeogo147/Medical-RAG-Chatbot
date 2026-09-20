@@ -142,6 +142,11 @@ spec:
           // The token in the pod is exchanged for the CI role here; the login lands in the shared workspace,
           // so BuildKit can push with it. The tests above ran before this existed.
           sh """
+            # Jenkins runs every sh step as `/bin/sh -xe`, which echoes each command with its variables
+            # already expanded. Without this line the ECR password and the base64 auth string are both
+            # printed into the build log in full, where they stay valid for 12 hours. stdout is not
+            # affected, so the caller identity below still prints.
+            set +x
             aws sts get-caller-identity --query Arn --output text
             mkdir -p "\${DOCKER_CONFIG}"
             PASS=\$(aws ecr get-login-password --region "\${AWS_REGION}")
