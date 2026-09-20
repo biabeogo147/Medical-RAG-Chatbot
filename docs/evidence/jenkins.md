@@ -1043,9 +1043,29 @@ is the safe one and it was chosen on purpose. What it means in practice is that 
 builds: the guard can only ever skip a single-parent commit. Step 17's squash merge is single-parent, so prod
 is unaffected.
 
-**Still owed:** the in-cluster check's real output, with `--command`; and a green pipeline build afterwards,
-which is the part that matters — if the build pod were quietly using the node role, this step is what would
-expose it.
+**What the pod answered, with `--command`.** Both halves as the step expects:
+
+```
+arn:aws:sts::242834061265:assumed-role/medical-rag-nodes/i-080eaea8ca9c2aa11
+aws: [ERROR]: An error occurred (AccessDeniedException) when calling the Sign operation: User:
+arn:aws:sts::242834061265:assumed-role/medical-rag-nodes/i-080eaea8ca9c2aa11 is not authorized to perform:
+kms:Sign on resource: arn:aws:kms:ap-southeast-1:242834061265:key/058d89ae-… because no identity-based
+policy allows the kms:Sign action
+```
+
+The first line is what makes the second line mean something: the pod really did assume the node role, through
+IMDS, from a namespace that does not block it. `no identity-based policy allows the kms:Sign action` is the
+shape of an `implicitDeny` seen from the caller's side — the statement was removed, not denied.
+
+**And the pipeline still works.** The build on `main` after the change finished `SUCCESS`, so `Build and push`
+called `ecr:PutImage` and `SBOM and signature` called `kms:Sign` — both of which the node role had just lost.
+That is the measurement this step exists for: the build pod uses the CI role, not the node role, and it uses it
+in every container that needs AWS, not only where step 9 looked.
+
+Worth being exact about what this does *not* prove. The node role was already out of this pod's reach before
+step 18, because step 6's NetworkPolicy excludes `169.254.169.254/32` from egress in both Jenkins namespaces.
+A green build shows the exchange still works; it could not have gone red from step 18 alone. What step 18
+changes is every *other* pod in the cluster, which is what the `default`-namespace check above measures.
 
 ## Problems found and fixed
 
