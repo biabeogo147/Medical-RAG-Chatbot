@@ -1,0 +1,27 @@
+# Everything Jenkins needs before its chart: namespaces, the build pods' ServiceAccount and RBAC, the
+# credentials, and the network rules. Wave 3, after the app (waves 1 and 2): nothing here is needed earlier.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jenkins-platform
+  namespace: argocd
+  labels:
+    # A failed sync here means Jenkins cannot start; show it on root like the app's Applications.
+    medical-rag/report-failed-sync: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+    targetRevision: main
+    path: deploy/argocd/manifests/jenkins
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: jenkins
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

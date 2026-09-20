@@ -1,0 +1,29 @@
+# Two namespaces, because the controller and the builds need different rights (concepts §8).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins
+  labels:
+    # The controller runs as one ordinary pod. Enforced at baseline rather than restricted: the upstream
+    # chart does not set a seccomp profile on every container, and restricted requires one. warn and audit
+    # stay at restricted, so the gap is visible in every dry run and in the audit log.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins-agents
+  labels:
+    # Rootless BuildKit needs Unconfined seccomp and AppArmor, which baseline refuses (Jenkins guide step 1.4).
+    # privileged means "no checks", so step 7 adds a ValidatingAdmissionPolicy that refuses what BuildKit does
+    # not need. warn and audit stay at baseline, so every relaxation is visible.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest

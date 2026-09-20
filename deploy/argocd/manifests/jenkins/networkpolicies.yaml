@@ -1,0 +1,124 @@
+# Same shape as the app's rules (app guide step 16): deny everything in, allow only what each side needs out,
+# and never the metadata service, so no Jenkins pod can borrow the node's AWS identity.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default
+  namespace: jenkins
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # GitHub, the plugin update centre and AWS, but never IMDS.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # The Kubernetes API, to create and watch build pods. A NetworkPolicy is evaluated after kube-proxy has
+    # replaced the ClusterIP, so the real destination is a control-plane address on 6443, not 443.
+    - to:
+        - ipBlock:
+            cidr: 10.10.0.0/16
+      ports:
+        - protocol: TCP
+          port: 6443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-ingress-nginx
+  namespace: jenkins
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: jenkins-controller
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-agents
+  namespace: jenkins
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: jenkins-controller
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jenkins-agents
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 50000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default
+  namespace: jenkins-agents
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # ECR, S3, STS, KMS, GitHub, Docker Hub and the package indexes a build needs. Never IMDS.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # Back to the controller: the agent program (50000) and the HTTP API.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jenkins
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 50000

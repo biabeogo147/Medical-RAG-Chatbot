@@ -1,0 +1,45 @@
+# The identity of every build pod. The CI role (infra/terraform/shared/irsa.tf) trusts exactly this
+# ServiceAccount in exactly this namespace, and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-agent
+  namespace: jenkins-agents
+# No annotation is needed: the pod template mounts the token and sets the AWS variables itself, as the app
+# chart does (app guide step 17).
+automountServiceAccountToken: false
+---
+# What the controller may do in the agents' namespace: start a build pod, watch it, read its log, run a command
+# in it, and delete it. Nothing cluster-wide, and nothing in any other namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-agent-runner
+  namespace: jenkins-agents
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "delete", "get"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-agent-runner
+  namespace: jenkins-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-agent-runner
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins
