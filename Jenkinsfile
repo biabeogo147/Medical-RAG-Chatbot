@@ -189,8 +189,11 @@ spec:
           // The token in the pod is exchanged for the CI role here; the login lands in the shared workspace,
           // so BuildKit can push with it. The tests above ran before this existed.
           //
-          // Since step 18 the node role can no longer PutImage or kms:Sign, so this exchange is the only
-          // way the push and the signature can succeed. A green build is now the proof, not an assumption.
+          // Since step 18 the node role holds neither ecr:PutImage nor kms:Sign, so no pod in the cluster
+          // can push or sign through it. For this pod that was already true: step 6's NetworkPolicy closes
+          // IMDS, so what step 18 adds is the cluster-wide boundary, not this one. Note the login itself
+          // would still work off the node role if IMDS were reachable -- GetAuthorizationToken is
+          // deliberately left on `*` for the kubelet. It is the push and the signature that it cannot do.
           sh """
             # Jenkins runs every sh step as `/bin/sh -xe`, which echoes each command with its variables
             # already expanded. Without this line the ECR password and the base64 auth string are both

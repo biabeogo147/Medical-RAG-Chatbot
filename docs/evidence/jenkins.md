@@ -967,10 +967,11 @@ follow that the guide does not mention. The tag says which commit *built* an ima
 it. And step 2's lifecycle rules count images, not tags, so ten tags on one image consume one of the thirty
 places, not ten.
 
-## Step 18 — Take push and sign away from the node role (in progress)
+## Step 18 — Take push and sign away from the node role
 
-Edited, not yet applied. `infra/terraform/cluster/iam.tf` loses four ECR write actions and the whole
-`CosignSign` statement; the node role keeps only reads.
+Applied. `infra/terraform/cluster/iam.tf` lost four ECR write actions and the whole `CosignSign`
+statement; the node role keeps only reads. The simulator answers below are what show it landed: they read
+the policy attached in the account, not the file.
 
 **The step's own block would have undone step 11.** It gives the replacement statement as
 
@@ -997,10 +998,54 @@ still holds.
 | KMS | `kms:Sign`, `kms:GetPublicKey`, `kms:DescribeKey` on the cosign key | statement gone |
 | `ecr:GetAuthorizationToken` | `*` | **unchanged** — the kubelet needs it to pull at all |
 
-**Still owed:** `make infra` with a plan that is 1 to change; `simulate-principal-policy` showing
-`ecr:PutImage implicitDeny`, `kms:Sign implicitDeny`, and the two pull actions still `allowed`; the same denial
-from a real pod on a node; and a green pipeline build afterwards, which is the part that matters — if the build
-pod were quietly using the node role, this step is what would expose it.
+**What the simulator answered.** Against the node role's ARN — the step's four actions, and one more it does
+not ask for:
+
+| Action | Resource | Answer |
+|---|---|---|
+| `ecr:PutImage` | `medical-rag` | `implicitDeny` |
+| `ecr:BatchGetImage` | `medical-rag` | `allowed` |
+| `ecr:GetDownloadUrlForLayer` | `medical-rag` | `allowed` |
+| `kms:Sign` | the cosign key | `implicitDeny` |
+| `ecr:BatchGetImage` | `medical-rag-ci` | `allowed` |
+
+The fifth row needed a third call, with `--resource-arns` set to the `medical-rag-ci` ARN; the step's
+`$REPO_ARN` only resolves `medical-rag`. It is the row that matters: it is what shows the deviation above —
+keeping both ARNs — was the right call. All three pull actions the kubelet needs sit in that one statement, so
+one of them answering `allowed` on that repository settles the other two. Had the step been followed
+literally, the row would read `implicitDeny` and the `tools` container would stop being pullable on the next
+pod.
+
+**The in-cluster check as written cannot run.** `kubectl run … --image=public.ecr.aws/aws-cli/aws-cli:$AWSCLI
+-- sh -c "…"` answers
+
+```
+aws: [ERROR]: An error occurred (ParamValidation): argument command: Found invalid choice 'sh'
+```
+
+The image has `ENTRYPOINT ["aws"]`, so everything after `--` is appended as *arguments to* `aws` rather than
+run as a command. The failure reads like a typo in the shell line and says nothing about permissions, which is
+the worst shape for a check whose entire job is to distinguish "denied" from "broken". `--command` before `--`
+is what overrides the entrypoint. The app guide's version of the same check (step 9,
+`docs/app/guide/1-pod-identity.md:1334`) passes `-- s3api list-objects-v2 …`, which really are arguments to
+`aws`, so it needs no override and gave no warning that this one would.
+
+**The skip guard cannot see a merge commit's files.** The push that carried the code change for this step was
+a `git pull` merge, so `main`'s head was a merge commit. The guard's own command answers nothing on one:
+
+```
+$ git show --pretty= --name-only HEAD | wc -c
+0
+```
+
+An empty list is what the guard calls unknown, and unknown counts as a build, so the build ran. The direction
+is the safe one and it was chosen on purpose. What it means in practice is that a docs-only merge always
+builds: the guard can only ever skip a single-parent commit. Step 17's squash merge is single-parent, so prod
+is unaffected.
+
+**Still owed:** the in-cluster check's real output, with `--command`; and a green pipeline build afterwards,
+which is the part that matters — if the build pod were quietly using the node role, this step is what would
+expose it.
 
 ## Problems found and fixed
 
@@ -1008,8 +1053,8 @@ pod were quietly using the node role, this step is what would expose it.
 AWS secret was genuinely empty — and the guide's defect was having no check for it. In two shapes. **Three were
 checks that passed while the thing they guarded was broken:** the empty secret, the uncompiled policy, the
 unfilled placeholder. **Two failed loudly but pointed away from the cause:** `jq: Invalid numeric literal` for a
-307 redirect, and a namespace mismatch for a values change made three steps earlier. A sixth of the first shape
-appears in Part 3 below, and it is the rule that was written to fix the third.
+307 redirect, and a namespace mismatch for a values change made three steps earlier. Item 6 below, in Part 3,
+is a fourth of the first shape — and it is the rule that was written to fix the third.
 
 1. **`medical-rag/github` was empty.** The guide assumed the value was already there — `0-concepts.md` said "You
    put it there once" and the runbook carried the command, but no step in this phase checked it, and Part 1's
@@ -1043,11 +1088,13 @@ appears in Part 3 below, and it is the rule that was written to fix the third.
    message that says nothing about redirects.
    Fixed: `curl -fsSL`, a line count that must be four, and a troubleshooting row with the literal error.
 
-**Part 3.** Seventeen, all defects in the guide, none in the cluster. One is a disclosed credential; four are
-commands that cannot do what the step says, three of them flags the tool removed or deprecated after the guide
-was written. Five are checks that passed while the thing they guarded was broken — the fifth is item 20 below,
-found only because its answer was implausible. One of them — the split Declarative
-suite — cost four builds and two wrong diagnoses before it was measured.
+**Part 3.** Eighteen, all defects in the guide, none in the cluster. One is a disclosed credential. Five are
+commands that cannot do what the step says — items 15, 16, 17, 18 and 23: one flag the tool removed after the
+guide was written, one flag that subcommand never had, one flag that was silently ignored, one file that is
+not where the step looks for it, and one entrypoint the step did not account for. Two are checks that passed
+while the thing they guarded was broken, items 6 and 20 — the fourth and fifth of that shape in the phase,
+after Part 2's three; item 20 was found only because its answer was implausible. One defect — the split
+Declarative suite — cost four builds and two wrong diagnoses before it was measured.
 
 6. **Rule 5's grep cannot see half the placeholders it was written for.** `grep -n '<[A-Za-z][A-Za-z0-9_-]*>'`
    has no space in its character class, so `<aws-cli version>` — the next placeholder the guide hands over
@@ -1149,6 +1196,10 @@ suite — cost four builds and two wrong diagnoses before it was measured.
    step 11 had added the tools repository to that same statement so the kubelet could pull the `tools`
    image. Following step 18 literally puts that container back into `ImagePullBackOff`, three steps away from
    the change that caused it. Step 18 predates step 11 having any node-role change at all.
+23. **Step 18's pod check runs `aws sh -c …`.** The `aws-cli` image has `ENTRYPOINT ["aws"]`, so without
+   `--command` kubectl passes the shell line to `aws` as arguments and the pod answers `Found invalid choice
+   'sh'`. A check written to tell a denial apart from a breakage fails in the one way that looks like a
+   breakage. The app guide's equivalent passes arguments `aws` really takes, so it never exposed this.
 
 **Part 1.** None: every check of Part 1 behaved as the guide expected, except the two shell mistakes in the guide
 itself (an unset variable in the Ansible command, and one in step 2's gate), which were fixed in the guide.

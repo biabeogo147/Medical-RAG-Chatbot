@@ -91,18 +91,30 @@ Then the same thing from a real pod that uses the node role, in a namespace that
 ```bash
 AWSCLI=$(aws --version | cut -d' ' -f1 | cut -d/ -f2)
 kubectl -n default run node-role-test --rm -it --restart=Never \
-  --image="public.ecr.aws/aws-cli/aws-cli:$AWSCLI" -- \
+  --image="public.ecr.aws/aws-cli/aws-cli:$AWSCLI" --command -- \
   sh -c "aws sts get-caller-identity --query Arn --output text; \
          aws kms sign --key-id alias/medical-rag-cosign --message-type RAW --signing-algorithm ECDSA_SHA_256 \
            --message deny-test 2>&1 | tail -1"
 ```
 Expected: an ARN containing `medical-rag-nodes`, then an error containing `AccessDenied` or `not authorized to
-perform: kms:Sign`. `--message-type RAW` with a short string is used on purpose: a `DIGEST` message would have to
-be exactly 32 bytes, and a size error would hide the permission error this check is about.
+perform: kms:Sign`. `--message-type RAW` with a short string is used on purpose: a `DIGEST` message would
+have to be exactly 32 bytes, and a size error would hide the permission error this check is about.
 
-Then let the pipeline prove itself: push any small code change to `main` and watch the build. Expected: `Build and
-push` and `SBOM and signature` both pass. If the push fails with `AccessDenied`, the build pod is not using the CI
-role: step 9's check is the place to start.
+**`--command` is what makes this run at all.** The `aws-cli` image has `ENTRYPOINT ["aws"]`, so without it
+kubectl appends the words as *arguments to* `aws`, and the pod answers `Found invalid choice 'sh'` — which
+reads like a broken command and says nothing about permissions. That is the worst shape for a check whose
+whole job is to tell a denial apart from a breakage. The app guide's version of this check (its step 9)
+passes `-- s3api list-objects-v2 …` and needs no `--command`: there the words really are arguments to `aws`.
+
+Then let the pipeline prove itself. Push a small change to `main` and watch the build — but the change must touch
+a file that is **not** under `docs/` or `deploy/` and does not end in `.md`, or the skip guard ends the build as
+`NOT_BUILT` before `Build and push` ever runs, and you learn nothing. You have been editing `docs/` and `infra/`
+for this step; `infra/` builds, `docs/` does not. The `Jenkinsfile` itself is a safe choice.
+
+Expected: `Skip guard` does not end the build, then `Build and push` and `SBOM and signature` both pass. The app
+image may be byte-identical to the last one, so every layer is already in ECR — `ecr:PutImage` is still called to
+attach the new tag, so the check still means something. If the push fails with `AccessDenied`, the build pod is
+not using the CI role: step 9's check is the place to start.
 
 **Record** both outputs and the build number that passed afterwards.
 
