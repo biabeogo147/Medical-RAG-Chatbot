@@ -27,7 +27,7 @@ Con số nào chưa đo được viết dưới dạng `[điền: …]`. Không 
 | Lỗi Kyverno khi deploy image chưa ký lên prod | Evidence Kyverno | A6.2, A7.4 |
 | RTO khi khôi phục etcd | Evidence restore drill | A7.2, A7.4 |
 | Số request lỗi trong lúc nâng cấp Kubernetes, phiên bản đích | Evidence upgrade drill | A7.3, A7.4 |
-| Các `[điền]` của Phần B | Jenkinsfile, manifest | B2.4, B2.10, B4.2–B4.8, B5.1–B5.3, B6.1, B6.2, B6.4–B6.6 |
+| Các `[điền]` của Phần B | Jenkinsfile, manifest | B2.4, B2.10, B4.4, B4.6–B4.8, B5.1–B5.3, B6.1, B6.2, B6.4–B6.6 |
 
 **Cần xác nhận khi xong dự án:**
 
@@ -972,50 +972,99 @@ instance profile của node để lấy token ECR.
 
 **B4.1**
 
-1. **Skip guard.**
-2. **Lint và test:** ruff, pytest, hadolint.
-3. **Build và push:** BuildKit rootless, `medical-rag:<git-sha>` lên ECR, cache trên ECR.
-4. **Scan:** Trivy.
-5. **SBOM:** Syft, SPDX JSON.
-6. **Ký và attest:** cosign với KMS.
-7. **Lên dev:** `yq` ghi `image.tag` dạng `tag@sha256:…` (và `index.version` nếu corpus hoặc cấu hình chunk đổi) vào
-   values dev, commit với tên `jenkins-bot`, push lên `main`.
-8. **Mở PR prod:** cùng thay đổi trên values prod, kèm tóm tắt Trivy và digest.
+Mười stage, đúng thứ tự trong `Jenkinsfile`:
 
-**Cổng chặn có chủ đích:** lint/test và Trivy, cả hai đứng **trước** bước ký, nên image lỗi không bao giờ được ký hay
-lên Git. Bước 7 và 8 chỉ chạy trên branch `main`.
+1. **Tag the image prod runs** — chỉ khi branch là `main` **và** commit đụng `deploy/envs/prod/values.yaml`: gắn
+   tag `release-<sha>` cho digest prod vừa nhận, để lifecycle policy không xoá mất nó.
+2. **Skip guard** — xem B4.5.
+3. **Test** — `buildctl` dựng `--target test` của Dockerfile; ruff và pytest chạy bên trong đó. Đứng **trước** mọi
+   credential: lúc này pipeline chưa đăng nhập ECR, nên code của repo chạy mà không cầm bí mật nào.
+4. **Log in to ECR** — đổi token service account lấy vai trò `medical-rag-ci`, ghi `config.json` vào workspace
+   dùng chung để BuildKit push được.
+5. **Build and push** — BuildKit rootless, `medical-rag:<git-sha>` lên ECR. Cache nằm trên ECR ở tag
+   `buildcache`: mọi build đều **kéo**, chỉ `main` mới **đẩy**, nên một branch không đầu độc được thứ `main`
+   dựng từ đó.
+6. **Scan** — Trivy quét **một lần** ra `trivy-report.json`, rồi cổng chặn đọc lại chính báo cáo đó (B4.2).
+7. **SBOM and signature** — chỉ trên `main`: Trivy sinh SBOM SPDX JSON, cosign ký digest và attest SBOM bằng key
+   KMS.
+8. **Index version** — tính version từ chính image (`--target indexversion-out`), rồi so với `.index.version`
+   trong values dev và prod. **Chỉ khi khác** mới so checksum của PDF trong Git với `corpus/` trên S3, và dừng
+   nếu lệch. Bản thân index do Job ở wave 1 trong cluster dựng, **không phải** pipeline. Không có `when`, nên
+   chạy trên mọi branch.
+9. **Promote to dev** — chỉ trên `main`: `yq` ghi `image.tag` dạng `tag@sha256:…` (và `index.version` nếu stage 8
+   đổi) vào values dev, commit với tên `jenkins-bot`, push lên `main`.
+10. **Prod pull request** — chỉ trên `main`: cùng thay đổi đó trên values prod, mở PR kèm tóm tắt Trivy và digest.
 
-**B4.2** `trivy image --severity CRITICAL --ignore-unfixed --exit-code 1`: chỉ dừng khi có lỗ hổng **CRITICAL đã có bản
-sửa**.
+**Cổng chặn có chủ đích:** test và Trivy, cả hai đứng **trước** bước ký, nên image lỗi không bao giờ được ký hay
+lên Git.
 
-Lệnh này lọc output chỉ còn CRITICAL, nên báo cáo của nó **không có** số HIGH. Muốn có thì chạy lần thứ hai
-`--severity HIGH,CRITICAL --format json --exit-code 0`, dùng lại database đã tải. `[điền: lệnh thật trong Jenkinsfile]`.
+**Không có trong pipeline này:** hadolint không được dùng, và SBOM do **Trivy** sinh chứ không phải Syft — chỉ có
+một binary quét cho cả hai việc.
+
+**B4.2** Không phải một lệnh `trivy` có `--exit-code`. Pipeline tách làm hai: quét một lần ra báo cáo, rồi cổng
+chặn đọc lại chính báo cáo đó.
+
+```bash
+trivy image --scanners vuln --format json --output trivy-report.json medical-rag@sha256:…
+trivy convert --format table trivy-report.json
+N=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")
+         | select(.FixedVersion != null and .FixedVersion != "")] | length' trivy-report.json)
+[ "$N" -eq 0 ]
+```
+
+**Vì sao tách:** quét trước, chặn sau là thứ tự duy nhất giữ được cả hai thứ — báo cáo vẫn nằm trong artifact ngay
+cả khi cổng chặn đánh trượt build.
+
+**Vì sao đếm bằng `jq` chứ không dùng cờ:** `trivy convert` **không có** `--ignore-unfixed` — cờ đó thuộc về các
+lệnh quét. `convert` chỉ có `--severity` và `--exit-code`, hai cái cộng lại sẽ đánh trượt mọi build vì những lỗ
+hổng không ai vá được, mà một cổng không bao giờ qua được là một cổng người ta tắt đi. Nên cổng chỉ đếm CRITICAL
+**có `FixedVersion`**.
+
+**Số HIGH:** báo cáo là JSON đầy đủ, không lọc severity, nên số HIGH nằm sẵn trong đó — không cần quét lần hai.
+Sau khi chuyển base sang Debian 13: **0 CRITICAL, 44 HIGH**; trước đó là 5 và 55 (evidence bước 13). Cổng báo `0`
+ở cả hai lần, và đúng: cả năm CRITICAL của Debian 12 đều không có bản sửa.
 
 **B4.3**
 
-- **Ký digest:** `cosign sign --key awskms:///alias/medical-rag-cosign <digest>`.
-- **Attest:** `cosign attest --type spdxjson`, gắn SBOM vào image bằng cùng key.
-- **Quyền:** agent Jenkins lấy credential của instance role qua metadata service (namespace của Jenkins được phép gọi);
-  role có `kms:Sign` và `kms:GetPublicKey` trên đúng key đó.
+- **Ký digest:** `cosign sign --yes --signing-config signing-config.json --key awskms:///alias/medical-rag-cosign
+  <IMAGE>@<digest>`.
+- **Attest:** `cosign attest --yes --signing-config signing-config.json --type spdxjson --predicate
+  sbom.spdx.json`, gắn SBOM vào image bằng cùng key.
+- **Quyền:** build pod **không** dùng instance role của node. Nó đổi token service account (projected, qua issuer
+  OIDC đặt trên S3) lấy vai trò riêng `medical-rag-ci`, và chính vai trò đó có `kms:Sign`, `kms:GetPublicKey`,
+  `kms:DescribeKey` trên đúng key cosign. NetworkPolicy loại `169.254.169.254/32` khỏi egress nên pod không gọi
+  được metadata service, và từ bước 18 vai trò node cũng không còn `kms:Sign` nữa.
 
-**Cần xác nhận:** cosign mặc định đẩy một bản ghi lên Rekor công khai, nghĩa là digest và public key bị công khai và
-pipeline cần egress tới Rekor. `[điền: có tắt tlog upload không; Kyverno có cấu hình ignoreTlog tương ứng không]`.
+**Rekor: không dùng.** Image là private, nên digest, tên repository và account id chẳng việc gì phải nằm trong một
+log công khai; verify ở đây dùng key. cosign v3 đã bỏ đúng những cờ từng nói điều đó: `--tlog-upload=false` bị
+deprecated trên `sign` và từ chối chạy cạnh signing config mặc định của v3, còn trên `attest` thì biến mất hẳn,
+cùng với `--rekor-url` và `--offline`. Thay thế là một **signing config** không liệt kê service nào, sinh ngay
+trong stage bằng `cosign signing-config create --out signing-config.json` — sinh tại chỗ chứ không nướng vào image
+tools, để nó luôn khớp với bản cosign đọc nó, và dựng nó không cần mạng.
 
 **B4.4** Cosign v3 lưu chữ ký và attestation dạng **OCI referrer không có tag**, nằm cạnh image trong cùng repository.
 
 - **Lifecycle policy** chỉ đếm image có tag, vì đếm cả image không tag sẽ xoá chữ ký của image đang chạy.
-- **Nhưng** rule giữ 20 image có tag lại đếm cả tag cache `buildcache*`, nên image prod đang dùng có thể bị xoá khi dev
-  build nhiều (A5.3).
+- **Nhưng** rule đếm image có tag lại đếm cả tag cache `buildcache*`, nên image prod đang dùng có thể bị xoá khi
+  dev build nhiều (A5.3). Đó là lý do phase này **không** giữ nguyên con số 20 của thiết kế: `registry.tf` giữ 10
+  image `release-*` ở rule ưu tiên 1, rồi 30 image có tag ở rule 2 — rule 1 chặn rule 2 xoá mất bản prod đang chạy.
 - **Tag immutable** loại trừ `buildcache*` và `sha256-*` (tag chữ ký kiểu cũ), để cache và chữ ký ghi đè được.
 - **Kyverno** phải hỗ trợ định dạng chữ ký mới của cosign v3 `[điền: phiên bản Kyverno và bằng chứng verify]`.
 
 *Ở đâu:* `infra/terraform/shared/registry.tf`; Terraform B8.1.
 
-**B4.5** Dừng nếu tác giả commit là `jenkins-bot`, **hoặc** mọi file thay đổi đều nằm trong `deploy/**`.
+**B4.5** Dừng nếu tác giả của commit mới nhất là `jenkins-bot`, **hoặc** mọi file thay đổi đều nằm trong `deploy/`,
+trong `docs/`, hoặc kết thúc bằng `.md`.
 
-**Bỏ qua nhầm:** ở build đầu tiên của một branch, hoặc khi replay, danh sách thay đổi của Jenkins rỗng. Điều kiện "mọi
-file đều thuộc `deploy/**`" trên tập rỗng luôn đúng, nên build bị bỏ qua. Guard phải coi danh sách rỗng là "phải build".
-Đánh dấu kết quả `NOT_BUILT` để lịch sử không hiện đỏ `[điền: cách cài trong declarative pipeline]`.
+**Bỏ qua nhầm:** trên một danh sách file rỗng, điều kiện "mọi file đều…" luôn đúng, nên build sẽ bị bỏ qua oan.
+Guard coi danh sách rỗng là **phải build**: `files && files.split(…)`, chuỗi rỗng là falsy trong Groovy. Bỏ qua khi
+nghi ngờ là giấu mất thay đổi. Danh sách rỗng xảy ra thật: `git show --pretty= --name-only HEAD` trả về **0 byte**
+trên một **merge commit**, nên guard chỉ có thể bỏ qua commit một cha — squash merge của bước 17 là một cha nên
+prod không bị ảnh hưởng.
+
+**Cách đánh dấu trong declarative pipeline:** trong khối `script`, đặt `currentBuild.result = 'NOT_BUILT'` rồi gọi
+`error(…)`. `error` là thứ dừng pipeline; gán result trước đó là thứ giữ cho lịch sử không hiện đỏ. Và stage bị
+`when` bỏ qua thì **không** chạy khối `post` của nó — đã đo.
 
 **B4.6**
 
@@ -1062,14 +1111,26 @@ ExternalSecret cần `SkipDryRunOnMissingResource` vì CRD của nó chưa có l
 
 Identity admin, gồm role của workstation, đọc được cả năm.
 
-**Chưa có chỗ trong thiết kế:** `FLASK_SECRET_KEY` của app, mật khẩu admin Jenkins, mật khẩu admin Grafana.
-`[điền: nằm ở secret nào]`.
+**Mật khẩu admin Jenkins không nằm trong Secrets Manager.** **External Secrets** sinh nó **trong cluster**,
+bằng generator `Password` với `refreshInterval: "0"` — sinh một lần rồi thôi, nên nó không đổi dưới chân
+controller đang chạy. Chart chỉ *mount* secret đó (`controller.admin.existingSecret: jenkins-admin`), chứ
+không sinh. Nằm ở secret `jenkins-admin` namespace `jenkins`, key `jenkins-admin-password`. Hệ quả cần nói
+được: nó **khác sau mỗi lần dựng lại cluster**, và không có bản sao nào ngoài cluster để khôi phục. Đọc bằng:
+
+```bash
+kubectl -n jenkins get secret jenkins-admin -o jsonpath='{.data.jenkins-admin-password}' | base64 -d
+```
+
+**Chưa có chỗ trong thiết kế:** `FLASK_SECRET_KEY` của app và mật khẩu admin Grafana `[điền: nằm ở secret nào]`.
 
 **B5.2**
 
-- **AWS**, qua instance role của node: push và pull repository `medical-rag`, `kms:Sign` trên cosign key. Vì dùng chung
-  role, agent cũng có mọi quyền khác của role đó: đọc bốn secret, đọc ghi bucket artifacts và `etcd-backups`
-  (Terraform B7.3).
+- **AWS**, qua vai trò **riêng** `medical-rag-ci` — token service account đổi lấy, không phải instance role của
+  node. Vai trò đó có: `ecr:GetAuthorizationToken` trên `*` (action duy nhất AWS không scope theo repository
+  được), tám action push và pull trên **riêng repository `medical-rag`**, `kms:Sign` / `GetPublicKey` /
+  `DescribeKey` trên key cosign, và `s3:GetObject` trên `corpus/*`. Hết: không secret nào, không `etcd-backups`,
+  không quyền ghi vào bucket artifacts. Image `medical-rag-ci` chứa container `tools` do **kubelet** kéo bằng vai
+  trò node, không phải vai trò này.
 - **Kubernetes:** RBAC chỉ trong namespace của nó, đủ để tạo pod agent.
 - **GitHub:** token fine-grained trong repo này, đủ để push lên `main` và mở PR `[điền: quyền thật của token]`.
 
