@@ -2,7 +2,7 @@
 # version; prod's finds it already built.
 environment: dev
 image:
-  tag: "8183aef0c326@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e" # app guide step 11
+  tag: "46fd6bbc6c18@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e" # app guide step 11
 index:
   version: "cc759ae1a093" # app guide step 12
 ingress:
