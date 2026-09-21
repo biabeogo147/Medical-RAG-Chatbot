@@ -1,14 +1,13 @@
-# Buckets whose content is only useful while this cluster exists. The FAISS index lives in the shared
-# stack instead, so a teardown never throws it away.
+# Buckets whose content is only useful while this cluster exists. The FAISS index and the etcd snapshots
+# live in the shared stack instead, so a teardown never throws them away (shared/storage.tf).
 locals {
   buckets = {
-    etcd-backups = 14 # days to keep etcd snapshots
-    ssm-transfer = 1  # days to keep the temporary files Ansible copies through SSM
+    ssm-transfer = 1 # days to keep the temporary files Ansible copies through SSM
   }
 }
 
-# for_each over the map creates one bucket per key, and the same protections are written once instead
-# of twice. Each instance is addressed as aws_s3_bucket.this["etcd-backups"].
+# for_each over the map creates one bucket per key, and the same protections are written once for all
+# of them. Each instance is addressed as aws_s3_bucket.this["ssm-transfer"].
 resource "aws_s3_bucket" "this" {
   for_each = local.buckets
 

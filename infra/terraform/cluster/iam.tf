@@ -52,18 +52,23 @@ data "aws_iam_policy_document" "nodes" {
     resources = [data.aws_ecr_repository.app.arn, data.aws_ecr_repository.ci.arn]
   }
 
-  # The cluster's own buckets: etcd snapshots and the Ansible transfer bucket. The artifacts bucket is not
-  # here: the app's pods reach it through their own roles (shared/irsa.tf, app guide step 6).
+  # The cluster's own buckets (the Ansible transfer bucket) plus the etcd snapshot bucket, which lives in
+  # the shared stack and is not in aws_s3_bucket.this: leave it out and the snapshot CronJob fails with
+  # AccessDenied. The artifacts bucket is not here: the app's pods reach it through their own roles
+  # (shared/irsa.tf, app guide step 6).
   statement {
     sid       = "S3ListBuckets"
     actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
-    resources = [for b in aws_s3_bucket.this : b.arn]
+    resources = concat([for b in aws_s3_bucket.this : b.arn], [data.aws_s3_bucket.etcd_backups.arn])
   }
 
   statement {
-    sid       = "S3ReadWriteObjects"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = [for b in aws_s3_bucket.this : "${b.arn}/*"]
+    sid     = "S3ReadWriteObjects"
+    actions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = concat(
+      [for b in aws_s3_bucket.this : "${b.arn}/*"],
+      ["${data.aws_s3_bucket.etcd_backups.arn}/*"],
+    )
   }
 
   # Read by External Secrets, which turns them into Kubernetes Secrets.

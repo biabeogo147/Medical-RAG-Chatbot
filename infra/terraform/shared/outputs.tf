@@ -8,6 +8,15 @@ output "artifacts_bucket" {
   value = aws_s3_bucket.artifacts.bucket
 }
 
+# Where the etcd snapshot CronJob writes. The cluster stack looks it up by name, not through this output.
+output "etcd_backups_bucket" {
+  value = aws_s3_bucket.etcd_backups.bucket
+}
+
+output "etcd_backups_bucket_arn" {
+  value = aws_s3_bucket.etcd_backups.arn
+}
+
 # What CI signs with: cosign sign --key awskms:///alias/medical-rag-cosign
 output "cosign_kms_key_alias" {
   value = aws_kms_alias.cosign.name

@@ -38,6 +38,12 @@ data "aws_ecr_repository" "ci" {
   name = "${var.project}-ci"
 }
 
+# Where the etcd snapshot CronJob writes (drills guide step 8). Created by the shared stack so that
+# `make down` cannot delete the backups together with the cluster they back up.
+data "aws_s3_bucket" "etcd_backups" {
+  bucket = "${var.project}-etcd-backups-${local.account_id}"
+}
+
 data "aws_secretsmanager_secret" "app" {
   for_each = toset(["llm", "github", "rancher", "rancher-tls", "alertmanager", "wildcard-tls", "app-dev", "app-prod"])
   name     = "${var.project}/${each.key}"

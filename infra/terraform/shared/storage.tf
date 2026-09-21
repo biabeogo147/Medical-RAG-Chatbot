@@ -78,3 +78,75 @@ resource "aws_s3_bucket_policy" "artifacts" {
 
   depends_on = [aws_s3_bucket_public_access_block.artifacts]
 }
+
+# etcd snapshots, written every 6 hours by a CronJob on the control plane (drills guide step 8). The
+# bucket was in the cluster stack with force_destroy until the drills phase, so every `make down` deleted
+# the backups together with the cluster they back up. Here it outlives the cluster; the node role in
+# cluster/iam.tf finds it by name.
+resource "aws_s3_bucket" "etcd_backups" {
+  bucket = "${local.name}-etcd-backups-${local.account_id}"
+  # No force_destroy, for the same reason as the artifacts bucket.
+}
+
+resource "aws_s3_bucket_public_access_block" "etcd_backups" {
+  bucket = aws_s3_bucket.etcd_backups.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "etcd_backups" {
+  bucket = aws_s3_bucket.etcd_backups.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# No versioning: each snapshot has its own timestamped key and is never overwritten.
+resource "aws_s3_bucket_lifecycle_configuration" "etcd_backups" {
+  bucket = aws_s3_bucket.etcd_backups.id
+
+  rule {
+    id     = "expire-snapshots"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = 14 # 56 snapshots at one every 6 hours
+    }
+  }
+}
+
+data "aws_iam_policy_document" "etcd_backups_tls_only" {
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    resources = [aws_s3_bucket.etcd_backups.arn, "${aws_s3_bucket.etcd_backups.arn}/*"]
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "etcd_backups" {
+  bucket = aws_s3_bucket.etcd_backups.id
+  policy = data.aws_iam_policy_document.etcd_backups_tls_only.json
+
+  depends_on = [aws_s3_bucket_public_access_block.etcd_backups]
+}
