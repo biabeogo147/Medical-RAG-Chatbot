@@ -1294,7 +1294,7 @@ Expected: prod's pods run the new digest, and that image carries both tags.
 
 **Also set the repository rule** on GitHub, once: *Settings → Rules → Rulesets*, a ruleset on `main` that blocks
 force pushes and branch deletion. It cannot require a review from yourself, which is the limit recorded in the
-[README](../README.md#10-known-limits-and-what-is-out-of-scope).
+[README](../README.md#15-known-limits-and-what-is-out-of-scope).
 
 **Record** the pull request's URL, prod's image, the `release-` tag, and what happened in check 1.
 

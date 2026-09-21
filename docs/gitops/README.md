@@ -466,7 +466,7 @@ one-line pull request.
 ## 12. Known limits
 
 These are the platform's. The app's and the pipeline's are in
-[the Jenkins README §10](../jenkins/README.md#10-known-limits-and-what-is-out-of-scope).
+[the Jenkins README §15](../jenkins/README.md#15-known-limits-and-what-is-out-of-scope).
 
 | Limit | Why it is accepted here | What would fix it |
 |---|---|---|

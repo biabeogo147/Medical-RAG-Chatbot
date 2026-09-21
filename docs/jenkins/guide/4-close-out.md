@@ -137,7 +137,7 @@ answers.
 - Works: the phase is reproducible.
 - Proven by: after a rebuild, a commit reaches dev with no manual step; the preview keeps every `release-*` image;
   no EBS volume is left after `make down`.
-- Still missing: what the [README](../README.md#10-known-limits-and-what-is-out-of-scope) lists as out of scope,
+- Still missing: what the [README](../README.md#15-known-limits-and-what-is-out-of-scope) lists as out of scope,
   Kyverno first.
 
 | File | Change |
@@ -204,7 +204,7 @@ Expected: `COMPLETE`. With **more than 30** images, `expire` lists the oldest on
 them: that is what step 2 promised. With fewer, `expire` is empty, which only says the repository is still small;
 record the count and repeat this check later.
 
-**The cost of the cache**, which no rule deletes ([README](../README.md#8-ecr-clean-up)):
+**The cost of the cache**, which no rule deletes ([README](../README.md#10-one-digest-many-tags-and-what-the-lifecycle-rules-count)):
 ```bash
 aws ecr describe-images --repository-name medical-rag --query 'sum(imageDetails[].imageSizeInBytes)'
 aws ecr describe-images --repository-name medical-rag --filter tagStatus=UNTAGGED --query 'length(imageDetails)'
@@ -223,7 +223,7 @@ Then the Q&A in `docs/common/answers.md`. Two kinds of work, and they are not th
   B5.1 (where the Jenkins admin password lives). Also update the index table at the top of that file.
 
 A5.5 and A5.6 need nothing: their remaining `[điền]` is about Kyverno, which is out of scope
-([README](../README.md#10-known-limits-and-what-is-out-of-scope)). Last, reread `docs/jenkins/README.md` and correct
+([README](../README.md#15-known-limits-and-what-is-out-of-scope)). Last, reread `docs/jenkins/README.md` and correct
 anything this phase decided differently.
 
 **Record** the rebuild timings, the preview result, the repository size, and the release that ran after the rebuild.
