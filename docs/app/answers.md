@@ -2,8 +2,8 @@
 
 Đáp án cho [`questions.md`](questions.md), cùng số thứ tự. Phần A mở đầu bằng **Ý chính**: câu nói thành tiếng, ngôi thứ
 nhất, thường là đủ. *Nếu được hỏi thêm* dùng khi người phỏng vấn đào sâu; tham chiếu như `(B1.2)` là để bạn tra, không đọc
-ra. Dòng **Mẹo** là lời nhắc cho bạn, không nói ra. Đường dẫn tính từ gốc repo. Tham chiếu dạng `Common A5.2` trỏ tới
-[`../common/answers.md`](../common/answers.md), tương tự với `GitOps`, `Terraform`, `Ansible`, `AWS`.
+ra. Dòng **Mẹo** là lời nhắc cho bạn, không nói ra. Đường dẫn tính từ gốc repo. Tham chiếu dạng `Common A2.3` trỏ tới
+[`../common/answers.md`](../common/answers.md), tương tự với `GitOps`, `Terraform`, `Ansible`, `AWS` và `Jenkins`.
 
 Chỗ `[điền: …]` là số liệu phải lấy từ lần chạy thật; đừng nói điều chưa đo. Ghi chú **[kiểm chứng]** là hành vi của công cụ
 cần xác nhận (trên cluster hoặc trong tài liệu chính thức) trước khi nói chắc. Số thập phân viết bằng dấu chấm, như các bộ
@@ -108,7 +108,7 @@ ký image, tự commit giá trị mới vào values của dev, rồi mở pull r
 
 *Nếu được hỏi thêm:*
 
-- Vì sao Jenkins ghi vào Git mà không `kubectl apply`: `Common A5.2`.
+- Vì sao Jenkins ghi vào Git mà không `kubectl apply`: `Jenkins A2.1`.
 - Prod không đợi dev: khi file đã lên `main`, `medical-rag-prod` tự sync. Wave 2 của prod chỉ có tác dụng khi chính `root`
   sync, như lúc dựng cluster mới (B2.3).
 
@@ -250,7 +250,7 @@ khi tag đã có trong ECR, vì tag trong ECR là immutable. Nó chạy test tr�
 
 *Nếu được hỏi thêm:*
 
-- Vì sao cần digest: `Common A5.4`. Khi có cả tag và digest, runtime kéo theo digest.
+- Vì sao cần digest: `Jenkins A6.4`. Khi có cả tag và digest, runtime kéo theo digest.
 - `--provenance=false --sbom=false` để có một manifest đơn, digest in ra chính là digest chart pin.
 
 **A3.6** **Ý chính:** "Rollback là `git revert` commit đã đổi values, rồi push. Image cũ vẫn trong ECR, version index cũ vẫn trên

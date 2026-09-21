@@ -11,8 +11,9 @@ mức hiểu và luyện phỏng vấn. Đáp án nằm ở [`answers.md`](answe
 
 Bộ liên quan: [tổng quan project](../common/questions.md), [GitOps](../gitops/questions.md),
 [Terraform](../terraform/questions.md), [Ansible](../ansible/questions.md), [AWS](../aws/questions.md). Tham chiếu dạng
-`Common A5.2` trỏ tới bộ tương ứng. Câu tổng quan về app (probe, retry khi gọi model, image size, CI/CD, Kyverno) nằm ở
-`Common A3`, `A5`, `B2`–`B4`; bộ này không lặp lại.
+`Common A2.3` trỏ tới bộ tương ứng. Câu tổng quan về app (probe, retry khi gọi model, image size) nằm ở
+`Common A3` và `B2`; câu về Kyverno ở `Common B4`; câu về pipeline ở [Jenkins](../jenkins/questions.md).
+Bộ này không lặp lại chúng.
 
 **Cách dùng.** Làm Phần A trước: trả lời thành tiếng, khoảng một phút mỗi câu, rồi so với đáp án. Nhóm A7 là các câu chuyện
 sự cố; tập kể chúng tới khi nói trôi mà không cần nhìn. Nhóm A10 luyện riêng cho câu "ở công ty thì bạn làm thế nào". Phần B
@@ -68,7 +69,7 @@ làm không mở code; chỉ tính là đã hiểu khi bạn nói được *lý 
 kế như vậy?
 
 **A3.5** Vì sao image được ghi là `tag@sha256:digest`, và `make image` từ chối chạy trong những trường hợp nào? (phần vì sao
-cần digest: `Common A5.4`)
+cần digest: `Jenkins A6.4`)
 
 **A3.6** Rollback image hoặc index thế nào? Vì sao revert xong đôi khi vẫn phải bấm sync một lần bằng tay?
 

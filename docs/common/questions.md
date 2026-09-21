@@ -83,23 +83,11 @@ vậy?
 
 **A4.6** Traffic tăng gấp 10 lần thì hệ thống chịu thế nào? Scale ở đâu, nghẽn ở đâu?
 
-### A5. CI/CD và GitOps
+### A5. Rancher và ranh giới giữa các công cụ
 
-**A5.1** Từ lúc push code tới lúc chạy trên prod, chuyện gì xảy ra?
+Câu về pipeline Jenkins đã chuyển sang bộ riêng: [Jenkins](../jenkins/questions.md).
 
-**A5.2** Vì sao tách CI (Jenkins) và CD (Argo CD)? Sao Jenkins không `kubectl apply` luôn?
-
-**A5.3** Bản mới trên prod bị lỗi thì rollback thế nào?
-
-**A5.4** Vì sao image được ghi bằng digest chứ không chỉ bằng tag?
-
-**A5.5** Jenkins chạy trong cluster thì build Docker image bằng cách nào?
-
-**A5.6** Jenkins commit ngược vào Git. Làm sao nó không tự chạy lại thành vòng lặp vô hạn?
-
-**A5.7** Vì sao chọn Jenkins mà không phải GitHub Actions hay GitLab CI?
-
-**A5.8** Đã có Argo CD và kubectl, sao còn cần Rancher?
+**A5.1** Đã có Argo CD và kubectl, sao còn cần Rancher?
 
 ### A6. Bảo mật
 
@@ -230,23 +218,15 @@ là version mới hợp lệ, và version bị gõ sai.
 
 **B3.6** Node pull image từ ECR mà không có `imagePullSecrets`. Cơ chế nào làm việc đó?
 
-### B4. CI/CD và supply chain
+### B4. Kyverno, Rancher và chính sách từng môi trường
 
-**B4.1** Kể các stage của pipeline Jenkins theo thứ tự. Stage nào là cổng chặn có chủ đích?
+Câu về `Jenkinsfile`, cổng chặn Trivy, cosign và skip guard nằm ở [Jenkins](../jenkins/questions.md) phần B.
 
-**B4.2** Trivy chặn pipeline với điều kiện chính xác nào? Muốn có số lỗ hổng HIGH trong báo cáo thì phải làm gì?
+**B4.1** Dev và prod khác nhau thế nào ở sync policy của Argo CD và ở chế độ của Kyverno?
 
-**B4.3** Cosign ký cái gì, bằng key nào, và attest thêm gì? Jenkins lấy quyền dùng key từ đâu?
+**B4.2** Kyverno kiểm tra chữ ký của những image nào? Image nào chạy trong cluster mà không được kiểm tra?
 
-**B4.4** Chữ ký cosign nằm ở đâu trong ECR, và điều đó ảnh hưởng thế nào tới lifecycle policy và rollback?
-
-**B4.5** Skip guard của pipeline kiểm tra điều kiện gì? Có trường hợp nào nó bỏ qua nhầm một build cần chạy?
-
-**B4.6** Dev và prod khác nhau thế nào ở sync policy của Argo CD và ở chế độ của Kyverno?
-
-**B4.7** Kyverno kiểm tra chữ ký của những image nào? Image nào chạy trong cluster mà không được kiểm tra?
-
-**B4.8** Rancher được cài theo sync wave nào, và vì sao không đặt `bootstrapPassword` trong values?
+**B4.3** Rancher được cài theo sync wave nào, và vì sao không đặt `bootstrapPassword` trong values?
 
 ### B5. Secret và quyền
 

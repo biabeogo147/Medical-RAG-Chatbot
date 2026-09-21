@@ -4,7 +4,8 @@ How images are built, checked and promoted once Jenkins runs in the cluster. The
 ended: dev and prod run from the chart, but you build the image by hand with `make image` and edit the values
 files yourself. The build instructions are in [`guide.md`](guide.md), and when something breaks there is
 [`guide/troubleshooting.md`](guide/troubleshooting.md). Every idea used here is explained, with diagrams, in
-[`guide/0-concepts.md`](guide/0-concepts.md); this page records the decisions and what they cost.
+[`guide/0-concepts.md`](guide/0-concepts.md); this page records the decisions and what they cost. Self-check and
+interview questions (Vietnamese) are in [`questions.md`](questions.md), with answers in [`answers.md`](answers.md).
 
 This phase adds five things:
 
@@ -200,7 +201,7 @@ fault. For a single code commit, the job's history shows:
 
 | Build | Result | Why |
 |---|---|---|
-| N | green, all ten stages | your commit |
+| N | green, nine of the ten stages | your commit; stage 1 fires only on a prod merge |
 | N+1 | `NOT_BUILT` | the bot's commit that promoted build N to dev |
 | N+2, whenever you merge | `NOT_BUILT` | the squash merge of the prod pull request |
 

@@ -3,7 +3,8 @@
 Đáp án cho [`questions.md`](questions.md), cùng số thứ tự. Phần A mở đầu bằng **Ý chính**: câu nói thành tiếng, ngôi thứ
 nhất, thường là đủ. *Nếu được hỏi thêm* dùng khi người phỏng vấn đào sâu; tham chiếu như `(B2.1)` là để bạn tra, không đọc
 ra. Dòng **Mẹo** là lời nhắc cho bạn, không nói ra. Đường dẫn tính từ `deploy/argocd/`, trừ khi ghi khác. Tham chiếu dạng
-`Common A5.2` trỏ tới [`../common/answers.md`](../common/answers.md), tương tự với `Terraform`, `Ansible`, `AWS`.
+`Common A2.3` trỏ tới [`../common/answers.md`](../common/answers.md), tương tự với `Terraform`, `Ansible`,
+`AWS` và `Jenkins`.
 
 Chỗ `[điền: …]` là số liệu hoặc kiểm tra phải lấy từ lần chạy thật; đừng nói điều chưa đo. Ghi chú **[kiểm chứng]** là hành
 vi của công cụ cần xác nhận (trên cluster hoặc trong tài liệu chính thức) trước khi nói chắc.
@@ -77,7 +78,7 @@ rollback."
 
 *Nếu được hỏi thêm:*
 
-- Bảng so sánh push/pull ở `Common A5.2`.
+- Bảng so sánh push/pull ở `Jenkins A2.1`.
 - Một pipeline `helm upgrade` chạy một lần rồi thôi. Nếu ai đó sửa tay sau đó, không ai biết. Argo CD thì báo `OutOfSync`
   và với `selfHeal` sẽ đưa về đúng Git (A4.2).
 - **Giới hạn:** Git là trạng thái *mong muốn*. Git ghi `Synced` không có nghĩa là app đang chạy tốt; phải nhìn health, và
@@ -155,7 +156,7 @@ tầng đi trước (secret, certificate, ingress, monitoring) đã sẵn sàng 
 *Nếu được hỏi thêm:*
 
 - **Thiết kế:** hai Application `medical-rag-dev` và `medical-rag-prod`. Prod chỉ đổi qua pull request đã review (`Common
-  A5.1`, `Common B4.6`).
+  A1.2`, `Common B4.1`).
 - **Build index:** chạy như một hook `PreSync` trong Application của app. Đây là thứ tự *trong* một Application, khác với wave
   giữa các Application (A3.1, `Common B2.2`).
 - **Monitoring:** Prometheus đã chọn mọi ServiceMonitor, nên ServiceMonitor của app sẽ được nhận mà không phải sửa gì (B6.4).
@@ -166,8 +167,8 @@ cần credential ECR và quyền ghi Git ngay trong cluster, trong khi hiện Ar
 
 *Nếu được hỏi thêm:*
 
-- Để Jenkins commit thì mỗi lần đổi version đều là một commit có người đọc được, với digest cụ thể (`Common A5.4`).
-- Vòng lặp Jenkins tự kích hoạt chính nó được chặn bằng skip guard (`Common A5.6`).
+- Để Jenkins commit thì mỗi lần đổi version đều là một commit có người đọc được, với digest cụ thể (`Jenkins A6.4`).
+- Vòng lặp Jenkins tự kích hoạt chính nó được chặn bằng skip guard (`Jenkins A6.2`).
 - Image Updater hợp khi nhiều team đẩy image và không muốn pipeline nào có quyền ghi vào repo deploy.
 
 ### A2. Bootstrap: Argo CD tự quản lý chính nó
@@ -354,7 +355,7 @@ tránh."
   Nên phải đọc release notes cả chiều hạ.
 - **Trạng thái trong volume:** dữ liệu Prometheus không quay lại.
 - **Những gì ngoài cluster:** một certificate đã cấp hay một bản backup đã bị ghi đè (A8.3).
-- Rollback của app phase: `Common A5.3`.
+- Rollback của app phase: `Jenkins A6.5`.
 
 **A4.4** **Ý chính:** "Tối đa khoảng ba phút: Argo CD poll Git theo chu kỳ mặc định. Muốn nhanh hơn thì bấm Refresh. Tôi không dùng
 webhook vì GitHub phải gọi được vào `argocd-server`, mà server đó chỉ mở qua VPN. Mở một đường public chỉ để tiết kiệm ba phút
@@ -832,7 +833,7 @@ cấu hình khác. Nếu không có, Application lỗi `ComparisonError` (A8.6).
 
   Không ghim thì một bản chart mới của upstream có thể vào cluster mà không ai commit gì.
 - **Rủi ro của `main`:** không có môi trường nào đứng trước. Một commit hỏng tới cluster trong khoảng ba phút. Ở phase app,
-  dev/prod được tách bằng file values và pull request (`Common B4.6`), không bằng branch.
+  dev/prod được tách bằng file values và pull request (`Common B4.1`), không bằng branch.
 
 *Ở đâu:* `targetRevision` trong `root.yaml` và `apps/*.yaml`; bảng version ở `README.md` mục 11.
 
