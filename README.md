@@ -241,6 +241,7 @@ Argo CD, the release path and teardown with `make down` are in the **[runbook](d
 | Platform with GitOps | [README](docs/gitops/README.md) · [how Argo CD works](docs/gitops/argocd-explained.md) | [guide](docs/gitops/guide.md) | [questions](docs/gitops/questions.md) · [answers](docs/gitops/answers.md) |
 | App on the cluster | [README](docs/app/README.md) | [guide](docs/app/guide.md) | [questions](docs/app/questions.md) · [answers](docs/app/answers.md) |
 | CI with Jenkins | [README](docs/jenkins/README.md) · [concepts](docs/jenkins/guide/0-concepts.md) | [guide](docs/jenkins/guide.md) | [questions](docs/jenkins/questions.md) · [answers](docs/jenkins/answers.md) |
+| Resilience drills | [concepts](docs/drills/concepts.md) | [guide](docs/drills/guide.md) | |
 | AWS vs on-premises | | | [questions](docs/aws/questions.md) · [answers](docs/aws/answers.md) |
 | The whole project | [design](docs/selfmanaged-k8s-ops-design.md) | [runbook](docs/runbook.md) | [questions](docs/common/questions.md) · [answers](docs/common/answers.md) |
 
