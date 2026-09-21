@@ -4,9 +4,9 @@ Three controls, each proven by making the bad thing happen: etcd snapshots and a
 admission and a refusal, a rolling upgrade under load. Plus the rebuild that has to come first, because the
 cluster was torn down.
 
-Concepts are in [`concepts.md`](concepts.md); measurements go in
-[`../evidence/drills.md`](../evidence/drills.md). This closes design criteria
-[#12, #13 and #14](../selfmanaged-k8s-ops-design.md).
+**Start at [`README.md`](README.md)**, which states the three problems and what closing each one means. The
+ideas used here are defined in [`concepts.md`](concepts.md) — read the sections the README points you at
+before the step that needs them. Measurements go in [`../evidence/drills.md`](../evidence/drills.md).
 
 ## How this guide works
 
@@ -783,4 +783,4 @@ drain each failure lines up with.
 
 ---
 
-[Concepts](concepts.md) · [Evidence](../evidence/drills.md) · [Design](../selfmanaged-k8s-ops-design.md) · [Runbook](../runbook.md)
+[README](README.md) · [Concepts](concepts.md) · [Evidence](../evidence/drills.md) · [Design](../selfmanaged-k8s-ops-design.md) · [Runbook](../runbook.md)

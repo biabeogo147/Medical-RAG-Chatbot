@@ -1,7 +1,8 @@
 # Drills — Concepts
 
-Everything this phase uses, explained once. Read a section before the step that needs it; the
-[guide](guide.md) names which.
+Everything this phase uses, explained once. [`README.md`](README.md) states the problems and sends you to
+the sections each one needs; read those before opening the [guide](guide.md). Nothing here should be met
+for the first time inside a command.
 
 The phase builds three controls and proves each one by making the bad thing happen on purpose:
 
@@ -231,4 +232,4 @@ it is what every criterion in the design's §6 actually asks for.
 
 ---
 
-[Guide](guide.md) · [Evidence](../evidence/drills.md) · [Design §4.6](../selfmanaged-k8s-ops-design.md)
+[README](README.md) · [Guide](guide.md) · [Evidence](../evidence/drills.md) · [Design §4.6](../selfmanaged-k8s-ops-design.md)

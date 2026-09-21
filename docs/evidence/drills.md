@@ -3,7 +3,8 @@
 Measurements for design criteria **#12** (etcd restore), **#13** (Kyverno), **#14** (upgrade), plus the
 rebuild that preceded them. AWS account `<account-id>`, region `ap-southeast-1`. Every command ran on the ops
 workstation unless a line says otherwise. Checks not listed here returned the output the
-[guide](../drills/guide.md) expects.
+[guide](../drills/guide.md) expects. The problems these close are stated in
+[`../drills/README.md`](../drills/README.md).
 
 **Nothing below has been measured yet.** This file is the shape the numbers go into, written before the run so
 that a missing number is visible as a missing number rather than as an absence nobody notices.
