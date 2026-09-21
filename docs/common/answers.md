@@ -563,7 +563,7 @@ trên prod. Anh chị muốn xem phần nào thì tôi mở evidence."
 *Nếu được hỏi thêm:*
 
 - **App:** 22 test pass; image 926 → 483 MB; build index 150.7 giây ở local, lần hai dưới 1 giây.
-- **Terraform:** bootstrap 18, shared 17, cluster 84 resource; request HTTP tới bucket state bị từ chối; mô phỏng IAM
+- **Terraform:** bootstrap 18, shared 38, cluster 91 resource; request HTTP tới bucket state bị từ chối; mô phỏng IAM
   đúng như thiết kế.
 - **Ansible:** `make cluster` trên node mới `[điền]`; chạy lần hai `[điền: changed=0]`; tắt node 2, API vẫn trả lời.
 - **GitOps và CI:** mọi Application `Synced` và `Healthy`; commit tới dev `[điền]`; `cosign verify` thành công.

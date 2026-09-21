@@ -8,11 +8,11 @@ Self-check and interview questions (Vietnamese) are in [`questions.md`](question
 what each status means) is drawn in [`argocd-explained.md`](argocd-explained.md).
 
 This phase covers Argo CD itself and the platform around the app: ingress-nginx, the EBS CSI driver,
-External Secrets, cert-manager, monitoring with alert email, and Rancher. The app's Helm chart and
-Jenkins come in the next phases and plug into the same structure.
+External Secrets, cert-manager, monitoring with alert email, and Rancher. The app's Helm chart (waves 1
+and 2) and Jenkins (waves 3 and 4) arrived in later phases and plug into the same structure.
 
 **One rule for every internal tool:** its UI opens only through the VPN. Argo CD, Grafana, Prometheus,
-Alertmanager and Rancher each have a name under `recruitai.io.vn` that points at the internal load
+Alertmanager, Jenkins and Rancher each have a name under `recruitai.io.vn` that points at the internal load
 balancer (section 5).
 
 ## 1. The picture
@@ -27,7 +27,7 @@ flowchart LR
 
     subgraph CLUSTER["Kubernetes cluster"]
         ARGO["Argo CD"]
-        ADDONS["ingress-nginx · EBS CSI · External Secrets<br/>cert-manager · monitoring · Rancher"]
+        ADDONS["ingress-nginx · EBS CSI · External Secrets<br/>cert-manager · monitoring · Rancher<br/>Jenkins · medical-rag"]
     end
 
     ARGO -->|"pull every 3 minutes"| GH
@@ -52,7 +52,7 @@ Three properties follow from this:
 |---|---|---|
 | Terraform | Network, machines, load balancers, IAM, buckets, registry, DNS names, secret *names* | `infra/terraform/` |
 | Ansible | The operating system, containerd, the Kubernetes packages, `kubeadm`, Calico | `infra/ansible/` |
-| **Argo CD** | **Everything running in the cluster: itself, the addons, Rancher, later Jenkins and the app** | `deploy/argocd/` |
+| **Argo CD** | **Everything running in the cluster: itself, the addons, Rancher, Jenkins and the app** | `deploy/argocd/` |
 
 **What Argo CD deliberately does not do**
 
@@ -130,12 +130,19 @@ flowchart TB
     subgraph WAPP2["wave 2"]
         PRODAPP["medical-rag-prod<br/>app guide, Part 4"]
     end
+    subgraph WJP["wave 3"]
+        JPLAT["jenkins-platform<br/>namespaces, RBAC, credentials,<br/>network rules"]
+    end
+    subgraph WJ["wave 4"]
+        JEN["jenkins<br/>the chart and its home volume,<br/>Jenkins guide, Part 2"]
+    end
 
-    ROOT --> W3 --> W2 --> W1 --> W0 --> WAPP1 --> WAPP2
+    ROOT --> W3 --> W2 --> W1 --> W0 --> WAPP1 --> WAPP2 --> WJP --> WJ
 ```
 
-The app's two Applications come last. Inside each one, the chart has waves of its own (0, 1, 2), a separate
-set of numbers drawn in [argocd-explained §5](argocd-explained.md#5-two-levels-of-waves).
+Jenkins comes last, in waves 3 and 4: nothing depends on it, so a slow plugin download cannot delay the app
+on a rebuild. Inside each app Application the chart has waves of its own (0, 1, 2), a separate set of numbers
+drawn in [argocd-explained §5](argocd-explained.md#5-two-levels-of-waves).
 
 A wave starts only when every Application in the previous wave is **Healthy** and **Synced**. Both
 halves are needed, and `Synced` is the one that does the work: Argo CD deliberately leaves a resource
@@ -149,6 +156,7 @@ exists. The order matters in these places:
 | `external-secrets`, `cert-manager` | `platform-secrets`, `platform-tls` | `ExternalSecret`, `Certificate` and `ClusterIssuer` are custom resources; applying one before its CRD exists fails |
 | `platform-secrets` | `platform-tls` | The backed-up certificate must be back in the cluster before the `Certificate` exists, or cert-manager orders a new one (section 6) |
 | `platform-secrets` | `rancher`, `kube-prometheus-stack` | Rancher's certificate and password, Grafana's password and Alertmanager's configuration must exist when they start |
+| `jenkins-platform` | `jenkins` | The chart mounts the Secrets `jenkins-admin` and `jenkins-github`, and its build pods use the ServiceAccount `jenkins-agent`; all of them are created by the manifests in wave 3 |
 
 The foundation has its own wave because nothing depends on it being late, and everything else runs
 better once it is there: volumes bind at once, and the load balancer targets are healthy before any UI
@@ -160,7 +168,8 @@ restores this; without it, all waves would start at once.
 
 This is not theoretical. The first rebuild, on 2026-09-18, ran a version of that check that read
 health alone. Every child Application reported `Healthy` the moment it was created, `root` walked
-through all four waves in seconds, `platform-secrets` and `platform-tls` ran in parallel, and
+through all four waves in seconds — there were four then, not today's eight — `platform-secrets` and
+`platform-tls` ran in parallel, and
 cert-manager reconciled the `Certificate` and found no Secret about 48 seconds before the restored
 Secret existed — so it ordered a new certificate. The whole bootstrap took 194 seconds, which looks
 far too short for five charts installed one wave after another. The measurement, and how that 48 s is
@@ -194,15 +203,15 @@ flowchart LR
 
     PUB --> NP80 --> NGINX
     INT -->|"TCP, passed through"| NP443 --> NGINX
-    NGINX -->|"only from 10.10.0.0/16"| UIS["Argo CD · Grafana · Prometheus<br/>Alertmanager · Rancher"]
-    NGINX -->|"later: / and /dev"| APP["medical-rag"]
+    NGINX -->|"only from 10.10.0.0/16"| UIS["Argo CD · Grafana · Prometheus<br/>Alertmanager · Jenkins · Rancher"]
+    NGINX -->|"app.recruitai.io.vn<br/>dev.recruitai.io.vn"| APP["medical-rag<br/>prod and dev"]
 ```
 
 An internal UI is protected in three layers:
 
 | Layer | How |
 |---|---|
-| **DNS** | `argocd`, `grafana`, `prometheus`, `alertmanager` and `rancher` under `recruitai.io.vn` resolve to the internal load balancer's private addresses |
+| **DNS** | `argocd`, `grafana`, `prometheus`, `alertmanager`, `jenkins` and `rancher` under `recruitai.io.vn` resolve to the internal load balancer's private addresses |
 | **Network** | Those addresses are reachable only inside the VPC. From outside, that means the WireGuard gateway, which forwards nothing but DNS and TCP 443 |
 | **ingress-nginx** | Every internal Ingress carries `allowlist-source-range: 10.10.0.0/16`. Through the public load balancer (port 80), even a forged `Host` header gets only a redirect to the unreachable HTTPS name; behind that, its internet source address would be refused |
 
@@ -213,7 +222,7 @@ on every node (a DaemonSet).
 
 - **The load balancers work at TCP level.** The internal one passes TLS straight through; it never holds
   a private key.
-- **Only Argo CD and Grafana have a login.** Prometheus and Alertmanager have none of their own; the VPN
+- **Argo CD, Grafana and Jenkins have a login.** Prometheus and Alertmanager have none of their own; the VPN
   is their only protection (section 12).
 
 ## 6. Certificates
@@ -288,7 +297,7 @@ flowchart LR
         CSS["ClusterSecretStore<br/>region only, no credentials"]
         ES["ExternalSecret<br/>secret name, in Git"]
         KS["Kubernetes Secret"]
-        APPS["Rancher · Alertmanager<br/>ingress-nginx"]
+        APPS["Rancher · Alertmanager<br/>ingress-nginx · Jenkins · medical-rag"]
     end
 
     SM -->|"read with the node's<br/>instance profile"| CSS
@@ -304,12 +313,15 @@ flowchart LR
 | `medical-rag/alertmanager` | `monitoring/alertmanager-email`, rendered into a whole `alertmanager.yaml` | Alertmanager |
 | `medical-rag/wildcard-tls` | `ingress-nginx/wildcard-recruitai-tls` (restored once, then backed up) | ingress-nginx |
 | *(none, generated in the cluster)* | `monitoring/grafana-admin` | Grafana |
+| `medical-rag/github` | `jenkins/jenkins-github` | The pipeline's pushes and pull requests |
+| `medical-rag/app-dev`, `medical-rag/app-prod` | `medical-rag-dev/app-secrets`, `medical-rag-prod/app-secrets` | The app's Gemini, Hugging Face and Flask keys |
+| *(none, generated in the cluster)* | `jenkins/jenkins-admin` | Jenkins' first login |
 
 - **Git holds the name, Secrets Manager holds the value.** The value never passes through Git or
   Argo CD.
 - **No credential is configured.** The ClusterSecretStore names only the region. External Secrets
   uses the AWS SDK's default chain, which finds the node's instance profile through the metadata service.
-  Terraform limits that role to six named secrets, and to writing only `wildcard-tls`.
+  Terraform limits that role to eight named secrets, and to writing only `wildcard-tls`.
 - **A whole config file can be a template.** Alertmanager wants its SMTP password inside its
   configuration. The routing rules are written in Git as an ExternalSecret template, and the account
   details are filled in from Secrets Manager.
@@ -391,6 +403,10 @@ deploy/argocd/
     platform-tls.yaml                manifests/platform-tls/                      wave 0
     kube-prometheus-stack.yaml       Prometheus, Alertmanager, Grafana            wave 0
     rancher.yaml                     Private management UI                        wave 0
+    medical-rag-dev.yaml             The app in dev, deploy/charts/medical-rag    wave 1
+    medical-rag-prod.yaml            The app in prod, same chart                  wave 2
+    jenkins-platform.yaml            manifests/jenkins/                           wave 3
+    jenkins.yaml                     The Jenkins chart and its home volume        wave 4
   values/                            Helm values, one file per chart
     argocd.yaml
     ingress-nginx.yaml
@@ -399,6 +415,7 @@ deploy/argocd/
     cert-manager.yaml
     kube-prometheus-stack.yaml
     rancher.yaml
+    jenkins.yaml
   manifests/
     platform-secrets/                Plain YAML, no chart
       namespaces.yaml                cattle-system and monitoring
@@ -411,6 +428,12 @@ deploy/argocd/
       cluster-issuers.yaml           Let's Encrypt staging and production, DNS-01 via Route 53
       wildcard-certificate.yaml      *.recruitai.io.vn, in the ingress-nginx namespace
       wildcard-tls-backup.yaml       PushSecret: the certificate to Secrets Manager
+    jenkins/                         Everything the Jenkins chart needs first
+      namespaces.yaml                jenkins and jenkins-agents, with their Pod Security levels
+      rbac.yaml                      The build pods' ServiceAccount, Role and RoleBinding
+      secrets.yaml                   Generated admin password, and the GitHub token from Secrets Manager
+      networkpolicies.yaml           Default deny, the two allowed paths, and no metadata service
+      admission-policy.yaml          ValidatingAdmissionPolicy narrowing the privileged agents namespace
 ```
 
 Two details are easy to get wrong:
@@ -424,7 +447,7 @@ Two details are easy to get wrong:
 
 ## 11. Pinned versions
 
-Checked on 2026-09-17 against each project's chart repository.
+Checked on 2026-09-21 against each project's chart repository.
 
 | Chart | Version | App version | Why this one |
 |---|---|---|---|
@@ -435,19 +458,23 @@ Checked on 2026-09-17 against each project's chart repository.
 | `cert-manager` | v1.21.2 | v1.21.2 | The current release |
 | `kube-prometheus-stack` | 91.4.1 | operator v0.94.0 | The current release |
 | `rancher` | 2.15.1 | Rancher 2.15.1 | Its `kubeVersion: < 1.37.0-0` accepts the cluster's 1.36.4 ([design §4.2.1](../selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate)) |
+| `jenkins` | 5.9.63 | Jenkins 2.568.3 | The values file sets no image tag, so the chart's own default runs; the controller image was read from the cluster ([evidence](../evidence/jenkins.md)) |
 
 Every version is written once, as `targetRevision` in `deploy/argocd/apps/<name>.yaml`. An upgrade is a
 one-line pull request.
 
 ## 12. Known limits
 
+These are the platform's. The app's and the pipeline's are in
+[the Jenkins README §10](../jenkins/README.md#10-known-limits-and-what-is-out-of-scope).
+
 | Limit | Why it is accepted here | What would fix it |
 |---|---|---|
 | **ingress-nginx is retired.** Maintenance ended in March 2026; there are no more security fixes, and Kubernetes 1.36 came after its last release | The design, the Terraform NodePorts and Rancher's `ingressClassName` are built around it, and the traffic reaching it is either the demo app or a VPN user | Move to a maintained controller or to Gateway API; the NodePorts stay the same |
-| **Every pod on a node shares the node's IAM role**, which now also includes writing the certificate backup and the ACME TXT record | Self-managed clusters have no IRSA or Pod Identity; the hop limit of 2 lets any pod reach the metadata service. Each permission is limited to its exact resource | A NetworkPolicy blocking `169.254.169.254` for app namespaces (the app phase), then self-hosted IRSA, a later improvement the design lists as P2 |
+| **The platform components still share the node's IAM role** — External Secrets, cert-manager and the EBS CSI driver — which includes writing the certificate backup and the ACME TXT record | The app's pods and the build pods already have roles of their own through the cluster's OIDC issuer, and their four namespaces block `169.254.169.254`. The platform namespaces do not, so a pod there can still reach the node role; each remaining permission names its exact resource | Give those three components roles through the same issuer, as the app and the pipeline already have |
 | **Prometheus and Alertmanager have no login** | Only the VPN reaches them, and the VPN has a single operator | Basic authentication on their Ingresses, or an OAuth proxy in front of all UIs |
-| **The wildcard certificate's private key is in Secrets Manager**, readable by the node role | Needed to survive rebuilds within Let's Encrypt's limits; the certificate only covers VPN-only names | Separate backup permissions from workloads once IRSA exists |
+| **The wildcard certificate's private key is in Secrets Manager**, readable by the node role | Needed to survive rebuilds within Let's Encrypt's limits; the certificate only covers VPN-only names | Move External Secrets to its own role through the cluster's OIDC issuer, so only that role may write the backup |
 | **Alert email depends on one mailbox and an app password** | Enough for one operator | A team mail service or a chat receiver; a second receiver as fallback |
-| **One replica** of Rancher, Alertmanager and each Argo CD component | Three 8 GB nodes also run Prometheus and, later, Jenkins | Raise replicas when the nodes grow |
+| **One replica** of Rancher, Alertmanager, the Jenkins controller and each Argo CD component | Three 8 GB nodes also run Prometheus and one build pod at a time | Raise replicas when the nodes grow |
 | **etcd metrics use plain HTTP on port 2381** | They carry no data, and only other nodes (and pods) can reach the port | Scrape through TLS with etcd's client certificates |
 | **The etcd backup bucket is destroyed with the cluster** | It lives in the cluster stack | Move it to the shared stack before relying on backups (day-2 phase) |

@@ -1067,6 +1067,28 @@ step 18, because step 6's NetworkPolicy excludes `169.254.169.254/32` from egres
 A green build shows the exchange still works; it could not have gone red from step 18 alone. What step 18
 changes is every *other* pod in the cluster, which is what the `default`-namespace check above measures.
 
+## Step 19 — Not run
+
+The clean-up half was done: `k8s.yaml` is deleted and its `.dockerignore` line with it (`b672154`). The
+teardown and rebuild half was **not run**, by decision on 2026-09-21 — the phase was closed on the cluster it
+grew into.
+
+**What that leaves unproven.** Everything this phase claims about reproducibility. The GitOps phase measured a
+rebuild at 14 m 11 s on 2026-09-18, but that cluster had no Jenkins in it. Nothing here shows that
+`jenkins-platform` at wave 3 and `jenkins` at wave 4 come back from Git, that the admin password regenerates
+cleanly, that the OIDC issuer survives so the build pods' tokens still resolve, or that a commit reaches dev on
+a cluster built an hour earlier. The phase README and guide must not claim otherwise.
+
+**Three smaller things it also leaves open:**
+
+- The lifecycle preview still has nothing to prove: fewer than 30 tagged images exist, so the second rule
+  expires nothing either way (step 2's note above says the same).
+- The repository's total size and untagged count — the input for deciding whether the BuildKit cache needs a
+  repository of its own — were never measured.
+- Defect 14's owed mitigation stands. Build 14's console still holds the ECR token it printed. The token itself
+  expired twelve hours after that build, so the exposure is closed by time rather than by action; the record is
+  what remains, and it lives on the Jenkins PVC, which only a teardown deletes.
+
 ## Problems found and fixed
 
 **Part 2.** Five. Four are purely defects in the guide; the first also had a real cause in the account — the
@@ -1275,6 +1297,6 @@ itself (an unset variable in the Ansible command, and one in step 2's gate), whi
 - Trivy counts of the hardened image, as the "after" of criterion #9 (step 13).
 - `cosign verify` on an image the pipeline signed, and the failure on the unsigned one (step 14).
 - The node role's `AccessDenied` on push and sign, and the green build after it (step 18).
-- The rebuild timings, and the release that runs after the rebuild (step 19).
-- The lifecycle preview once more than 30 images exist, and the repository's size and untagged count (step 19).
+- **The whole of step 19** (not run, see above): the rebuild timings, a release on the rebuilt cluster, the
+  lifecycle preview once more than 30 images exist, and the repository's size and untagged count.
 - The build pod's real CPU and memory, from Prometheus (Part 3).

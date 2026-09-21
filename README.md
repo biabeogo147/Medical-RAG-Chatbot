@@ -17,12 +17,13 @@
 ## By the numbers
 
 - **Empty cluster stack → 3 Ready control planes in [9 m 57 s](docs/evidence/ansible.md#rebuild-from-nothing):**
-  84 AWS resources in 3 m 47 s, then the cluster in 6 m 10 s.
+  84 AWS resources in 3 m 47 s as measured on 2026-09-17 (the stack is 91 resources today), then the
+  cluster in 6 m 10 s.
 - **Idempotent:** [`terraform plan` → No changes](docs/evidence/terraform.md#reproducibility) after apply; a
   second Ansible run → [`changed=0` on every host](docs/evidence/ansible.md#rebuild-from-nothing) in 2 m 56 s.
 - **Loses a node, keeps the API:** a control plane stopped mid-session and the Kubernetes API
   [kept answering](docs/evidence/ansible.md#ha-drill); the node rejoined on boot without a playbook run.
-- **Infrastructure destroyed in 2 m 15 s.** 0.53 USD/hour while up (cluster + VPN gateway), about 7 USD/month
+- **Infrastructure destroyed in 2 m 15 s.** 0.53 USD/hour while up (cluster + VPN gateway), about 9 USD/month
   kept for the registry, keys, DNS and the stopped workstation ([cost](docs/evidence/terraform.md#cost)).
 - **Container 926 → 483 MB (−48%)**, 22 tests, non-root with a read-only filesystem ([local evidence](docs/evidence/local.md)).
 - **7,079-chunk index with a content-hashed version**, identical in a container and on the host; an
@@ -54,6 +55,7 @@ flowchart LR
         end
         subgraph PRIV["Private subnets"]
             NODES["3 nodes<br/>one per zone"]
+            CIPOD["Jenkins build pod<br/>role medical-rag-ci"]
             INLB["Internal NLB<br/>:6443 · :443"]
         end
     end
@@ -61,8 +63,8 @@ flowchart LR
     R53["Route 53 zone"]
     ECR[("ECR")]
     KMS["KMS cosign key"]
-    SM["Secrets Manager<br/>7 secrets"]
-    S3[("S3 · 4 buckets")]
+    SM["Secrets Manager<br/>10 secrets"]
+    S3[("S3 · 5 buckets")]
     EXT["Hugging Face · Gemini<br/>GitHub · Let's Encrypt · SMTP"]
 
     USER -->|"HTTP"| PNLB -->|"NodePort 30080"| NODES
@@ -71,17 +73,18 @@ flowchart LR
     WS -.-> SSM -.->|"Ansible · kubectl tunnel"| NODES
     INLB -->|":6443 API · :443 → 30443"| NODES
     NODES --> NAT --> EXT
-    NODES -->|"instance role"| ECR
+    NODES -->|"instance role, pull only"| ECR
     NODES --> SM
     NODES -->|"gateway endpoint"| S3
-    NODES --> KMS
+    CIPOD -->|"own role: push"| ECR
+    CIPOD -->|"own role: sign"| KMS
     VPN --> SM
     R53 -->|"public alias → private IP"| INLB
     R53 -->|"vpn record"| VPN
 
     classDef tf fill:#ded7f5,stroke:#5b43a8,color:#1b1430;
     classDef ext fill:#eceff3,stroke:#6b7684,color:#1b1430;
-    class WS,PNLB,INLB,VPN,NAT,NODES,R53,ECR,KMS,SM,S3 tf
+    class WS,PNLB,INLB,VPN,NAT,NODES,CIPOD,R53,ECR,KMS,SM,S3 tf
     class OP,USER,SSM,EXT ext
 ```
 
@@ -104,7 +107,6 @@ flowchart TB
         MON["kube-prometheus-stack"]
         RAN["Rancher"]
         JK["Jenkins · pod agents"]
-        KYV["Kyverno"]
         APP["medical-rag<br/>dev · prod"]
     end
 
@@ -116,7 +118,6 @@ flowchart TB
     CSI -->|"volume"| JK
     ING -->|"public :80"| APP
     ING -->|"VPC only :443"| RAN
-    KYV -.->|"enforce prod · audit dev"| APP
     MON -.->|"scrapes"| CP
     JK -->|"commits image digests"| ARGO
 
@@ -136,18 +137,18 @@ flowchart LR
     DEV["git push to main"] --> GH["GitHub"]
     GH -->|"polled every 2 min"| JK["Jenkins in the cluster"]
     JK --> GUARD["skip bot commits<br/>and deploy/** changes"]
-    GUARD --> T1["ruff · pytest · hadolint"]
+    GUARD --> T1["ruff · pytest<br/>in the Dockerfile test target"]
     T1 --> T2["BuildKit rootless"]
     T2 --> ECR[("ECR")]
-    T2 --> T3["Trivy scan · Syft SBOM"]
+    T2 --> T3["Trivy scan · Trivy SBOM"]
     T3 --> T4["Cosign sign and attest<br/>with the KMS key"]
     T4 --> GH2["bump the digest<br/>in deploy/envs/dev"]
     GH2 --> ARGO["Argo CD"]
     GH2 --> PR["pull request for prod"] --> HUMAN["human review"] --> ARGO
-    ARGO -->|"PreSync hook"| JOB["index-build Job"]
+    ARGO -->|"Sync hook, wave 1"| JOB["index-build Job"]
     JOB --> S3[("S3 · FAISS index")]
     ARGO --> DEVENV["dev"]
-    ARGO -->|"Kyverno checks the signature"| PRODENV["prod"]
+    ARGO --> PRODENV["prod"]
     S3 --> DEVENV
     S3 --> PRODENV
     PRODENV -->|"embeddings · answers"| API["Hugging Face · Gemini"]
@@ -173,7 +174,7 @@ you have the reason for the next one.
 |---|---|---|---|---|
 | 1 | **Docker, multi-stage** | A 926 MB image carrying the build toolchain, the PDF and `.git` | 483 MB, non-root, read-only filesystem, 22 tests inside the build | Every start still re-embedded the whole corpus before it could answer |
 | 2 | **Content-hashed FAISS index** | Re-embedding 7,079 chunks on every start, against a rate-limited API | Build once, store it in S3 under a hash, skip an unchanged corpus in < 1 s | An artifact with no cluster to serve it |
-| 3 | **Terraform, 3 stacks by lifetime** | Bash scripts and fixed IPs: nobody could rebuild the same thing twice | 84 resources from nothing — network, nodes, load balancers, VPN gateway — and a clean `plan` after | It stops at the machine: three blank Ubuntu hosts |
+| 3 | **Terraform, 3 stacks by lifetime** | Bash scripts and fixed IPs: nobody could rebuild the same thing twice | 91 resources from nothing — network, nodes, load balancers, VPN gateway — and a clean `plan` after | It stops at the machine: three blank Ubuntu hosts |
 | 4 | **SSM Session Manager** | Reaching a machine would mean an SSH key, a bastion and an open port | A shell and file transfer over an outbound connection; no key exists anywhere | Getting in is not the same as configuring what is inside |
 | 5 | **Ansible + kubeadm + containerd** | Blank hosts, and no managed control plane to hide etcd or upgrades behind | An HA control plane, and a second run that reports `changed=0` on every host | Pods cannot talk across zones, and the cluster is empty |
 | 6 | **Calico VXLAN** | The nodes sit in three different subnets; pod addresses do not route between them | Pod traffic wrapped in node addresses, with no BGP and no route table to edit | Every change inside the cluster is still a manual `kubectl apply` |
@@ -186,8 +187,8 @@ you have the reason for the next one.
 | 13 | **kube-prometheus-stack + Alertmanager** | No metrics from the nodes, the kubelets, etcd or the control plane | Dashboards for all four, alert rules, and email when one of them fires | kubectl is still the only way to look at the cluster |
 | 14 | **Rancher, VPN only** | Reading cluster state meant remembering the right kubectl command | A management UI on its private name, with the purchased certificate | Rolling out the app itself is still a hand-written manifest |
 | 15 | **Helm chart + Argo CD Applications** | One `k8s.yaml` for every environment, edited by hand for each release | `dev` and `prod` from one chart, with the image digest pinned in Git | Images are built by hand, unscanned and unsigned |
-| 16 | **Jenkins, BuildKit, Trivy, Syft, Cosign on KMS** | Whoever could build could ship, and nobody could say what was inside an image | Commit → test → build → scan → SBOM → sign → `dev`; `prod` through a reviewed PR | The cluster would still accept an image that nobody signed |
-| 17 | **Kyverno + etcd snapshots** | A signature nothing checks, and a cluster with no way back after a bad day | `prod` admits only signed images; etcd snapshots are copied to S3 on a schedule | The restore drill and the gated upgrade drill, both marked P1 in the design |
+| 16 | **Jenkins, BuildKit, Trivy, Cosign on KMS** | Whoever could build could ship, and nobody could say what was inside an image | Commit → test → build → scan → SBOM → sign → `dev`; `prod` through a reviewed PR | The cluster would still accept an image that nobody signed |
+| 17 *(not built)* | **Kyverno + etcd snapshots** | A signature nothing checks, and a cluster with no way back after a bad day | Would make `prod` admit only signed images, and copy etcd snapshots to S3 on a schedule | Both are P1 in the design and neither exists in `deploy/` yet; so are the restore and gated-upgrade drills |
 
 **Workload:** Flask on gunicorn, LangChain, FAISS and Gemini. The index is a versioned artifact in S3,
 and `/readyz` and `/metrics` feed Kubernetes and Prometheus.

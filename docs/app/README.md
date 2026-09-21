@@ -22,11 +22,11 @@ The cluster runs on EC2 with no AWS cloud integration. Every process on a node, 
 instance metadata service (IMDS, `169.254.169.254`) for the node role's credentials. The node role holds
 what the platform needs:
 
-- read six secrets, one of them the wildcard certificate's private key;
+- read eight secrets, one of them the wildcard certificate's private key;
 - write the certificate backup;
 - change the ACME TXT record;
 - read and write several S3 buckets;
-- push to ECR, and sign with the cosign KMS key.
+- pull from ECR (push and signing moved to the `medical-rag-ci` role in the Jenkins phase, step 18).
 
 The chatbot is the only pod reachable from the internet, and it loads a pickled index. If it were
 compromised, all of that would be reachable from it.
@@ -216,7 +216,7 @@ The numbers are in [docs/evidence/app.md](../evidence/app.md).
 
 | Limit | Why it is accepted | What would fix it |
 |---|---|---|
-| Platform pods still share the node role, which can sign with the cosign key | They are not internet-facing, and each permission names its resources | Their own roles through the same issuer |
+| Platform pods still share the node role, which reads eight secrets and writes the certificate backup | They are not internet-facing, and each permission names its resources | Their own roles through the same issuer |
 | The signing key passes through the SSM transfer bucket while Ansible copies it to node 1, and the node role can read that bucket | It happens during `make cluster`, before Argo CD or any workload exists, so no pod is there to read it. Objects in that bucket expire after a day | Remove the transfer bucket from the node role (Ansible hands nodes presigned URLs and should not need it), proven by a `make cluster` run that still reports `changed=0` |
 | App traffic is plain HTTP | Out of scope in the design; the internal UIs use TLS | A certificate for `dev.` and `app.` and an HTTPS listener on the public NLB |
 | The image is built on the workstation | Jenkins is the next phase | Jenkins with rootless BuildKit |

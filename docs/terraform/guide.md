@@ -80,7 +80,7 @@ Session Manager disconnects after about 20 idle minutes. Shell variables such as
 | What | When it costs | About |
 |---|---|---|
 | State bucket, artifacts bucket, ECR images | Always | < 0.50 USD/month |
-| KMS key + 7 secrets | Always | 3.80 USD/month |
+| KMS key + 10 secrets | Always | 5.00 USD/month |
 | Route 53 hosted zone | Always | 0.50 USD/month |
 | Ops workstation (`t3.small`, 30 GB) | Hourly while running; disk always | 0.03 USD/hour + 2.90 USD/month |
 | Cluster + WireGuard (`t3.small`, 8 GB, public IPv4) | While it exists | **about 0.53 USD/hour** as a planning estimate; recalculate before use as evidence |

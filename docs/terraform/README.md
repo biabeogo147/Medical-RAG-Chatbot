@@ -94,10 +94,10 @@ flowchart TB
         SB[("State bucket<br/>state of all three stacks")]
         WS["Ops workstation<br/>EC2 t3.small"]
     end
-    subgraph SHARED["shared/ · 17 resources · kept"]
-        SH["ECR · artifacts bucket · KMS key<br/>7 secrets · Route 53 zone · budget"]
+    subgraph SHARED["shared/ · 38 resources · kept"]
+        SH["2 ECR repos · artifacts bucket · KMS key<br/>OIDC issuer + 4 IRSA roles<br/>10 secrets · Route 53 zone · budget"]
     end
-    subgraph CLUSTER["cluster/ · 84 resources · destroyed when idle"]
+    subgraph CLUSTER["cluster/ · 91 resources · destroyed when idle"]
         CL["VPC · 3 nodes · 2 NLBs · WireGuard gateway<br/>security groups · IAM roles · 2 buckets"]
     end
     CS -->|"terraform apply"| SB
@@ -114,12 +114,12 @@ flowchart TB
 | Job | The state bucket and the machine you work from | What must survive a teardown | The Kubernetes machines, their network and entry points |
 | Applied from | AWS CloudShell ([guide step 4](guide/1-bootstrap.md#step-4--apply-the-bootstrap-stack-cloudshell)) | Ops workstation, `make shared` | Ops workstation, `make infra` |
 | State key | `bootstrap/terraform.tfstate` | `shared/terraform.tfstate` | `cluster/terraform.tfstate` |
-| Resources | 18 | 17 | 84 |
+| Resources | 18 | 38 | 91 |
 | Lifetime | Kept | Kept | **Destroyed when idle** (`make infra-destroy`) |
-| Cost | Workstation 0.03 USD/hour while running, 2.90 USD/month for its disk | ≈ 4 USD/month for everything kept, state bucket included | ≈ 0.53 USD/hour while it exists |
+| Cost | Workstation 0.03 USD/hour while running, 2.90 USD/month for its disk | ≈ 6 USD/month for everything kept, state bucket included | ≈ 0.53 USD/hour while it exists |
 | Needs | Nothing but CloudShell | `bootstrap/`: state bucket, workstation | `bootstrap/`, and `shared/` looked up by name |
 | Needed by | `shared/`, `cluster/` | `cluster/`, Jenkins, pods, External Secrets | Ansible, Argo CD, the app |
-| Protection | `prevent_destroy` on the state bucket | `prevent_destroy` on the zone; a 7-day wait before a secret or the KMS key is really deleted | None needed: `force_destroy` empties its buckets on destroy |
+| Protection | `prevent_destroy` on the state bucket | `prevent_destroy` on the zone and on the OIDC issuer bucket; a 7-day wait before a secret or the KMS key is really deleted | None needed: `force_destroy` empties its buckets on destroy |
 
 #### `bootstrap/` — the foundation
 
@@ -154,36 +154,45 @@ build, secret values are typed in by hand, a new KMS key would invalidate every 
 new DNS zone would get new name servers that must be entered at the registrar again. Terraform creates
 the secrets **empty**; their values are added with the AWS CLI, so they never reach the state file.
 
-The cluster stack finds every item except the budget by name. The access shown on the right is granted
-by the cluster's node role; the WireGuard gateway has its own role, which reads only `wireguard`.
+The cluster stack looks up by name only what its own resources need: both ECR repositories, nine secrets and
+the Route 53 zone. It never looks up the budget, the artifacts bucket, the KMS key, the issuer bucket or the
+IRSA roles — the pods that use those reach them with their own roles, not through anything the cluster stack
+creates. The access shown on the right is granted by the cluster's node role; the WireGuard gateway has its
+own role, which reads only `wireguard`.
 
 Solid arrow: runs Terraform. Dotted arrow: is used by.
 
 ```mermaid
 flowchart LR
     WS(["Ops workstation<br/>make shared"])
-    subgraph SHARED["shared/ · 17 resources · kept"]
+    subgraph SHARED["shared/ · 38 resources · kept"]
         KMS["Image signing · 2<br/>KMS key ECC_NIST_P256, SIGN_VERIFY<br/>alias/medical-rag-cosign"]
-        ECR["Images · 2<br/>ECR repository medical-rag<br/>scan on push · release tags immutable<br/>keeps the last 20 tagged images"]
+        ECR["Images · 4<br/>medical-rag: scan on push, tags immutable<br/>keep 10 release-* then 30 tagged<br/>medical-rag-ci: tools image, keep 5"]
         ART[("Index artifacts · 6<br/>medical-rag-artifacts-‹account›<br/>versioned · encrypted · private · TLS-only<br/>old versions deleted after 30 days")]
-        SEC["Secrets Manager · 5, created empty<br/>medical-rag/llm, github, rancher,<br/>rancher-tls, wireguard"]
+        OIDC[("Issuer documents · 5<br/>medical-rag-oidc-‹account›<br/>two public objects · versioned · TLS-only<br/>prevent_destroy")]
+        IRSA["Workload identity · 9<br/>OIDC provider plus 4 roles and their policies<br/>app-dev · app-prod · index-builder · ci"]
+        SEC["Secrets Manager · 10, created empty<br/>medical-rag/llm, github, app-dev, app-prod,<br/>alertmanager, wildcard-tls, sa-signer,<br/>rancher, rancher-tls, wireguard"]
         ZONE["DNS · 1<br/>Route 53 zone recruitai.io.vn<br/>prevent_destroy"]
         BUD["Budget · 1<br/>100 USD a month<br/>email at 50 and 100 percent"]
     end
-    JEN["Jenkins"]
-    POD["Nodes and pods"]
+    JEN["Jenkins build pods"]
+    POD["App pods"]
+    KUB["Kubelet, on the node role"]
     ESO["External Secrets"]
     WGG["WireGuard gateway"]
     CLS["cluster/ stack"]
     YOU["You"]
     WS -->|"terraform apply"| SHARED
+    OIDC -.->|"public key set AWS checks"| IRSA
+    IRSA -.->|"role medical-rag-ci"| JEN
+    IRSA -.->|"roles app-dev, app-prod, index-builder"| POD
     KMS -.->|"sign"| JEN
-    ECR -.->|"push"| JEN
-    ECR -.->|"pull"| POD
+    ECR -.->|"push the app image"| JEN
+    ECR -.->|"pull both repositories"| KUB
     ART -.->|"index Job writes, pods read"| POD
-    SEC -.->|"llm, github, rancher, rancher-tls"| ESO
+    SEC -.->|"eight secrets, read"| ESO
     SEC -.->|"wireguard, at boot"| WGG
-    ZONE -.->|"adds rancher and vpn records"| CLS
+    ZONE -.->|"adds 9 records"| CLS
     BUD -.->|"alert emails"| YOU
 ```
 
@@ -226,15 +235,15 @@ flowchart TB
     S3E --> BKT
 ```
 
-**What the 84 resources are:**
+**What the 91 resources are:**
 
 | Group | Count | Contents |
 |---|---|---|
 | Network | 24 | VPC module (23): VPC, 3 public + 3 private subnets, internet gateway, NAT gateway + Elastic IP, 2 route tables with their routes and 6 associations, and the adopted default security group, route table and NACL. Plus the S3 gateway endpoint |
-| Entry points | 19 | Public NLB :80 with listener, target group and 3 attachments (6) · internal NLB :6443, the same set (6) · :443 listener, target group and 3 attachments (5) · Route 53 records `rancher` and `vpn` (2) |
+| Entry points | 26 | Public NLB :80 with listener, target group and 3 attachments (6) · internal NLB :6443, the same set (6) · :443 listener, target group and 3 attachments (5) · Route 53 records: `rancher`, `vpn`, the 5 internal UI names and the 2 app names (9) |
 | Machines | 5 | 3 nodes (40 GB gp3) · WireGuard gateway (8 GB gp3) · its Elastic IP |
 | Security groups | 17 | 4 groups: `nodes`, `api-nlb` (internal NLB), `ingress-nlb` (public NLB), `wireguard`; 13 rules |
-| Identity | 9 | Node role (5): SSM and EBS CSI managed policies; an inline policy for ECR pull and push, the artifacts bucket and the 2 cluster buckets, 4 secrets (`llm`, `github`, `rancher`, `rancher-tls`) and cosign signing; the instance profile · Gateway role (4): SSM, read `wireguard` only, the instance profile |
+| Identity | 9 | Node role (5): SSM and EBS CSI managed policies; the instance profile; an inline policy with ECR **pull only** on both repositories, the 2 cluster buckets, read on 8 secrets, write on `wildcard-tls` alone, and the `_acme-challenge` TXT record. No ECR push and no KMS: the Jenkins build pods sign with their own role (`shared/irsa.tf`) · Gateway role (4): SSM, read `wireguard` only, the instance profile |
 | Cluster buckets | 10 | `etcd-backups` and `ssm-transfer`, each with a public access block, encryption, a TLS-only policy and a lifecycle rule deleting objects after 14 days and 1 day. `force_destroy` is on, so destroy empties them |
 
 ## 3. Folder structure
@@ -275,30 +284,33 @@ because every `.tf` file in the folder is equivalent.
 | `workstation-init.sh` | cloud-init: Docker and Ansible from Ubuntu packages; Terraform, kubectl, Helm, cosign, yq and gh downloaded and checked against their published checksums; AWS CLI v2 and the Session Manager plugin from their vendor URLs |
 | `install-terraform.sh` | Installs Terraform into `~/bin` inside CloudShell, so the very first apply can run |
 
-### `shared/` — 17 resources
+### `shared/` — 38 resources
 
 | File | Creates | Used later by |
 |---|---|---|
-| `registry.tf` | ECR repository `medical-rag`: scan on push, immutable release tags, keep the last 20 tagged images | Jenkins pushes, nodes pull |
+| `registry.tf` | Two ECR repositories. `medical-rag`: scan on push, immutable tags except `sha256-*` and `buildcache*`, keep the last 10 `release-*` images and then 30 tagged in total. `medical-rag-ci`: the pipeline's tools image, fully immutable, keep the last 5 | Jenkins build pods push the app image; the kubelet pulls both |
 | `storage.tf` | Bucket `medical-rag-artifacts-<account>`: versioned, encrypted, private, TLS-only, old versions expire after 30 days | The index build Job writes the FAISS index; pods pull the pinned version |
-| `kms.tf` | Asymmetric signing key (`ECC_NIST_P256`) + alias `alias/medical-rag-cosign` | Jenkins signs images; Kyverno verifies them |
-| `secrets.tf` | Empty secrets `medical-rag/llm`, `medical-rag/github`, `medical-rag/alertmanager` (SMTP settings) and `medical-rag/wildcard-tls` (certificate backup, tagged `managed-by=external-secrets`). Values are set with the AWS CLI or by External Secrets, never by Terraform | External Secrets syncs them into Kubernetes; only `wildcard-tls` is written back |
+| `kms.tf` | Asymmetric signing key (`ECC_NIST_P256`) + alias `alias/medical-rag-cosign` | The Jenkins build pods sign images with it, through their own role. Nothing verifies signatures yet: Kyverno is not installed |
+| `oidc.tf` | Bucket `medical-rag-oidc-<account>`: two public objects (the discovery document and the key set), versioned, encrypted, TLS-only, `prevent_destroy`. Terraform creates the container only; `make oidc-publish` uploads the documents | AWS fetches them on every token exchange |
+| `irsa.tf` | The IAM OIDC provider for that issuer, plus 4 roles with their policies: `app-dev` and `app-prod` read `faiss/*`; `index-builder` reads `corpus/*` and `faiss/*` and writes `faiss/*` but is denied `faiss/LATEST`; `ci` pushes to `medical-rag`, signs with the KMS key and reads `corpus/*`. Each trusts one exact `namespace:serviceaccount` | The app's pods and the Jenkins build pods, instead of the node role |
+| `secrets.tf` | Seven empty secrets: `medical-rag/llm`, `github`, `app-dev`, `app-prod`, `alertmanager` (SMTP settings), `wildcard-tls` (certificate backup, tagged `managed-by=external-secrets`) and `sa-signer` (the service-account signing key, which no cluster role may read). Values are set with the AWS CLI or by External Secrets, never by Terraform | External Secrets syncs them into Kubernetes; only `wildcard-tls` is written back; Ansible reads `sa-signer` on the workstation |
 | `bugdets.tf` | Monthly budget with email alerts at 50 % and 100 %, filtered to `project=medical-rag` | You |
 | `rancher.tf` | Route 53 zone plus empty `medical-rag/rancher`, `medical-rag/rancher-tls` and `medical-rag/wireguard` secrets | Rancher, External Secrets and the VPN gateway |
-| `outputs.tf` | Registry, bucket, KMS and all seven secret names; never secret values | Cluster stack and operator checks |
+| `outputs.tf` | The app repository URL, the artifacts bucket, the KMS alias and ARN, and nine of the ten secret names (`sa-signer` is left out on purpose); never secret values. `oidc.tf`, `irsa.tf` and `rancher.tf` add outputs beside their own resources | Cluster stack, Ansible, Helm and operator checks |
 
-### `cluster/` — 84 resources
+### `cluster/` — 91 resources, with the default node count and host lists
 
 | File | Creates | Notes |
 |---|---|---|
 | `network.tf` | VPC `10.10.0.0/16`, 3 private + 3 public subnets, internet gateway, 1 NAT gateway with its Elastic IP, route tables, S3 gateway endpoint | The community `terraform-aws-modules/vpc` module also adopts the VPC's default security group and route table (leaving both empty) and its default NACL (reset to allow-all): 3 of this step's 24 resources |
 | `security.tf` | 3 security groups (nodes, API NLB, ingress NLB) and 8 rules | Rules reference security groups where possible. Three use CIDRs: HTTP from the internet, the API from the VPC, node egress. `rancher.tf` and `wireguard.tf` add the rest (end state: 4 groups, 13 rules) |
 | `storage.tf` | Buckets `etcd-backups` (14 days) and `ssm-transfer` (1 day) | Cluster-scoped: useless once the cluster is gone, so `force_destroy` is on |
-| `iam.tf` | The node role, instance profile and its inline policy | Least privilege: ECR, 3 project buckets, 4 workload secrets and the cosign key. WireGuard credentials are deliberately excluded |
+| `iam.tf` | The node role, instance profile and its inline policy | Least privilege: ECR pull on both repositories, the 2 cluster buckets, 8 workload secrets, write on `wildcard-tls` and the ACME TXT record. The cosign key, the artifacts bucket, `sa-signer` and the WireGuard credentials are deliberately excluded |
 | `compute.tf` | 3 × `m7i-flex.large` Ubuntu 24.04, one per AZ, no public IP, no key pair, IMDSv2 required | Tagged `k8s-cluster=medical-rag`, which is how Ansible finds them |
 | `loadbalancers.tf` | Internal NLB :6443 and public NLB :80, with their target groups, listeners and 3 attachments each | The internal one is kubeadm's `controlPlaneEndpoint` |
 | `rancher.tf` | Internal NLB :443 target group/listener, 3 attachments, 3 firewall rules and the `rancher.<domain>` alias | Nine resources. The target group disables client-IP preservation to support Rancher agent hairpin connections |
-| `internal-ui.tf` | `argocd`, `grafana`, `prometheus` and `alertmanager` alias records to the internal NLB | Four resources. The internal UIs are VPN-only, like Rancher. `iam.tf` lets cert-manager change only the `_acme-challenge` TXT record for their wildcard certificate |
+| `internal-ui.tf` | `argocd`, `grafana`, `prometheus`, `alertmanager` and `jenkins` alias records to the internal NLB | Five resources, one per label in `var.internal_ui_hosts`. The internal UIs are VPN-only, like Rancher. `iam.tf` lets cert-manager change only the `_acme-challenge` TXT record for their wildcard certificate |
+| `app-dns.tf` | `dev` and `app` alias records to the **public** NLB | Two resources, one per label in `var.app_hosts`. ingress-nginx routes by name: `dev.<domain>` to `medical-rag-dev`, `app.<domain>` to prod. HTTP only — the public NLB has no 443 listener |
 | `wireguard.tf` | Gateway SG, minimal IAM role/profile, EIP, `t3.small` instance and `vpn.<domain>` record | Ten resources. No SSH; only UDP 51820 is public. The gateway's own firewall lets the tunnel reach only DNS and TCP 443, not the API on 6443 |
 | `main.tf` | Also holds the `data` lookups of the shared stack | A missing shared stack fails the plan here |
 
@@ -310,12 +322,12 @@ because every `.tf` file in the folder is equivalent.
 | **VPC** | 2 VPCs, 7 subnets, 2 internet gateways, 1 NAT gateway + EIP, WireGuard EIP, route tables, S3 endpoint | Private nodes plus a small, isolated ops network |
 | **Security groups** | 5 created, plus the emptied cluster default group | Public ingress is app HTTP 80 and WireGuard UDP 51820; Rancher TCP 443 is private |
 | **ELB** | 2 NLBs, 3 target groups, 3 listeners, 9 attachments | Public app entry point plus private Kubernetes API and Rancher entry point |
-| **IAM** | 3 roles, 3 instance profiles, 2 inline policies, 5 managed-policy attachments | Nodes, gateway and workstation use separate roles; the gateway reads only its own secret |
-| **S3** | 4 buckets: tfstate, artifacts, etcd-backups, ssm-transfer | State, the FAISS index, backups, and Ansible's file transfer over SSM |
-| **ECR** | 1 repository + lifecycle policy | Signed application images |
+| **IAM** | 7 roles, 3 instance profiles, 6 inline policies, 5 managed-policy attachments, 1 OIDC provider | Nodes, gateway and workstation use separate roles; the app's pods and the build pods have their own, through the cluster's issuer |
+| **S3** | 5 buckets: tfstate, artifacts, oidc, etcd-backups, ssm-transfer | State, the FAISS index, the cluster's public issuer documents, backups, and Ansible's file transfer over SSM |
+| **ECR** | 2 repositories + 2 lifecycle policies | Signed application images, and the pipeline's own tools image |
 | **KMS** | 1 signing key + alias | Cosign signs images with a key that never leaves AWS |
-| **Secrets Manager** | 7 secrets | App keys, GitHub token, Rancher password/TLS, WireGuard keys, alert email settings and the wildcard certificate backup |
-| **Route 53** | 1 hosted zone, Rancher alias and VPN A record | Private Rancher name follows the internal NLB; VPN name follows the gateway EIP |
+| **Secrets Manager** | 10 secrets | App keys per environment, GitHub token, Rancher password/TLS, WireGuard keys, alert email settings, the wildcard certificate backup and the service-account signing key |
+| **Route 53** | 1 hosted zone, 9 records | The 5 internal UI names and `rancher` follow the internal NLB; `dev` and `app` follow the public NLB; `vpn` follows the gateway EIP |
 | **Budgets** | 1 budget | Email at 50 and 100 USD |
 | **SSM** | Nothing to create | Session Manager works through the IAM role and the agent that ships with Ubuntu |
 
@@ -363,7 +375,7 @@ flowchart LR
 | Workstation | `t3.small`, 30 GB + 2 GB swap | Enough for Terraform, Ansible and kubectl; application images are built by Jenkins in the cluster |
 | WireGuard | `t3.small`, 8 GB gp3 + one public IPv4 | Free-tier eligible, like the workstation; destroyed with the cluster |
 | Cluster total | **≈ 0.53 USD/hour** | Destroyed with `make infra-destroy` when idle |
-| Kept always | ≈ 4.80 USD/month, plus 2.90 USD/month for the stopped workstation disk | KMS key, 7 secrets, Route 53, buckets and images |
+| Kept always | ≈ 6.00 USD/month, plus 2.90 USD/month for the stopped workstation disk | KMS key, 10 secrets, Route 53, buckets and images |
 | Domain + Sectigo DV | Yearly, outside AWS | Record the invoice amount; do not mix it into AWS hourly estimates |
 
 **AWS Free plan.** This account runs on the Free plan, which refuses to launch any instance type

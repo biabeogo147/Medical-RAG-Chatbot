@@ -9,7 +9,7 @@ từ lần chạy thật trước khi dùng; đừng nói con số bạn chưa �
 
 Các con số lấy từ [`docs/evidence/terraform.md`](../evidence/terraform.md):
 
-- **Số resource:** bootstrap 18, shared 17, cluster 84.
+- **Số resource:** bootstrap 18, shared 38, cluster 91.
 - **Thời gian:** ở step 15, bản cluster 65 resource (chưa có WireGuard) destroy mất 1 phút 27 giây và dựng
   lại từ đầu mất 3 phút 19 giây. Bản đủ 84 resource: `[điền: thời gian make infra-destroy và make infra]`.
 - **Chi phí:** khoảng 0.53 USD/giờ khi cluster đang chạy.

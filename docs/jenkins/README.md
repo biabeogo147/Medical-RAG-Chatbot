@@ -35,6 +35,10 @@ flowchart LR
 - **One build pod at a time.** Jenkins' Kubernetes cloud is capped at one pod, across all branches. The nodes have
   little CPU left, and a second build would only queue for it.
 - **Polling, not a webhook.** Jenkins opens only through the VPN, so GitHub cannot call it.
+- **Two Applications, two waves.** `jenkins-platform` (wave 3) and `jenkins` (wave 4) are ordinary Applications
+  under `root`, like the app's. What Argo CD does with them — which file it reads, when it notices a commit, what
+  each status field means and how a failed sync is retried — is drawn in
+  [argocd-explained](../gitops/argocd-explained.md).
 
 ## 2. Two namespaces
 
@@ -109,7 +113,7 @@ corpus ([concepts §20](guide/0-concepts.md#20-the-index-version-in-ci)).
 
 Two rules, in priority order: keep the last 10 images tagged `release-*`, then keep 30 tagged images in total. The
 first rule's images can never be expired by the second, which still counts them. Signatures and attestations are
-untagged and never counted. Old build cache manifests are untagged too and accumulate; step 19 measures the
+untagged and never counted. Old build cache manifests are untagged too and accumulate; step 19 would have measured the
 repository's size and the number of untagged images, which is the input for deciding whether the cache needs a
 repository of its own.
 
@@ -127,6 +131,7 @@ Prometheus. Jenkins comes last:
 
 | Limit | Why it is accepted | What would fix it |
 |---|---|---|
+| **Nothing has shown the phase survives a rebuild** | Step 19's teardown and rebuild were not run (2026-09-21); the phase was closed on the cluster it grew into. The GitOps phase measured a rebuild at 14 m 11 s, but that cluster had no Jenkins in it | Run step 19: tear down, rebuild from Git, and take one release through the rebuilt cluster |
 | The bot's token is yours, so GitHub cannot enforce "prod only by pull request" | One-person repository | A separate bot account or GitHub App, and a rule requiring a code owner for `deploy/envs/prod/` |
 | Polling adds up to two minutes | Jenkins is reachable only through the VPN | A webhook relay or a GitHub App |
 | Build steps share BuildKit's process space | Rootless BuildKit in a pod cannot create its own PID namespace | Build nodes or VMs kept away from the application nodes |
@@ -135,7 +140,7 @@ Prometheus. Jenkins comes last:
 | No Kyverno: nothing refuses an unsigned image yet | A later, optional phase | `verifyImages` with the KMS public key, `Enforce` in prod |
 | App traffic is plain HTTP | Out of scope in the design | An ACM certificate on the public load balancer |
 | No backup of the Jenkins home | Everything in it is rebuilt from Git; only build history is lost | A snapshot schedule for its volume |
-| The pipeline's tools live in an image this repository builds (`ci/Dockerfile`), pushed by hand with `make ci-image` | cosign, `gh` and Syft publish images without a shell, and Jenkins runs every step through one; downloading them on each build would add time and a network dependency | A pipeline of its own for that image, once there is more than one |
+| The pipeline's tools live in an image this repository builds (`ci/Dockerfile`), pushed by hand with `make ci-image` | cosign and `gh` publish images without a shell, and Jenkins runs every step through one; downloading them on each build would add time and a network dependency | A pipeline of its own for that image, once there is more than one |
 
 ## 11. Where this phase changes the design
 
@@ -147,7 +152,7 @@ The design (`docs/selfmanaged-k8s-ops-design.md` §4.5) is followed except for t
 | One Jenkins namespace | `jenkins` (`restricted`) and `jenkins-agents` (level set by step 1) | BuildKit needs rights the controller does not |
 | Multibranch on `main` | Multibranch on `main` and `jenkins/step-N` | Pipeline changes are proven on a branch before `main` |
 | At most one concurrent build | One build pod at a time, through the Kubernetes cloud's cap | A per-job setting would let two branches build at once |
-| No wave given | `jenkins-platform` at wave 3 and `jenkins` at wave 4, after the app | Nothing depends on Jenkins, and the chart needs the namespace and credentials of wave 3 |
+| Wave 3, one Application | `jenkins-platform` at wave 3 and `jenkins` at wave 4, after the app | Nothing depends on Jenkins, and the chart in wave 4 needs the namespace and credentials wave 3 creates |
 | One Application for Jenkins | Two: `jenkins-platform` (manifests in this repo) and `jenkins` (upstream chart + values) | An Application renders one kind of source, so a directory of manifests and a remote chart cannot share one. It also keeps the credentials and the admission policy alive across a chart reinstall, and only the chart Application owns a volume |
 | Keep the last 20 images | Keep 10 `release-*` images first, then 30 in total | A count alone can delete the image prod runs |
 | A `python:3.12` agent container for lint and tests | Tests in the Dockerfile's `test` target, inside BuildKit | One place defines how tests run, locally and in CI |

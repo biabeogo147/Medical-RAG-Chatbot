@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-15
 - **Timebox:** Days 1–3 of a 7-day plan shared with Anime-Recommender (EKS)
-- **Budget envelope:** about 0.53 USD/hour while the cluster and WireGuard gateway run, plus about 0.03 USD/hour for the ops workstation; roughly 7.70 USD/month remains with the cluster destroyed (KMS key, 7 secrets, Route 53, buckets and the stopped workstation disk). Domain and Sectigo renewal are yearly costs outside AWS.
+- **Budget envelope:** about 0.53 USD/hour while the cluster and WireGuard gateway run, plus about 0.03 USD/hour for the ops workstation; roughly 8.90 USD/month remains with the cluster destroyed (KMS key, 10 secrets, Route 53, buckets and the stopped workstation disk). Domain and Sectigo renewal are yearly costs outside AWS.
 - **Target role:** DevOps / Platform / SRE (LLMOps as a bonus)
 
 ## 1. Goal
@@ -77,7 +77,7 @@ flowchart TB
     end
 
     NODES --> NAT --> EXT["Gemini API · HF API · GitHub"]
-    NODES --> AWS["ECR · S3 · KMS · Secrets Manager"]
+    NODES --> AWS["ECR pull · S3 · Secrets Manager"]
 ```
 
 ### In-cluster components
@@ -150,19 +150,22 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   - Node-to-node traffic for Calico (BGP 179 or VXLAN 4789, per the chosen mode), etcd 2379–2380, and kubelet 10250.
 - **IAM instance profile:**
   - `AmazonSSMManagedInstanceCore`
-  - ECR read + write, the latter scoped to the repository for Jenkins BuildKit pushes
+  - ECR read only, on both repositories (`medical-rag`, `medical-rag-ci`)
   - S3 read/write on the cluster's own buckets (etcd backups, SSM transfer). The artifacts bucket is
     reached only through the app's IRSA roles (app guide step 9)
   - `secretsmanager:GetSecretValue` only for the eight named secrets other than `medical-rag/wireguard`
     and `medical-rag/sa-signer`; no wildcard includes either of those two
-  - `kms:Sign` and `kms:GetPublicKey` on the cosign key
   - The EBS CSI policy
+  - **No KMS and no ECR push.** Both were removed in the Jenkins phase, step 18; the build pods push and
+    sign with `medical-rag-ci` instead (below)
 - **Registry, storage and keys:**
-  - ECR `medical-rag` with scan on push and a lifecycle policy keeping the last 20 images.
+  - ECR `medical-rag` (scan on push; keep the last 10 `release-*` images, then 30 tagged in total) and
+    `medical-rag-ci` for the pipeline's tools image (keep 5). Both immutable, `medical-rag` excepting
+    `sha256-*` and `buildcache*`.
   - S3 buckets `*-artifacts` (versioned), `*-etcd-backups` (lifecycle 14 days) and `*-ssm-transfer`, all with Block Public Access and TLS-only policies.
   - KMS asymmetric key `ECC_NIST_P256` / `SIGN_VERIFY`, alias `alias/medical-rag-cosign`.
-- **Internal UI names and certificate (Terraform guide step 19):** `argocd`, `grafana`, `prometheus` and
-  `alertmanager` alias records to the internal NLB. The node role may change only the TXT record
+- **Internal UI names and certificate (Terraform guide step 19):** `argocd`, `grafana`, `prometheus`,
+  `alertmanager` and `jenkins` alias records to the internal NLB. The node role may change only the TXT record
   `_acme-challenge.recruitai.io.vn` (IAM conditions on record name and type), plus read-only Route 53
   lookups, for cert-manager's DNS-01.
 - **Secrets Manager:** ten empty secrets: `medical-rag/llm`, `medical-rag/github`,
@@ -175,10 +178,12 @@ The bootstrap stack is applied once from AWS CloudShell and creates the two thin
   the gateway can read `medical-rag/wireguard`, and none can read `medical-rag/sa-signer`: Ansible reads it
   on the workstation. Admin identities, including the workstation role, can read all ten.
 - **Workload identity (app guide Part 1):** an S3 bucket `medical-rag-oidc-<account>` serving the
-  cluster's issuer documents publicly (`prevent_destroy`), an IAM OIDC provider for it, and three roles:
+  cluster's issuer documents publicly (`prevent_destroy`), an IAM OIDC provider for it, and four roles:
   `medical-rag-app-dev` and `medical-rag-app-prod` read `faiss/*`; `medical-rag-index-builder` reads
-  `corpus/*` and `faiss/*` and writes `faiss/*`. Each trusts one exact ServiceAccount. The node role no
-  longer has the artifacts bucket.
+  `corpus/*` and `faiss/*` and writes `faiss/*` but is denied `faiss/LATEST`; `medical-rag-ci` (Jenkins
+  guide step 3) pushes to `medical-rag`, signs with the KMS key and reads `corpus/*`. Each trusts one exact
+  ServiceAccount. The node role no longer has the artifacts bucket, and since step 18 no longer has ECR
+  push or KMS either.
 - **Budgets:** alarms at 50 and 100 USD.
 - **Tagging:** default tags `project`, `env`, `owner`, `managed-by=terraform`.
 - **Inputs:** `shared/terraform.tfvars` (from the `.example`): budget email. Everything else has defaults.
@@ -295,6 +300,7 @@ deploy/
   envs/prod/values.yaml      2 replicas, topologySpreadConstraints (hostname), PDB minAvailable 1, host app.recruitai.io.vn
   argocd/root.yaml           app-of-apps
   argocd/apps/*.yaml         addons + medical-rag-dev + medical-rag-prod
+                             + jenkins-platform (wave 3) + jenkins (wave 4)
 ```
 
 - **Waves inside the chart:** ServiceAccounts, ExternalSecret and NetworkPolicies at 0; the index Job (Sync hook) at 1;
@@ -325,7 +331,8 @@ deploy/
 6. **Sign & attest:**
    - `cosign sign --key awskms:///alias/medical-rag-cosign <digest>`
    - `cosign attest --type spdxjson` with the same KMS key
-   - The instance profile provides the KMS permission.
+   - Since the Jenkins phase, step 18, the KMS permission belongs to the `medical-rag-ci` role the build
+     pod assumes, not to the instance profile.
 7. **Promote to dev:**
    - Clone the repo using a GitHub token from ExternalSecret.
    - `yq` sets `image.tag` (and `index.version` if the corpus or chunk config changed) in `deploy/envs/dev/values.yaml`.
@@ -344,7 +351,8 @@ Images are referenced **by digest** in values as `tag@sha256:...`, so what was s
   level is set by measuring rootless BuildKit on the nodes: `baseline` with node-installed profiles, or `privileged`
   narrowed by a ValidatingAdmissionPolicy.
 - The Multibranch job also builds `jenkins/step-N` branches; only `main` signs and promotes.
-- Jenkins is Argo CD wave 3, after the app.
+- Jenkins is two Argo CD Applications: `jenkins-platform` at wave 3 and `jenkins` at wave 4, both after the
+  app. The chart in wave 4 mounts Secrets and a ServiceAccount that wave 3 creates.
 - The ECR lifecycle policy keeps the last 10 `release-*` images (every image that reached prod's values) in a first,
   higher-priority rule, then 30 tagged images in total.
 - One build pod at a time through the Kubernetes cloud's cap, since a per-job limit does not span Multibranch branches.
@@ -454,7 +462,7 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Rancher controls the whole cluster | TCP 443 exists only on the internal NLB, open to the whole cluster VPC because Rancher's own agents connect to it from inside. From outside the VPC, access requires a valid WireGuard peer and Rancher credentials. Configure an MFA-enforcing external identity provider before treating MFA as a control. Disconnect the VPN and destroy the cluster when idle. |
 | A Kubernetes minor exceeds Rancher's chart constraint | The §4.2.1 gate: keep 1.36.4 until a candidate chart accepts the target, upgrade Rancher first, and require Argo CD health. |
 | The internal NLB is open to the whole VPC, including the Kubernetes API on 6443, and the VPN peer arrives with a VPC address | The gateway firewall forwards only DNS to the VPC resolver and TCP 443 from the tunnel, drops everything else, and blocks connections from the VPC towards the client. The API stays reachable only through the SSM tunnel from the workstation. |
-| **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use the KMS sign and S3 permissions. | Self-hosted IRSA for the app, built before its chart (app guide Part 1): a stable signing key, an S3-hosted issuer, an IAM OIDC provider and per-ServiceAccount roles. The chart mounts the token itself, with no pod-identity webhook. App namespaces block `169.254.169.254/32`, and the node role loses the artifacts bucket. Platform pods (External Secrets, cert-manager, EBS CSI, later Jenkins) stay on the node role for now; moving them uses the same issuer. |
+| **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use whatever the node role holds. | Self-hosted IRSA, built before the app's chart (app guide Part 1): a stable signing key, an S3-hosted issuer, an IAM OIDC provider and per-ServiceAccount roles. The chart mounts the token itself, with no pod-identity webhook. Four namespaces block `169.254.169.254/32` — both app environments and both Jenkins ones — and the node role has lost the artifacts bucket, ECR push and KMS. Platform pods (External Secrets, cert-manager, EBS CSI) stay on the node role in namespaces that do **not** block IMDS; moving them uses the same issuer. |
 | ingress-nginx was retired upstream in March 2026: no further releases or security fixes, and Kubernetes 1.36 postdates its last release | Kept because the NodePorts and Rancher's `ingressClassName` depend on it; traffic reaching it is the demo app or a VPN user. Migrate to a maintained controller or Gateway API; the NodePorts stay the same. |
 | Let's Encrypt allows 5 certificates per identical name set per 7 days, and the cluster is rebuilt more often | The wildcard certificate is pushed to `medical-rag/wildcard-tls` and restored in wave -1, before its `Certificate` exists; cert-manager keeps a valid restored certificate. Test changes against the staging issuer. |
 | Prometheus and Alertmanager UIs have no authentication | VPN-only names plus a VPC-only allowlist on their Ingresses; single VPN peer. P2: an OAuth proxy in front of all internal UIs. |
@@ -479,7 +487,7 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Rancher access | WireGuard gateway EC2 → internal NLB TCP 443 → ingress-nginx NodePort 30443 |
 | Ansible runtime | Native on the ops workstation |
 | Kubernetes version | Start at 1.36.4; change minor only after the Rancher compatibility gate passes |
-| Internal UIs | Argo CD, Grafana, Prometheus, Alertmanager and Rancher only through WireGuard, each at its own name under `recruitai.io.vn` |
+| Internal UIs | Argo CD, Grafana, Prometheus, Alertmanager, Jenkins and Rancher only through WireGuard, each at its own name under `recruitai.io.vn` |
 | TLS for other internal UIs | cert-manager + Let's Encrypt wildcard via DNS-01, backed up in Secrets Manager |
 | Alert delivery | Alertmanager email over SMTP with an app password (not SES) |
 | Control-plane metrics | Exposed on node addresses by the kubeadm config and scraped |

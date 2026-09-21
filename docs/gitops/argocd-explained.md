@@ -35,11 +35,11 @@ Contents:
 ```mermaid
 flowchart LR
     BOOT["make bootstrap<br/>(once per cluster)"] -->|"kubectl apply"| ROOT["deploy/argocd/root.yaml<br/>Application root"]
-    ROOT -->|"one Application<br/>per file"| APPS["deploy/argocd/apps/*.yaml<br/>11 Applications"]
+    ROOT -->|"one Application<br/>per file"| APPS["deploy/argocd/apps/*.yaml<br/>13 Applications"]
 
-    APPS -->|"7 platform charts"| REPOS["Helm chart repositories<br/>(versions pinned in apps/)"]
+    APPS -->|"8 charts"| REPOS["Helm chart repositories<br/>(versions pinned in apps/)"]
     APPS -->|"their values"| VALUES["deploy/argocd/values/*.yaml"]
-    APPS -->|"platform-secrets, platform-tls"| MAN["deploy/argocd/manifests/"]
+    APPS -->|"platform-secrets, platform-tls,<br/>jenkins-platform"| MAN["deploy/argocd/manifests/"]
 
     APPS -->|"medical-rag-dev<br/>medical-rag-prod"| CHART["deploy/charts/medical-rag"]
     ENVS["deploy/envs/common.yaml<br/>+ deploy/envs/dev or prod/values.yaml"] -->|"values for"| CHART
@@ -51,7 +51,8 @@ Every arrow after `root.yaml` is followed by Argo CD, not by you.
   creates one Application for every file in `deploy/argocd/apps/`. Each of those files says what to install
   and from where.
 - **Platform components** come from a public Helm chart, with a values file from `deploy/argocd/values/`.
-  Two of them, `platform-secrets` and `platform-tls`, are plain YAML from `deploy/argocd/manifests/`.
+  Three of them, `platform-secrets`, `platform-tls` and `jenkins-platform`, are plain YAML from
+  `deploy/argocd/manifests/`.
 - **The app** comes from the chart in this repository, `deploy/charts/medical-rag`, with two values files:
   `common.yaml` first, then the environment's own. The files `apps/medical-rag-dev.yaml` and
   `apps/medical-rag-prod.yaml` list these values files, and read them through `$values`.
@@ -129,8 +130,8 @@ All the fields live on the Application object, in the `argocd` namespace:
 Most Applications here have two sources: a chart, then this repository for `$values`. For a chart from a
 Helm repository the entry is the chart version; for this repository it is a commit. So the commit is entry
 `[1]` for a platform Application, while for the app, whose two sources are both this repository, entries
-`[0]` and `[1]` are the same commit. `platform-secrets` and `platform-tls` have a single source, and their
-fields are named `revision`, without the `s`.
+`[0]` and `[1]` are the same commit. `platform-secrets`, `platform-tls` and `jenkins-platform` have a single
+source, and their fields are named `revision`, without the `s`.
 
 ## 4. The life of an automated sync
 
@@ -169,15 +170,16 @@ Application, in this order:
 
 | The child Application | `root` shows |
 |---|---|
-| Has the label `medical-rag/report-failed-sync` (the two app Applications) and its last sync is `Failed` or `Error` | `Degraded`, with the sync's message |
+| Has the label `medical-rag/report-failed-sync` (the two app Applications, `jenkins-platform` and `jenkins`) and its last sync is `Failed` or `Error` | `Degraded`, with the sync's message |
 | Health `Degraded` | `Degraded` |
 | `Synced` and `Healthy`, but has no resources at all (a wrong `path:`) | `Degraded` |
 | `Synced` and `Healthy` | `Healthy` |
 | Anything else: `OutOfSync`, `Progressing`, `Missing`, `Suspended` | `Progressing`, until it changes |
 
 So during the retries, `root` reads `Progressing` because the app is still `OutOfSync` (its wave 2 was not
-applied), not because of the `Running` phase. A platform Application has no label, so a failed sync there
-shows on `root` only if it leaves the Application `OutOfSync` or `Degraded`.
+applied), not because of the `Running` phase. A platform Application without that label — everything in waves
+-3 to 0 — shows a failed sync on `root` only if it leaves the Application `OutOfSync` or `Degraded`; the two
+Jenkins Applications carry the label and report it directly.
 
 This is exactly what the failure test of app step 17 recorded: `root` read `Progressing` during the
 retries, then `Degraded` with `… (retried 5 times)`, while the running pod stayed Ready
@@ -194,7 +196,9 @@ flowchart TB
         RW0["wave 0: platform-tls, kube-prometheus-stack, rancher"]
         RWD["wave 1: medical-rag-dev"]
         RWP["wave 2: medical-rag-prod"]
-        RW3 --> RW2 --> RW1 --> RW0 --> RWD --> RWP
+        RWJP["wave 3: jenkins-platform"]
+        RWJ["wave 4: jenkins"]
+        RW3 --> RW2 --> RW1 --> RW0 --> RWD --> RWP --> RWJP --> RWJ
     end
 
     subgraph APPWAVES["Level 2: each app Application orders its own resources"]
@@ -213,7 +217,8 @@ There are two unrelated sets of wave numbers:
 - **Level 1**, in `deploy/argocd/apps/*.yaml`: `root` creates the Applications in this order, and starts a
   wave only when every Application of the previous one is `Synced` and `Healthy`. This matters when `root`
   itself syncs, for example on a new cluster. **For a normal release, each app Application syncs on its
-  own:** prod does not wait for dev.
+  own:** prod does not wait for dev. The two Jenkins Applications are ordered against each other for a real
+  reason: the chart in wave 4 mounts Secrets and a ServiceAccount that wave 3 creates.
 - **Level 2**, in `deploy/charts/medical-rag/templates/*.yaml`: inside one Application, Argo CD applies wave
   0, waits for it to be healthy, runs the index Job, then applies wave 2. So the pods start only after
   their Secret exists and their index version is in S3.
@@ -255,5 +260,6 @@ Replace `medical-rag-dev` in the second command with the Application you are loo
 
 ---
 
-Wave numbers and file paths checked against `deploy/` on 2026-09-19. When you change a `sync-wave`
-annotation, update section 5 here and the diagram in [README §4](README.md#4-app-of-apps-and-sync-waves).
+Wave numbers and file paths checked against `deploy/` on 2026-09-21, after the Jenkins phase. When you change
+a `sync-wave` annotation, update section 5 here and the diagram in
+[README §4](README.md#4-app-of-apps-and-sync-waves).
