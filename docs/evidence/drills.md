@@ -16,7 +16,7 @@ a missing number is visible as a missing number rather than as an absence nobody
 |---|---|---|---|
 | 12 | etcd restore | Not measured | RTO: *pending* |
 | 13 | Kyverno | **Measured** (signature half; see Still to check) | Admission error: `admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-verify-images-prod" denied the request: Policy verify-images-prod failed: the image is not signed with the medical-rag cosign key` |
-| 14 | Upgrade | Not measured | Failed requests: *pending*. **Note:** the design words #14 as a *minor* upgrade; this drill exercises the patch path only, so the best outcome here is *partially measured* |
+| 14 | Upgrade | **Not measured**: 1.36.4 is the newest 1.36 patch (step 15) | Failed requests: *not measured*. **Note:** the design words #14 as a *minor* upgrade; this drill exercises the patch path only, so the best outcome here is *partially measured* |
 
 | Question | Answer |
 |---|---|
@@ -207,6 +207,14 @@ look identical from the outside: no denials either way. The Audit step exists to
 | 16 | The chart version and its `kubeVersion`, and the pass/fail against the target |
 | 17 | The `--syntax-check` result and the `--list-hosts` play membership |
 | 18 | `time` for the playbook, each node's version afterwards, and the failed-request count |
+
+**Measured.**
+
+- **Step 15.** All three nodes `v1.36.4` (`kubectl get nodes -o wide`, 2026-09-22). `apt-cache madison kubeadm`
+  on node 1 lists `1.36.4-1.1`, `1.36.3-1.1`, `1.36.2-2.1`, `1.36.1-1.1`, `1.36.0-1.1`. **The highest is the
+  one installed: there is no patch to move to**, so criterion #14 is **not measured** on this cluster.
+- **Step 16.** Rancher chart `2.15.1`, `kubeVersion: < 1.37.0-0`. The gate would pass for any 1.36 patch; it
+  had no target to judge.
 
 **If the count is not zero**, line each failure's timestamp up against the drains. Two replicas with
 `minAvailable: 1` spread across nodes should give zero; a non-zero count means the spread or the budget is not

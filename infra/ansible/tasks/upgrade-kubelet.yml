@@ -1,0 +1,71 @@
+---
+# The second half of upgrading one node, shared by the last two plays of upgrade.yml: move its workloads
+# away, replace the kubelet, bring it back, and wait until the cluster has settled before the next node
+# starts. KUBECONFIG comes from the play: every node here is a control plane and holds admin.conf.
+
+- name: Drain the node
+  # --timeout makes a blocked drain fail the play instead of hanging it. A drain blocks when a
+  # PodDisruptionBudget allows no disruption, such as a single replica with minAvailable: 1.
+  ansible.builtin.command: >-
+    kubectl drain {{ node_name }} --ignore-daemonsets --delete-emptydir-data --timeout=10m
+  changed_when: true
+
+- name: Upgrade kubelet and kubectl
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_apt_version }}"
+      - "kubectl={{ kubernetes_apt_version }}"
+    state: present
+    update_cache: true
+    lock_timeout: 300
+    allow_change_held_packages: true
+
+- name: Keep them held
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: [kubelet, kubectl]
+
+- name: Restart the kubelet on the new binary
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+
+- name: Wait for the node to report Ready on the new version
+  ansible.builtin.command: >-
+    kubectl get node {{ node_name }}
+    -o jsonpath='{.status.nodeInfo.kubeletVersion} {.status.conditions[?(@.type=="Ready")].status}'
+  register: upgrade_node_state
+  until: upgrade_node_state.stdout == 'v' ~ kubernetes_version ~ ' True'
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Uncordon the node
+  ansible.builtin.command: kubectl uncordon {{ node_name }}
+  changed_when: true
+
+- name: Wait for this node's control-plane pods to be Ready
+  # etcd, the API server, the controller manager and the scheduler are static pods; kubeadm restarted
+  # them on the new version before the drain.
+  ansible.builtin.command: >-
+    kubectl -n kube-system wait pod -l tier=control-plane
+    --field-selector spec.nodeName={{ node_name }} --for=condition=Ready --timeout=5m
+  changed_when: false
+
+- name: Wait for every Argo CD Application to be Synced and Healthy
+  # Both, and counted: the next node is drained only once whatever this drain displaced has come back. An
+  # empty list would also print no unhealthy line, so the number of Applications is checked as well.
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl -n argocd get applications \
+      -o jsonpath='{range .items[*]}{.metadata.name} {.status.sync.status} {.status.health.status}{"\n"}{end}' \
+      | awk 'NF { total++ } NF && ($2 != "Synced" || $3 != "Healthy") { bad++; print } END { print "total=" total+0 " bad=" bad+0 }'
+  args:
+    executable: /bin/bash
+  register: upgrade_apps
+  until: upgrade_apps.stdout_lines[-1] == 'total=' ~ expected_applications ~ ' bad=0'
+  retries: 60
+  delay: 10
+  changed_when: false

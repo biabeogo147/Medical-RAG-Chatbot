@@ -1,0 +1,130 @@
+---
+# A patch upgrade of the cluster, one node at a time (drills guide step 17, design §7). Set the target in
+# inventory/group_vars/all.yml (kubernetes_version and kubernetes_apt_version), then run:
+#
+#   ansible-playbook upgrade.yml -e project=medical-rag -e aws_region=ap-southeast-1 -e aws_account_id=ID
+#
+# Do NOT upgrade by bumping the pin and re-running `make cluster`. The kubernetes_packages role installs the
+# pinned version with allow_change_held_packages, so that would put the new kubelet on all three nodes at
+# once (dpkg restarts it) while the control-plane static pods keep the old binaries. Only `kubeadm upgrade`
+# moves the control plane.
+#
+# Separate plays for the first node and the others: the inventory's order does not guarantee node 1 comes
+# first, and the first control plane is the only one that runs `kubeadm upgrade apply`.
+# A minor upgrade (1.36 -> 1.37) also changes kubernetes_minor, which is part of the apt repository URL, and
+# needs Rancher moved first (design §4.2.1). The first play refuses it.
+
+- name: Check the target before touching any node
+  hosts: first_node
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    - name: The target stays inside the pinned minor
+      ansible.builtin.assert:
+        that:
+          - ('v' ~ kubernetes_version) is match(kubernetes_minor ~ '\.')
+          - kubernetes_apt_version is match(kubernetes_version ~ '-')
+        fail_msg: >-
+          kubernetes_version {{ kubernetes_version }} is not a patch of {{ kubernetes_minor }}, or
+          kubernetes_apt_version {{ kubernetes_apt_version }} does not match it. This playbook does
+          patch upgrades only.
+
+    - name: Every node is Ready before the first drain
+      ansible.builtin.command: >-
+        kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: upgrade_ready
+      failed_when: >-
+        upgrade_ready.stdout_lines | length != 3
+        or upgrade_ready.stdout_lines | reject('equalto', 'True') | list | length > 0
+      changed_when: false
+
+    - name: Count the Argo CD Applications, so each wait knows how many must come back
+      ansible.builtin.shell: kubectl -n argocd get applications --no-headers | wc -l
+      register: upgrade_app_count
+      changed_when: false
+
+    - name: Give the count to every node
+      ansible.builtin.set_fact:
+        expected_applications: "{{ upgrade_app_count.stdout | trim }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['nodes'] }}"
+
+- name: Upgrade the control plane on the first node
+  hosts: first_node
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    # The package first: a kubeadm of the old version refuses to apply a newer one.
+    - name: Upgrade kubeadm only
+      ansible.builtin.apt:
+        name: "kubeadm={{ kubernetes_apt_version }}"
+        state: present
+        update_cache: true
+        lock_timeout: 300
+        allow_change_held_packages: true
+
+    - name: Keep kubeadm held
+      ansible.builtin.dpkg_selections:
+        name: kubeadm
+        selection: hold
+
+    - name: Show what kubeadm is about to do
+      ansible.builtin.command: kubeadm upgrade plan v{{ kubernetes_version }}
+      register: upgrade_plan
+      changed_when: false
+
+    - name: Print the plan
+      ansible.builtin.debug:
+        var: upgrade_plan.stdout_lines
+
+    - name: Upgrade the control plane and the cluster configuration
+      # API server, controller manager, scheduler and etcd on this node, plus the kubeadm and kubelet
+      # ConfigMaps every other node reads in `kubeadm upgrade node`.
+      ansible.builtin.command: kubeadm upgrade apply -y v{{ kubernetes_version }}
+      changed_when: true
+
+- name: Replace the kubelet on the first node
+  hosts: first_node
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    node_name: "{{ inventory_hostname }}"
+  tasks:
+    - name: Drain, upgrade, restart, uncordon, wait
+      ansible.builtin.include_tasks: tasks/upgrade-kubelet.yml
+
+- name: Upgrade the other control planes, one at a time
+  hosts: other_nodes
+  become: true
+  # One at a time: `kubeadm upgrade node` restarts this node's etcd member, and losing two of three at once
+  # loses quorum. The same reason site.yml joins them with serial: 1.
+  serial: 1
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    node_name: "{{ inventory_hostname }}"
+  tasks:
+    - name: Upgrade kubeadm only
+      ansible.builtin.apt:
+        name: "kubeadm={{ kubernetes_apt_version }}"
+        state: present
+        update_cache: true
+        lock_timeout: 300
+        allow_change_held_packages: true
+
+    - name: Keep kubeadm held
+      ansible.builtin.dpkg_selections:
+        name: kubeadm
+        selection: hold
+
+    - name: Upgrade this node's control-plane static pods to what the first node applied
+      ansible.builtin.command: kubeadm upgrade node
+      changed_when: true
+
+    - name: Drain, upgrade, restart, uncordon, wait
+      ansible.builtin.include_tasks: tasks/upgrade-kubelet.yml
