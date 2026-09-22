@@ -63,9 +63,10 @@ signed — and today nothing downstream objects. **The whole pipeline can be wal
 [§5 Verifying a signature: by key, or by log](concepts.md#5-verifying-a-signature-by-key-or-by-log)
 
 **The solution.** Export the public half of the KMS key — it is not a secret, so Git is the right place for
-it — and install Kyverno with a `verifyImages` policy that checks the app's images against it. `Audit` in dev,
-`Enforce` in prod. The key is static and the transparency log is off, because the pipeline deliberately signs
-without one.
+it — and install Kyverno with an `ImageValidatingPolicy` that checks the app's images against it. `Audit` in
+dev, `Deny` in prod. The key is static and the transparency log is off, because the pipeline deliberately
+signs without one. `ImageValidatingPolicy` rather than the older `verifyImages` rule, because cosign v3 stores
+each signature only as a sigstore bundle OCI referrer (guide step 13).
 
 **Desired outcome — criterion #13.** Deploy an unsigned image to prod and be refused. The evidence is the
 **admission error** itself, captured verbatim.
@@ -114,7 +115,7 @@ So every control here is paired with a drill that makes the bad thing happen on 
 | Control | The bad thing | What closes the criterion |
 |---|---|---|
 | etcd snapshots to S3 | A namespace is deleted | **RTO** — time to every Application `Healthy` |
-| Kyverno `verifyImages` | An unsigned image is deployed to prod | The **admission error** |
+| Kyverno `ImageValidatingPolicy` | An unsigned image is deployed to prod | The **admission error** |
 | `upgrade.yml`, one node at a time | Kubernetes changes version while traffic flows | The **failed-request count** |
 
 [§8 Why each control is paired with a drill](concepts.md#8-why-each-control-is-paired-with-a-drill) names the
@@ -154,10 +155,10 @@ moment there will ever be.
 | `infra/terraform/shared/storage.tf` | The etcd backup bucket, without `force_destroy` |
 | `infra/terraform/cluster/{main,iam,storage}.tf` | The bucket removed from this stack, looked up by name, and its ARN added back to the node policy |
 | `deploy/argocd/manifests/etcd-backup/` | Namespace and the snapshot CronJob |
-| `deploy/argocd/manifests/kyverno-policies/` | The `verifyImages` policy and the public key |
+| `deploy/argocd/manifests/kyverno-policies/` | The two `ImageValidatingPolicy` objects (dev, prod) and the public key |
 | `deploy/argocd/apps/` | Three new Applications: `etcd-backup`, `kyverno`, `kyverno-policies` |
-| `deploy/argocd/values/kyverno.yaml` | Chart values, including two admission-controller replicas |
-| `infra/ansible/upgrade.yml` | The rolling upgrade playbook |
+| `deploy/argocd/values/kyverno.yaml` | Chart values, including two admission-controller replicas and their disruption budget |
+| `infra/ansible/upgrade.yml`, `infra/ansible/tasks/upgrade-kubelet.yml` | The rolling upgrade playbook and the per-node steps it repeats |
 | `infra/ansible/inventory/group_vars/all.yml` | Two version pins |
 
 Nothing in the app's chart changes, and no existing Application is touched.

@@ -170,7 +170,9 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
 - **Step 13b, second Audit run: pass.** With `ctlog.url` set, a new web pod in each namespace, reports read
   60 s later: `medical-rag-775945bd44-msf6d` (dev), `medical-rag-8654f9c58f-kkzqs` and
   `medical-rag-8654f9c58f-799qn` (prod), each `pass | success`, and no `image verification failed` line in the
-  admission controller's log since the pods were deleted. The completed `index-build` pods keep their first-run
+  admission controller's log since the pods were deleted. The log does repeat
+  `Could not save cache … open /.ecr/.config.json.tmp…: no such file or directory` at `info`: the ECR
+  credential helper cannot write its cache, and verification works regardless. The completed `index-build` pods keep their first-run
   `fail` rows until the next background scan. The log at this level shows no HTTP call to Sigstore, which
   does not show there is none; the question stays under "Still to check".
 - **Step 14, the good path first.** `cosign verify --key awskms:///alias/medical-rag-cosign --insecure-ignore-tlog`
@@ -195,7 +197,7 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
 
 **The distinction this phase has to hold.** A policy that allows everything and a policy that matches nothing
 look identical from the outside: no denials either way. The Audit step exists to tell them apart before
-`Enforce` is switched on.
+`Deny` is switched on.
 
 ---
 
@@ -215,6 +217,11 @@ look identical from the outside: no denials either way. The Audit step exists to
   one installed: there is no patch to move to**, so criterion #14 is **not measured** on this cluster.
 - **Step 16.** Rancher chart `2.15.1`, `kubeVersion: < 1.37.0-0`. The gate would pass for any 1.36 patch; it
   had no target to judge.
+- **Step 17.** `infra/ansible/upgrade.yml` plus `tasks/upgrade-kubelet.yml`. `--syntax-check` passed.
+  `--list-hosts --list-tasks`: four plays — a check play the guide does not have (target inside the pinned
+  minor, all three nodes Ready, the Application count), `kubeadm upgrade apply` on node 1, node 1's kubelet,
+  then `medical-rag-node-2` and `-3` with `serial: 1`. The first three list `medical-rag-node-1` alone. Not
+  run: with nothing newer than 1.36.4 it would drain all three nodes to arrive where they are.
 
 **If the count is not zero**, line each failure's timestamp up against the drains. Two replicas with
 `minAvailable: 1` spread across nodes should give zero; a non-zero count means the spread or the budget is not

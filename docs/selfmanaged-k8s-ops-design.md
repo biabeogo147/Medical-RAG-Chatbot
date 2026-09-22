@@ -371,7 +371,11 @@ Images are referenced **by digest** in values as `tag@sha256:...`, so what was s
   3. Verify the namespace is back.
   4. **Record the RTO** from the start of restore to all Argo CD apps Healthy.
 - **Kyverno:**
-  - `verifyImages` for `*.dkr.ecr.*/medical-rag*` with the KMS public key. Mode `Enforce` in prod and `Audit` in dev.
+  - An `ImageValidatingPolicy` per environment for `*.dkr.ecr.*.amazonaws.com/medical-rag:*` and
+    `…/medical-rag@*`, with the KMS public key. `Deny` in prod and `Audit` in dev. Not `medical-rag*`: that
+    also matches `medical-rag-ci`, the unsigned tools image that Jenkins build pods and the etcd CronJob run,
+    and would stop them the day a policy covers their namespaces.
+    (Corrected in the drills phase; see `docs/drills/guide.md` step 13.)
   - Baseline Pod Security policies.
   - Demo: deploying an unsigned image to prod is rejected, with the admission error captured as evidence.
 - **Upgrade drill:** after the §4.2.1 gate passes, run `ansible-playbook upgrade.yml` one node at a

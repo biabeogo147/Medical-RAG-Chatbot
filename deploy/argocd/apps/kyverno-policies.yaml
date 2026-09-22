@@ -9,8 +9,9 @@ metadata:
     # After platform-secrets, before the app at waves 1 and 2, so prod's pods are admitted under the policy
     # from the first one.
     argocd.argoproj.io/sync-wave: "0"
-    # From the start, not after the fact: the API server fills in defaults on these objects, and a
-    # client-side diff would read that as drift and hold `root` at wave 0 (drills evidence, step 13a).
+    # From the start, not after the fact. A precaution: the kyverno CRDs read OutOfSync on the API server's
+    # defaults (drills evidence, step 13a), these objects carry schema defaults too, and a client-side diff
+    # that read them as drift would hold `root` at wave 0.
     argocd.argoproj.io/compare-options: ServerSideDiff=true
   labels:
     medical-rag/report-failed-sync: "true"

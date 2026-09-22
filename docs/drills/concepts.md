@@ -9,7 +9,7 @@ The phase builds three controls and proves each one by making the bad thing happ
 | Control | The bad thing | What the drill measures |
 |---|---|---|
 | etcd snapshots to S3 | A namespace is deleted | **RTO** — how long until every Application is `Healthy` again |
-| Kyverno `verifyImages` | An unsigned image is deployed to prod | The **admission error** the API server returns |
+| Kyverno `ImageValidatingPolicy` | An unsigned image is deployed to prod | The **admission error** the API server returns |
 | `upgrade.yml`, one node at a time | Kubernetes changes version while traffic flows | The **number of failed requests** |
 
 That pairing is the point. The Jenkins phase ended with five checks that had passed while the thing they
@@ -158,14 +158,21 @@ creates a signing config that names no services at all.
 transparency-log verification turned off, because there is no log entry to find. Two shapes exist for getting
 that key to the cluster:
 
-- a PEM checked into Git and read by the policy — no AWS call at admission time, and the key is public, so
+- a PEM checked into Git and read by the policy — no KMS call at admission time, and the key is public, so
   Git is the right place for it;
 - a `kms:` attestor where Kyverno itself calls `kms:GetPublicKey` — which would need an IAM grant that **no
   identity in this cluster currently has**, because the Jenkins phase removed KMS from the node role
   entirely.
 
-This phase takes the first. It is fewer moving parts and it keeps admission working even if AWS is
-unreachable.
+This phase takes the first. It is fewer moving parts, and it needs no KMS grant for anything in the cluster.
+It does not make admission independent of AWS: the signature itself lives in ECR, next to the image, and
+Kyverno fetches it on every admission with the node role.
+
+**Where the signature lives.** cosign v2 wrote a signature as an extra tag, `sha256-<digest>.sig`. cosign v3,
+which the pipeline runs, writes a **sigstore bundle** and attaches it to the image as an **OCI referrer** — an
+artifact that points at the image's digest, found through the registry's referrers API rather than by tag.
+No tag is written. A verifier that only knows the tag form finds no signature and reports every signed
+image as unsigned, which is why the policy here is Kyverno's newer `ImageValidatingPolicy`.
 
 ---
 
@@ -207,6 +214,10 @@ This is what makes a rolling upgrade safe, and it is why the drill is worth runn
 Deployment has two replicas spread across nodes and a PDB allowing one disruption. If the spread or the PDB
 were wrong, a drain would take both replicas at once and the `curl` loop would count the failures. That is the
 measurement.
+
+**Eviction is also the only path that consults a PDB.** `kubectl delete pod` is a plain deletion: the budget
+is never asked, and a label selector deletes every matching pod at once. "Delete a pod to see it come back"
+is safe only for one pod, named.
 
 **`uncordon`** puts the node back in the pool. Forgetting it is the classic way to end an upgrade with a
 healthy cluster that is quietly running on two nodes.
