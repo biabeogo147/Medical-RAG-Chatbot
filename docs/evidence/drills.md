@@ -167,6 +167,12 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
   therefore worked, and verification never started; this is not kyverno/kyverno#17363. Kyverno 1.18.2
   requires `ctlog.url` even with `insecureIgnoreTlog: true`, and the policy had left it out. Fix: `url:
   https://rekor.sigstore.dev` on both policies, as in the Kyverno documentation and the issue's working policy.
+- **Step 13b, second Audit run: pass.** With `ctlog.url` set, a new web pod in each namespace, reports read
+  60 s later: `medical-rag-775945bd44-msf6d` (dev), `medical-rag-8654f9c58f-kkzqs` and
+  `medical-rag-8654f9c58f-799qn` (prod), each `pass | success`, and no `image verification failed` line in the
+  admission controller's log since the pods were deleted. The completed `index-build` pods keep their first-run
+  `fail` rows until the next background scan. The log at this level shows no HTTP call to Sigstore, which
+  does not show there is none; the question stays under "Still to check".
 
 **The distinction this phase has to hold.** A policy that allows everything and a policy that matches nothing
 look identical from the outside: no denials either way. The Audit step exists to tell them apart before

@@ -5,8 +5,8 @@
 # repository), and that is the case ImageValidatingPolicy verifies (kyverno/kyverno#17363). Measured in the
 # drills evidence, step 13.
 #
-# One policy per environment, because validationActions is per policy: both start on Audit; step 14 moves
-# prod to Deny and leaves dev on Audit. The two are identical apart from the name, the namespace and the
+# One policy per environment, because validationActions is per policy: dev reports (Audit), prod refuses
+# (Deny, since step 14). The two are identical apart from the name, the namespace and the
 # failurePolicy — keep them that way.
 #
 # matchImageReferences: the app's repository only, by tag or by bare digest, in any account and region.
@@ -76,7 +76,8 @@ kind: ImageValidatingPolicy
 metadata:
   name: verify-images-prod
 spec:
-  validationActions: [Audit]
+  # Deny since drills guide step 14; dev stays on Audit.
+  validationActions: [Deny]
   # Fail closed: once prod denies, a Kyverno outage must not let an unchecked image in.
   failurePolicy: Fail
   webhookConfiguration:
