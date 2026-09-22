@@ -339,7 +339,7 @@ Vì vậy bài drill HA stop rồi start node 2, và node tự về `Ready` mà 
 On-premises, phần cứng đã mua thì tắt đi cũng không lấy lại tiền. Đổi lại, mọi thứ phải dựng lại được nhanh và không có bước tay, và
 những gì cần giữ phải tách sang stack riêng."
 
-*Nếu được hỏi thêm:* thời gian dựng lại: `[điền: make up]`. Credit Free plan đủ khoảng 240 giờ cluster theo evidence, chưa trừ phần chi
+*Nếu được hỏi thêm:* thời gian dựng lại cả nền tảng, tới 17 Application khoẻ: 21 phút 47 giây (phase drills). Credit Free plan đủ khoảng 240 giờ cluster theo evidence, chưa trừ phần chi
 phí luôn giữ và workstation (Terraform A5.1).
 
 **A5.2** **Ý chính:** "Budget chỉ **báo**, không chặn: 100 USD mỗi tháng, lọc theo tag `project`, gửi email ở 50% và 100% chi phí thực.
@@ -395,13 +395,15 @@ quorum etcd; nhưng hợp với một nhóm worker riêng cho build Jenkins."
 
 ### A6. Độ tin cậy, dữ liệu và tổ chức
 
-**A6.1** **Ý chính:** "Hạ tầng có RTO là thời gian dựng lại từ code, `[điền: make up]`. Với dữ liệu trong cluster, chiến lược là backup
-và restore: snapshot etcd 6 giờ một lần, nên RPO tối đa 6 giờ, RTO `[điền: drill]`. Điểm yếu tôi tự nói: bucket backup nằm trong stack
-cluster và bị xoá cùng cluster, và role của node xoá được object trong đó."
+**A6.1** **Ý chính:** "Hạ tầng có RTO là thời gian dựng lại từ code: 21 phút 47 giây tới khi mọi Application khoẻ. Với dữ liệu trong
+cluster, chiến lược là backup và restore: snapshot etcd 6 giờ một lần, nên RPO tối đa 6 giờ theo lịch, và drill khôi phục đo được RTO 7 phút 02 giây (lần chạy được chứng
+minh là dưới một lịch tạm 15 phút; RPO của chính lần drill là 6 phút 01 giây).
+Điểm yếu tôi tự nói: role của node xoá được object trong bucket backup, và bucket không bật versioning."
 
 *Nếu được hỏi thêm:*
 
-- **Sửa:** chuyển bucket backup sang stack shared, bật versioning và Object Lock, và replicate sang region khác.
+- **Sửa:** bucket backup đã sang stack shared (phase drills). Còn lại: bật versioning và Object Lock, bỏ `s3:DeleteObject`
+  khỏi role của node (hoặc cho CronJob một role IRSA riêng chỉ có `PutObject`), và replicate sang region khác.
 - **Các mức cao hơn trên AWS:** pilot light (dữ liệu replicate sẵn, hạ tầng dựng khi cần; cần replicate cả ECR, S3 và KMS key đa
   region), warm standby, multi-site.
 - **On-premises:** backup ra site khác hoặc tape theo quy tắc 3-2-1, và một site DR lạnh hoặc ấm.
@@ -452,7 +454,7 @@ A4.4). Chi tiết chuyện Free plan: Terraform A7.1.
 node dùng chung cho mọi pod, workstation có quyền admin, Secret trong etcd chưa mã hoá. Cost optimization và operational excellence là phần
 mạnh: xoá cluster khi không dùng, mọi thứ là code, có drill."
 
-*Nếu được hỏi thêm:* sửa reliability trước: NAT mỗi AZ hoặc theo region, bucket backup ở stack shared có Object Lock (A5.5, A6.1). Nói một
+*Nếu được hỏi thêm:* sửa reliability trước: NAT mỗi AZ hoặc theo region, thêm versioning và Object Lock cho bucket backup (đã ở shared) (A5.5, A6.1). Nói một
 trụ cột yếu nhất kèm cách sửa là đủ, không cần đọc cả sáu.
 
 ---
@@ -639,8 +641,8 @@ một role mạnh hơn quyền của chính họ.
 liệu của etcd (`/var/lib/etcd`) biến mất theo. Đó là lý do:
 
 - node control plane bị thay phải được gỡ khỏi etcd trước (Terraform B7.6)
-- snapshot etcd được đẩy lên S3; nhưng bucket `etcd-backups` thuộc stack cluster, có `force_destroy = true` và giữ object 14
-  ngày, nên chỉ bảo vệ khi mất node, không bảo vệ qua `make infra-destroy` (A6.1)
+- snapshot etcd được đẩy lên S3, vào bucket `etcd-backups` ở stack `shared` (từ phase drills), giữ object 14 ngày, và theo cấu hình thì
+  sống qua `make infra-destroy` vì bucket không nằm trong state của cluster; chưa kiểm lại object sau một lần teardown. Trước đó bucket nằm trong stack cluster với `force_destroy = true` và mất theo mỗi lần teardown (A6.1)
 - sau teardown, cluster được dựng lại chứ không khôi phục
 
 Volume của PVC thì ngược lại: không bị xoá cùng instance (Terraform B3.7).

@@ -14,26 +14,18 @@ Con số nào chưa đo được viết dưới dạng `[điền: …]`. Không 
 
 | Chỗ cần điền | Lấy từ | Dùng ở |
 |---|---|---|
-| Thời gian `make infra` bản 84 resource, plan sau đó `No changes` | `evidence/terraform.md` | A1.1, A4.2, A7.4 |
-| Thời gian `make cluster` trên node mới, PLAY RECAP lần hai `changed=0` | `evidence/ansible.md` | A1.1, A7.4 |
-| Thời gian `make up` từ đầu tới app chạy | Evidence phase GitOps | A4.2 |
 | Thời gian thực tế làm project | Lịch sử commit | A1.6 |
-| Thời gian build index trên cluster, lần sync thứ hai có bỏ qua không | Log của Job | A3.2, B2.2 |
-| Thời gian pod app Ready trên cluster | Evidence phase app | A3.1 |
 | Kiểm tra Rancher qua VPN: không có rule 443 public, timeout khi tắt VPN, chuỗi certificate, 308 từ public NLB | Evidence Rancher | A4.5 |
 | NetworkPolicy chặn metadata: manifest và bằng chứng test | Evidence phase GitOps | A6.3, A6.4, B1.6, B5.3 |
-| Thời gian từ commit tới dev chạy bản mới | Evidence pipeline | A5.1, A7.4 |
-| Số lỗ hổng CRITICAL / HIGH trước và sau khi làm gọn image | Báo cáo Trivy | A6.2 |
-| Lỗi Kyverno khi deploy image chưa ký lên prod | Evidence Kyverno | A6.2, A7.4 |
-| RTO khi khôi phục etcd | Evidence restore drill | A7.2, A7.4 |
-| Số request lỗi trong lúc nâng cấp Kubernetes, phiên bản đích | Evidence upgrade drill | A7.3, A7.4 |
 | Các `[điền]` của Phần B | manifest, values | B2.4, B2.10, B4.1–B4.3, B5.1–B5.3, B6.1, B6.2, B6.4–B6.6 |
 
 **Cần xác nhận khi xong dự án:**
 
-- Các hạng mục P1 (Kyverno, khôi phục etcd, nâng cấp Kubernetes) và việc bot tự mở PR prod đã làm thật chưa.
-  Thiết kế cho phép cắt chúng nếu hết thời gian (A10.3); cắt cái nào thì sửa mọi câu nhắc tới nó.
-- Script boot chờ credential cho SSM agent (A10.1, chuyện 3) đã có trong repo chưa.
+- **Đã xác nhận (phase drills, 22/09):** Kyverno chặn image chưa ký ở prod; khôi phục etcd đã diễn tập (RTO 7 m 02 s);
+  **nâng cấp Kubernetes không đo được** vì 1.36.4 đã là bản vá mới nhất của 1.36, nên mọi câu về nâng cấp phải nói
+  "playbook có, chưa chạy". Bot mở PR prod đã chạy từ phase Jenkins. Chi tiết: [`../drills/answers.md`](../drills/answers.md).
+- **Script boot chờ credential cho SSM agent chưa có.** Thay vào đó `infra/scripts/timed-rebuild.sh` phát hiện node mà SSM
+  chưa từng thấy và reboot nó một lần (A10.1, chuyện dự phòng 2).
 - Các alert rule ở A7.5 đã cấu hình chưa, và có receiver không.
 - `max_retries=1` của client Gemini có nghĩa là tổng số lần gọi hay số lần thử lại (A3.4).
 - Phần B dựa trên thiết kế và code hiện có; chỗ phụ thuộc file chưa viết (`deploy/`, `Jenkinsfile` mới) phải kiểm
@@ -47,16 +39,18 @@ Con số nào chưa đo được viết dưới dạng `[điền: …]`. Không 
 
 **A1.1** **Ý chính:** "Đây là chatbot hỏi đáp y khoa dùng RAG. Phần AI tôi giữ đơn giản; trọng tâm là vận hành nó
 như một công ty tự chạy Kubernetes: hạ tầng bằng Terraform, cluster HA bằng Ansible, deploy theo GitOps, image được
-quét và ký, và có diễn tập backup, nâng cấp."
+quét và ký, và có diễn tập khôi phục etcd có đo thời gian."
 
 *Nếu được hỏi thêm*, kể theo ba lớp:
 
-- **Hạ tầng:** Terraform dựng mọi thứ trên AWS, chia ba stack theo vòng đời. Stack cluster dựng lại từ đầu trong
-  `[điền: thời gian make infra]`, và plan sau đó `[điền: No changes]`.
-- **Cluster:** Ansible biến ba máy EC2 thành cluster kubeadm có ba control plane ở ba AZ, không dùng SSH, trong
-  `[điền: thời gian make cluster trên node mới]`.
+- **Hạ tầng:** Terraform dựng mọi thứ trên AWS, chia ba stack theo vòng đời. Stack cluster (84 resource) dựng lại từ
+  đầu trong 3 phút 47 giây, và plan ngay sau đó `No changes`.
+- **Cluster:** Ansible biến ba máy EC2 thành cluster kubeadm có ba control plane ở ba AZ, không dùng SSH: từ stack trống
+  tới ba node Ready trong 9 phút 57 giây, chạy lần hai `changed=0`.
 - **Deploy:** Jenkins test, build, quét và ký image; Argo CD sync từ Git vào cluster; dev tự cập nhật, prod đổi qua
   pull request; Kyverno chặn image chưa ký của app trên prod.
+- **Chứng minh vận hành:** cả nền tảng, 17 Application, dựng lại từ stack cluster trống (stack `shared` được giữ) trong
+  21 phút 47 giây, không cần ai gõ lệnh; khôi phục etcd có RTO 7 phút 02 giây.
 
 **A1.2** **Ý chính:** "Người dùng hỏi một câu y khoa. App tìm ba đoạn liên quan nhất trong một tập bách khoa y khoa,
 rồi để Gemini trả lời ngắn chỉ dựa trên ba đoạn đó; tài liệu không có thì trả lời không biết."
@@ -76,11 +70,12 @@ chứng được. Tôi sửa app cho chạy được ở production, dựng hạ
 cung cấp image, và làm các bài diễn tập vận hành, mỗi bước đều có bằng chứng."
 
 *Nếu được hỏi thêm:* app có gunicorn, health check, metrics, index có version, retry và test; Terraform và Ansible;
-Jenkins và Argo CD; Trivy, SBOM, ký bằng KMS và Kyverno; backup, khôi phục etcd và nâng cấp Kubernetes từng node.
+Jenkins và Argo CD; Trivy, SBOM, ký bằng KMS và Kyverno; backup và khôi phục etcd. Playbook nâng cấp Kubernetes từng
+node đã viết nhưng chưa chạy, vì không có bản vá nào mới hơn để nâng (A7.3).
 
 **A1.4** **Ý chính:** "Tôi hướng tới vị trí DevOps, Platform hoặc SRE, nên muốn chứng minh bằng số liệu thật chứ
 không bằng lời: hạ tầng xoá đi dựng lại được, Git quyết định cái gì đang chạy, image được quét và ký, và cluster
-được backup, nâng cấp an toàn. Tôi có một project thứ hai trên EKS; hai project cố ý chia vai: project này tự vận
+được backup và khôi phục được, có số đo. Tôi có một project thứ hai trên EKS; hai project cố ý chia vai: project này tự vận
 hành control plane, project kia dùng managed và tập trung vào autoscaling, canary, observability."
 
 **A1.5** **Ý chính:** "Năm phase, đi từ dưới lên và chỉ tính là xong khi có bằng chứng: app, Terraform, Ansible,
@@ -88,7 +83,7 @@ GitOps cùng CI, rồi vận hành ngày 2. Không có hạ tầng thì không c
 deploy."
 
 *Nếu được hỏi thêm:* app được kiểm chứng bằng Docker ở local; GitOps gồm Argo CD, addon, Helm chart, Jenkins, dev và
-prod; vận hành ngày 2 gồm Kyverno, khôi phục etcd và nâng cấp Kubernetes.
+prod; vận hành ngày 2 gồm Kyverno, khôi phục etcd và playbook nâng cấp Kubernetes (viết xong, chưa đo được).
 
 **A1.6** **Ý chính:** "Tôi làm một mình, trong khoảng `[điền: thời gian thực tế]`, song song với project EKS."
 
@@ -162,8 +157,9 @@ lớp nào tìm ở công cụ đó, và xoá cluster không đụng tới image
 | Argo CD | Mọi thứ chạy trong cluster, sync từ Git | Không build image |
 | Jenkins | Test, build, quét, ký image, ghi version vào Git | Không có RBAC để deploy vào namespace app |
 
-**Giới hạn của ranh giới này:** Jenkins không `kubectl` được vào prod, nhưng agent của nó dùng chung quyền IAM của
-node (A6.4), và token GitHub của nó push thẳng được lên `main`, về kỹ thuật gồm cả values của prod (B5.2).
+**Giới hạn của ranh giới này:** Jenkins không `kubectl` được vào prod, và pod build dùng role IRSA riêng
+`medical-rag-ci` chứ không dùng quyền của node (B5.2); nhưng token GitHub của nó push thẳng được lên `main`, về kỹ
+thuật gồm cả values của prod (B5.2).
 
 **A2.4** **Ý chính:** "Mục tiêu là tự vận hành control plane: etcd HA, backup, certificate, nâng cấp. EKS làm hộ
 đúng những việc đó, nên dùng EKS thì không chứng minh được. Project thứ hai của tôi dùng EKS. Ở công ty tôi mặc định
@@ -172,7 +168,7 @@ chọn EKS."
 *Nếu được hỏi thêm*, những gì tôi từ bỏ:
 
 - nâng cấp tự động và SLA của AWS
-- IRSA, tức quyền IAM riêng cho từng pod, nên pod dùng chung quyền của node
+- IRSA có sẵn: tôi phải tự host OIDC issuer trên S3 và tự quản key ký token service account (`App A2`)
 - controller tự tạo load balancer, nên NLB phải tạo sẵn bằng Terraform
 - nhiều việc bảo trì hơn
 
@@ -196,7 +192,7 @@ nhật và chỉ ghi log khi image chưa ký; prod có hai replica, đổi versi
 | Replica | 1 | 2, trên hai node khác nhau, có PodDisruptionBudget |
 | Host | `dev.recruitai.io.vn` | `app.recruitai.io.vn` |
 | Cách đổi version | Jenkins commit thẳng | Pull request, người duyệt merge |
-| Kyverno | Audit | Enforce |
+| Kyverno | Audit | Deny |
 
 Hai môi trường chia nhau một NLB theo host, nên app không phải xử lý tiền tố URL
 (B1.5, chi tiết: `App A1.4`). Làm một mình thì người duyệt PR prod cũng là tôi; ở công ty cần branch protection và CODEOWNERS.
@@ -211,6 +207,8 @@ kubeconfig admin, không quét, không ký."
 
 *Nếu được hỏi thêm:* dựng lại index lúc khởi động còn khiến liveness probe có thể giết pod giữa chừng. Sau khi sửa,
 container khoẻ sau khoảng 6 giây ở local, và pod dev trên cluster Ready sau 10 giây (chi tiết: `App A3.1`).
+Resource đặt theo số đo của Prometheus chứ không đoán: app dùng khoảng 277 MiB, nên request 320 Mi và limit 640 Mi; ba
+pod app giữ 960 Mi thay vì 2.304 Mi (`App A4.5`).
 
 **A3.2** **Ý chính:** "Index là một artifact có version: build một lần, lưu trên S3, và pod tải đúng version ghi
 trong Git. Muốn quay về index cũ thì sửa một dòng trong Git."
@@ -320,10 +318,19 @@ còn lại."
 
 - **Chia theo vòng đời:** `bootstrap` (bucket state, workstation) và `shared` (image, index, KMS key, secret, DNS)
   được giữ; `cluster` (mạng, node, load balancer) xoá khi không dùng.
-- **Đã đo:** xoá rồi dựng lại stack cluster không có bước thủ công và plan sau đó sạch; bản 65 resource mất 1 phút 27
-  giây để xoá và 3 phút 19 giây để dựng; bản đủ 84 resource `[điền]`.
-- **Cả chuỗi:** `make up` mất `[điền]`. `make down` xoá các Application của Argo CD trước, rồi mới xoá stack cluster,
-  để volume không bị bỏ lại (B6.1).
+- **Đã đo:** xoá rồi dựng lại stack cluster không có bước thủ công và plan sau đó sạch; bản đủ 84 resource mất 2 phút
+  15 giây để xoá và 3 phút 47 giây để dựng.
+- **Cả chuỗi:** từ stack cluster trống tới cả 17 Application `Synced` và `Healthy` mất **21 phút 47 giây**, đo bằng
+  `infra/scripts/timed-rebuild.sh` chạy một lần không cần người (Terraform 3:46, SSM 0:07, Ansible 6:17, tunnel và bootstrap 0:57,
+  các wave của Argo CD 10:40). `make down` xoá các Application của Argo CD trước, rồi mới xoá stack cluster, để volume
+  không bị bỏ lại (B6.1).
+- **17 Application, 8 wave:** 16 file trong `deploy/argocd/apps` cộng `root`; 13 trong số đó là Helm chart, 3 là manifest
+  thường; wave từ `-3` tới `4`.
+- **Vì sao rebuild không tốn certificate:** ngày 18/09, health check chỉ đọc `Healthy` nên `root` thả mọi wave cùng lúc;
+  cert-manager chạy trước khi bản backup của certificate được khôi phục, và xin một certificate Let's Encrypt mới (giới
+  hạn 5 lần mỗi 7 ngày). Tôi viết lại health check bằng Lua: một Application con chỉ được tính là khoẻ khi vừa
+  `Healthy` vừa `Synced`, và bị tính là lỗi nếu không có resource nào. Từ đó, ba lần dựng lại đều không có
+  CertificateRequest nào (`GitOps A3.3`, `GitOps A5.5`).
 
 **A4.3** **Ý chính:** "Qua AWS Systems Manager Session Manager. Không máy nào mở cổng SSH, không có key pair, không có
 bastion. Ansible chạy qua SSM, còn kubectl đi qua một SSM port-forward tới load balancer nội bộ."
@@ -411,14 +418,19 @@ chạy. Image của app chưa ký thì không vào được prod."
 
 *Nếu được hỏi thêm:*
 
-- **Quét:** Trivy chặn khi có CRITICAL đã có bản sửa. Sau khi làm gọn image: `[điền: số CRITICAL / HIGH trước và
-  sau]`.
-- **Ký:** private key không rời KMS; chỉ role có `kms:Sign` mới ký được.
-- **Kiểm tra:** Kyverno dùng public key; prod chặn, dev chỉ ghi log. Deploy thử image chưa ký lên prod bị từ chối với
-  lỗi `[điền: thông báo của Kyverno]`.
-- **Giới hạn cần nói rõ:** chữ ký chứng minh "được ký bằng key này", không chứng minh "đã qua pipeline của `main`",
-  vì mọi thứ dùng được role của node đều gọi được `kms:Sign`. Kyverno cũng chỉ kiểm tra image của app, không kiểm tra
-  image của addon (B4.7).
+- **Quét:** Trivy chặn khi có CRITICAL đã có bản sửa. Đổi base sang Debian 13 hạ CRITICAL từ 5 xuống 0, HIGH từ 55
+  xuống 44, tổng số finding giảm 41% (269 → 158). Cổng đó được chứng minh biết chặn bằng một build **positive control**:
+  trên một branch tạm, cổng được nới ra đếm finding có bản sửa ở mọi mức, và build 2 đỏ với
+  `Fixable, any severity: 6` (`Jenkins A5.2`).
+- **Ký:** private key không rời KMS; chỉ role `medical-rag-ci` của pod build có `kms:Sign`. Node role đã bị gỡ quyền đó
+  ở phase Jenkins, và một pod thường mượn role của node bị KMS từ chối (`Jenkins A3.5`).
+- **Kiểm tra:** Kyverno `ImageValidatingPolicy` dùng public key; prod `Deny`, dev `Audit`. Deploy thử image chưa ký
+  lên prod bị từ chối nguyên văn:
+  `admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-verify-images-prod" denied the request: Policy verify-images-prod failed: the image is not signed with the medical-rag cosign key`.
+  Pod mới dùng image đã ký vẫn được tạo ngay sau đó.
+- **Giới hạn cần nói rõ:** chữ ký chứng minh "được ký bằng key này", không chứng minh "đã qua pipeline của `main`":
+  ai chiếm được pod build là ký được. Kyverno cũng chỉ kiểm tra image của app trong hai namespace `medical-rag-dev` và
+  `medical-rag-prod`, không kiểm tra image của addon (B4.2).
 
 **A6.3** **Ý chính:** "Chỉ hai cổng mở ra internet: HTTP 80 của app và UDP 51820 của WireGuard. Không có SSH, node
 không có public IP, Kubernetes API và Rancher chỉ có trên load balancer nội bộ."
@@ -433,15 +445,17 @@ không có public IP, Kubernetes API và Rancher chỉ có trên load balancer n
 - **Pod:** non-root, filesystem chỉ đọc; NetworkPolicy chỉ cho traffic vào namespace app từ ingress-nginx và
   monitoring.
 
-**A6.4** **Ý chính:** "Nặng nhất là mọi pod tới được metadata service dùng chung quyền IAM của node, vì cluster tự quản
-lý không có IRSA; hiện tôi giảm bằng NetworkPolicy, cách sửa dài hạn là tự dựng pod identity. Thứ hai là Secret trong
-etcd chưa được mã hoá at-rest, mà snapshot etcd lại nằm trên S3 và role của node đọc được. Các điểm còn lại đều có cách
-sửa cụ thể."
+**A6.4** **Ý chính:** "Nặng nhất là các pod nền tảng vẫn dùng chung quyền IAM của node qua metadata service. Pod app,
+Job build index và pod build của Jenkins đã có role riêng qua IRSA tôi tự dựng, nhưng External Secrets, cert-manager,
+EBS CSI, CronJob snapshot etcd và cả Kyverno (nó kéo chữ ký từ ECR bằng role của node) thì chưa. Thứ hai là Secret trong etcd chưa được mã hoá at-rest, mà
+snapshot etcd lại nằm trên S3. Các điểm còn lại đều có cách sửa cụ thể."
 
 *Nếu được hỏi thêm:*
 
-1. **Quyền IAM dùng chung:** pod lấy được credential có thể ký image và đọc secret; hai managed policy còn cho quyền
-   rộng toàn account.
+1. **Quyền IAM dùng chung:** pod lấy được credential của node đọc được tám secret, ghi được bản ghi TXT của ACME, đọc,
+   ghi và xoá được object trong bucket `etcd-backups` và bucket chuyển file của Ansible, cộng managed policy
+   `AmazonEBSCSIDriverPolicy` rộng toàn account. Quyền ký image và push ECR đã bị gỡ khỏi node role (`Jenkins A3.5`).
+   Cách sửa là cho từng addon một role IRSA riêng.
 2. **Secret trong etcd và snapshot:** cần `EncryptionConfiguration` cho API server, và mã hoá bucket backup bằng KMS
    key riêng mà role của node không decrypt được (B5.4).
 3. **File pickle của index:** app nạp `index.pkl` với `allow_dangerous_deserialization=True`, nên ai ghi được vào bucket
@@ -471,43 +485,54 @@ kube-prometheus-stack thu metric của app và cluster, Grafana hiển thị."
 - gunicorn có 2 worker; app dùng multiprocess mode của thư viện Prometheus để cộng dồn (B2.7). Prometheus giữ dữ liệu
   24 giờ; Grafana chỉ vào qua port-forward.
 
-**A7.2** **Ý chính:** "Snapshot etcd 6 giờ một lần lên S3, kiểm tra hợp lệ trước khi upload, và tôi đã diễn tập khôi
-phục có đo thời gian: RTO là `[điền: RTO]`, RPO tối đa 6 giờ."
+**A7.2** **Ý chính:** "Snapshot etcd 6 giờ một lần lên S3, kiểm tra bằng `etcdutl snapshot status` trước khi upload,
+và tôi đã diễn tập khôi phục có đo thời gian: xoá một namespace, khôi phục cả ba member, RTO 7 phút 02 giây tới khi mọi
+Application khoẻ, tính cả thời gian gõ lệnh. RPO tối đa 6 giờ theo lịch; lần diễn tập đó mất 6 phút dữ liệu."
 
 *Nếu được hỏi thêm:*
 
-- **Diễn tập:** xoá một namespace thử *không* do Argo CD quản lý (nếu không Argo CD tự tạo lại, chẳng chứng minh được
-  gì), khôi phục snapshot trên cả ba member, xác nhận namespace quay lại, ghi RTO tới khi mọi Application khoẻ.
-- **Khôi phục trên cả ba member** nghĩa là control plane ngừng hoàn toàn trong lúc đó; mỗi node khôi phục từ cùng
-  snapshot với danh sách member mới `[điền: lệnh etcdutl thật]`.
+- **Diễn tập:** một namespace thử *không* do Argo CD quản lý (nếu không Argo CD tự tạo lại, chẳng chứng minh được gì),
+  có một ConfigMap ghi giờ tạo, được tạo **trước** snapshot. Sau khi khôi phục, ConfigMap quay lại đúng giá trị đó,
+  nên dữ liệu thật sự trở về, không chỉ cluster sống lại.
+- **Khôi phục trên cả ba member** nghĩa là control plane ngừng hoàn toàn trong lúc đó; mỗi node chạy
+  `etcdutl snapshot restore` từ cùng một file với cùng `--initial-cluster` và `--initial-cluster-token`, kèm
+  `--bump-revision` và `--mark-compacted`. Cả ba ra cùng một cluster-id.
+- **Cái bẫy khi đo RTO:** snapshot khôi phục cả *status* cũ của lúc chụp, khi mọi Application đang `Healthy`, nên một
+  vòng chờ chỉ đọc health có thể dừng ngay khi API trả lời. Tôi chỉ bấm giờ dừng khi `reconciledAt` của từng
+  Application và Lease của từng node mới hơn lúc bắt đầu; lúc API trả lời lần đầu, 2 trong 17 Application còn chưa
+  reconcile.
+- Chi tiết từng bước: [`../drills/answers.md`](../drills/answers.md).
 - **Giới hạn:** chỉ backup etcd, không backup `/etc/kubernetes/pki`. Mất cluster thì dựng lại từ code và Git, không
   khôi phục từ snapshot.
 
-**A7.3** **Ý chính:** "Nâng từng node một: drain, nâng kubeadm và kubelet, đưa node trở lại, chờ node Ready và Argo CD
-khoẻ rồi mới sang node tiếp. Trước khi nâng có một cổng kiểm tra: chart Rancher phải chấp nhận phiên bản đích. Lần nâng
-lên `[điền: phiên bản đích]` có `[điền]` request lỗi."
+**A7.3** **Ý chính:** "Playbook nâng từng node một đã viết: drain, nâng kubeadm và kubelet, đưa node trở lại, chờ node
+Ready và mọi Application khoẻ rồi mới sang node tiếp. Nhưng tôi chưa chạy nó, và nói thật lý do: cluster đang ở 1.36.4,
+cũng là bản vá mới nhất của 1.36, nên không có gì để nâng. Lên 1.37 thì bị chặn bởi Rancher."
 
 *Nếu được hỏi thêm:*
 
-- **Cổng kiểm tra:** chart Rancher 2.15.1 chỉ chấp nhận Kubernetes dưới 1.37; phải nâng Rancher trước. Không đạt thì
-  chỉ nâng bản patch hoặc giữ nguyên `1.36.4`.
-- **Playbook:** `upgrade.yml` với `serial: 1`.
-- **Đo:** `curl` chạy liên tục trong lúc nâng và đếm request lỗi.
+- **Cổng kiểm tra:** chart Rancher 2.15.1 chỉ chấp nhận Kubernetes dưới 1.37; phải nâng Rancher trước.
+- **Playbook:** `upgrade.yml`, bốn play: kiểm tra trước khi đụng node (bản đích phải là patch của cùng minor, ba node
+  Ready, đếm số Application), `kubeadm upgrade apply` ở node 1, kubelet của node 1, rồi hai node còn lại với
+  `serial: 1`. Đã qua `--syntax-check` và `--list-hosts`.
+- **Cách đo được nếu cần:** dựng cluster ở 1.36.3 rồi nâng lên 1.36.4 trong lúc một vòng `curl` đếm request lỗi.
 
-> **Mẹo:** nếu cổng kiểm tra không đạt, đừng điền 1.37; nói rõ vì sao dừng lại ở bản patch.
+> **Mẹo:** đừng nói "đã nâng cấp không downtime". Nói "đã viết và kiểm cú pháp; chưa có bản đích để chạy".
 
 **A7.4** **Ý chính:** "Mỗi phase chỉ tính là xong khi có lệnh kiểm tra và kết quả ghi vào `docs/evidence`. Ba ví dụ:
-dựng lại hạ tầng cluster trong `[điền]` và plan sau đó sạch; tắt một node mà API vẫn trả lời; image chưa ký bị từ chối
+dựng lại cả nền tảng từ stack cluster trống trong 21 phút 47 giây; khôi phục etcd với RTO 7 phút 02 giây; image chưa ký bị từ chối
 trên prod. Anh chị muốn xem phần nào thì tôi mở evidence."
 
 *Nếu được hỏi thêm:*
 
 - **App:** 22 test pass; image 926 → 483 MB; build index 150.7 giây ở local, lần hai dưới 1 giây.
-- **Terraform:** bootstrap 18, shared 38, cluster 91 resource; request HTTP tới bucket state bị từ chối; mô phỏng IAM
+- **Terraform:** bootstrap 18, shared 38, cluster 84 resource (86 sau phase drills); request HTTP tới bucket state bị từ chối; mô phỏng IAM
   đúng như thiết kế.
-- **Ansible:** `make cluster` trên node mới `[điền]`; chạy lần hai `[điền: changed=0]`; tắt node 2, API vẫn trả lời.
-- **GitOps và CI:** mọi Application `Synced` và `Healthy`; commit tới dev `[điền]`; `cosign verify` thành công.
-- **Vận hành ngày 2:** Kyverno `[điền]`; RTO `[điền]`; nâng cấp `[điền]`.
+- **Ansible:** `make cluster` trên node mới 6 phút 10 giây; chạy lần hai `changed=0`; tắt node 2, API vẫn trả lời.
+- **GitOps và CI:** 17 Application `Synced` và `Healthy`; commit tới dev chạy 19 phút 08 giây (con số mềm: có một lần
+  refresh bằng tay); `cosign verify` nhận image đã ký và từ chối image chưa ký; cổng Trivy đỏ ở positive control.
+- **Vận hành ngày 2:** Kyverno từ chối image chưa ký với lỗi admission nguyên văn; RTO 7 m 02 s; nâng cấp **không đo
+  được** (A7.3).
 
 **A7.5** **Ý chính:** "Nói thật: lab không chạy 24/7 nên không có on-call. Alertmanager trong kube-prometheus-stack có
 `[điền: số]` rule cho lỗi 5xx, pod không Ready, etcd mất member và CPU node. Ở công ty tôi sẽ thêm một probe chạy từ
@@ -592,8 +617,9 @@ chính pod, tức key Gemini và Hugging Face."
 
 *Nếu được hỏi thêm:*
 
-- **Nếu leo sang được một pod có quyền IAM**, như Jenkins agent: ký image, đọc bốn secret, đọc snapshot etcd chứa mọi
-  Kubernetes Secret (B5.4).
+- **Nếu leo sang được một pod có quyền IAM:** pod build của Jenkins (role `medical-rag-ci`) ký được image và push ECR,
+  nhưng không đọc được secret nào hay bucket `etcd-backups` (B5.2). Pod dùng role của node, như External Secrets, đọc
+  được tám secret và đọc, ghi, xoá được snapshot etcd chứa mọi Kubernetes Secret (B5.4).
 - **Chiều ngược lại:** ai ghi được vào bucket artifacts thì chạy được code trong pod app qua file pickle (A6.4).
 - **Hạn chế thiệt hại:** container non-root, filesystem chỉ đọc, drop mọi capability.
 - **Cách siết:** egress chỉ tới đúng domain cần thiết qua proxy. IRSA tự host đã làm cho app (`App A2`); pod nền tảng
@@ -655,8 +681,10 @@ build còn 0.41 giây."
 - **Chuyện dự phòng 2, một node không vào được Session Manager:** node 1 và 3 bình thường, node 2 báo
   `TargetNotConnected`. Máy vẫn chạy, nên tôi tìm bằng chứng trước: SSM không có bản ghi nào của node 2, log boot báo
   agent không lấy được credential dù instance profile đã gắn. Giả thuyết là agent chạy trước khi credential sẵn sàng;
-  chưa chứng minh được vì hai node còn lại tạo cùng lúc vẫn bình thường. Reboot để khôi phục, và thêm script lúc boot
-  chờ có credential rồi mới restart agent `[điền: xác nhận script đã có]`.
+  chưa chứng minh được vì hai node còn lại tạo cùng lúc vẫn bình thường. Reboot để khôi phục. Script lúc boot chờ
+  credential chưa làm; thay vào đó script rebuild tự động (`timed-rebuild.sh`) hỏi SSM xem có bản ghi của node đó
+  không, và chỉ reboot một lần khi SSM chưa từng thấy nó. Lần gặp lại ngày 22/09 có vẻ chỉ là agent đăng ký chậm:
+  ping lại là được, không cần reboot; lần đó tôi không đọc log của SSM nên không kết luận chắc.
 
 **A10.2** **Ý chính:** "WireGuard gateway đầu tiên boot lỗi, và tôi dựng lại máy ngay mà không giữ log. Máy mới chạy
 được, nhưng tôi mất nguyên nhân gốc: khả năng cao là secret còn rỗng lúc boot, nhưng không chứng minh được. Từ đó bước
@@ -918,18 +946,24 @@ Câu về `Jenkinsfile`, cổng chặn Trivy, cosign và skip guard nằm ở
 | | dev | prod |
 |---|---|---|
 | Argo CD | Tự sync, `prune` và `selfHeal` | Tự sync; values chỉ đổi qua PR |
-| Kyverno | `Audit` | `Enforce` |
+| Kyverno | `Audit`, `failurePolicy: Ignore` | `Deny`, `failurePolicy: Fail` |
 
-Một ClusterPolicy chạy hai chế độ cho hai namespace cần hai rule, hoặc override theo namespace
-`[điền: cách cấu hình]`. Values ghi image bằng digest, nên việc Kyverno tự thêm digest vào image không làm Argo CD thấy
-lệch.
+Hai `ImageValidatingPolicy`, mỗi môi trường một cái, vì `validationActions` đặt theo policy; chúng chỉ khác nhau ở tên,
+`namespaceSelector` và `failurePolicy`. Không dùng `ClusterPolicy` với `verifyImages`: cosign v3 lưu chữ ký dưới dạng
+OCI referrer, không có tag `.sig`, và đó là trường hợp `ImageValidatingPolicy` kiểm được. `mutateDigest: false`, nên
+Kyverno không sửa image và Argo CD không thấy lệch.
 
-**B4.2** `verifyImages` chỉ khớp `*.dkr.ecr.*/medical-rag*`, tức image của app.
+**B4.2** Hai glob `*.dkr.ecr.*.amazonaws.com/medical-rag:*` và `…/medical-rag@*`, tức image của app theo tag hoặc theo
+digest trần. Không dùng `medical-rag*`, vì glob đó khớp cả `medical-rag-ci`, image tools chưa ký mà pod build và CronJob
+etcd chạy.
 
-**Không được kiểm tra chữ ký:** image của mọi addon từ registry công khai (ingress-nginx, Prometheus, Rancher…),
-initContainer aws-cli, và image của Job build index nếu nó không phải image app. Chúng chỉ chịu các policy Pod Security
-baseline, và những addon cần quyền host (Calico, node-exporter, EBS CSI node) phải được loại trừ khỏi baseline
-`[điền: danh sách namespace loại trừ]`.
+**Được kiểm tra:** mọi container của pod app ở `medical-rag-dev` và `medical-rag-prod`: container web, initContainer
+`index-pull` và Job build index đều chạy cùng một image app.
+
+**Không được kiểm tra chữ ký:** image của mọi addon từ registry công khai (ingress-nginx, Prometheus, Rancher…), và image
+app nếu nó chạy ở namespace khác, vì policy chỉ chọn hai namespace đó. Policy Pod Security baseline dưới Kyverno mà
+thiết kế đòi thì **chưa làm**: namespace app đã enforce
+`restricted` qua nhãn Pod Security, hai namespace Jenkins có nhãn và một `ValidatingAdmissionPolicy`.
 
 **B4.3**
 
@@ -986,8 +1020,8 @@ kubectl -n jenkins get secret jenkins-admin -o jsonpath='{.data.jenkins-admin-pa
 đường dẫn bot được push (tuỳ gói GitHub). `[điền: đã cấu hình gì]`.
 
 **B5.3** Theo thiết kế: **external-secrets** (gọi Secrets Manager), **ebs-csi** (gọi EC2 API cho volume) và **Jenkins
-agent** (push ECR, ký KMS). Nhưng initContainer tải index, Job build index và CronJob backup etcd cũng cần S3
-`[điền: đã mở quyền cho chúng thế nào]`.
+agent** (push ECR, ký KMS). initContainer tải index và Job build index dùng role IRSA riêng (`App A2`); CronJob
+backup etcd dùng role của node, được cấp đúng bucket `etcd-backups` (`infra/terraform/cluster/iam.tf`).
 
 **NetworkPolicy không chặn được mọi pod khác:**
 
@@ -1001,9 +1035,11 @@ Chặn thật cần default-deny egress ở mọi namespace hoặc một `Global
 **B5.4** Snapshot etcd chứa **toàn bộ** trạng thái cluster, gồm mọi Kubernetes Secret. kubeadm không bật mã hoá Secret
 at-rest mặc định, nên key Gemini, token GitHub và private key Sectigo nằm trong snapshot dạng đọc được.
 
-**Ai đọc được:** role của node có `s3:GetObject` trên bucket `etcd-backups`, nên mọi pod lấy được credential của node,
-như Jenkins agent, đều tải được snapshot. Cách sửa: `EncryptionConfiguration` cho API server, và mã hoá bucket backup
-bằng KMS key riêng mà role của node không decrypt được.
+**Ai đọc được:** role của node có `s3:GetObject`, `PutObject` và `DeleteObject` trên bucket `etcd-backups` (CronJob
+snapshot cần quyền ghi), nên mọi pod lấy được credential của node đều tải được snapshot, và **xoá được** nó: bucket
+không bật versioning. Cách sửa: `EncryptionConfiguration` cho API server; mã hoá bucket backup bằng KMS key riêng mà
+role của node không decrypt được; một role IRSA riêng cho CronJob chỉ có `PutObject`; và versioning hoặc Object Lock
+để một pod không xoá được backup.
 
 *Ở đâu:* `infra/terraform/cluster/iam.tf`.
 
@@ -1029,13 +1065,14 @@ bằng KMS key riêng mà role của node không decrypt được.
 **B6.2**
 
 - **Ở đâu:** trên node control plane, nhờ `nodeSelector` và `toleration`.
-- **Nói chuyện với etcd:** `hostPath` `/etc/kubernetes/pki/etcd` để có CA và certificate client; muốn gọi
-  `127.0.0.1:2379` thì cần `hostNetwork` `[điền]`.
-- **Bao lâu:** 6 giờ một lần. Cluster thường chỉ sống vài giờ mỗi phiên, nên có thể chưa có snapshot nào; bài drill phải
-  tự kích hoạt bằng `kubectl create job --from=cronjob/…`.
-- **Kiểm tra trước khi upload:** trạng thái snapshot hợp lệ. Với etcd 3.6, lệnh kiểm tra và khôi phục snapshot nằm trong
-  `etcdutl` `[điền: lệnh thật]`.
-- **Giữ:** bucket `etcd-backups` có lifecycle 14 ngày, và bị xoá cùng stack cluster.
+- **Nói chuyện với etcd:** `hostNetwork: true` để gọi `127.0.0.1:2379`, và ba file `hostPath` chỉ đọc: `ca.crt`,
+  `healthcheck-client.crt`, `healthcheck-client.key`. Không mount cả thư mục, vì nó chứa `ca.key` của etcd.
+- **Ba container theo thứ tự:** `etcdctl snapshot save`, rồi `etcdutl snapshot status` (image etcd là distroless nên
+  phải tách hai initContainer), rồi upload bằng image tools có AWS CLI.
+- **Bao lâu:** 6 giờ một lần. Lần chạy đầu được chứng minh dưới một lịch tạm 15 phút, đặt qua Git rồi trả lại, vì chờ
+  06:00 thì chậm; job vẫn do scheduler tạo ra, không phải bằng tay. Lần đó: revision 134191, 2434 key, 62 MB, 8 giây.
+- **Giữ:** bucket `etcd-backups` có lifecycle 14 ngày, và đã được **chuyển sang stack `shared`**, không có
+  `force_destroy`. Trước đó nó nằm trong stack cluster, nên mỗi lần `make down` là mất sạch backup.
 
 **Khôi phục cần thêm gì:** `/etc/kubernetes/pki` (CA, key của service account) không được backup. Mất cluster thì các
 certificate này mất theo, nên snapshot chỉ dùng được trên cluster còn giữ PKI cũ.
@@ -1050,7 +1087,7 @@ certificate này mất theo, nên snapshot chỉ dùng được trên cluster c�
    chỉ số phiên bản.
 6. Chạy `upgrade.yml` với `serial: 1`, trong lúc một vòng `curl` đếm request lỗi.
 
-Một bước không đạt thì giữ `1.36.4`.
+Một bước không đạt thì giữ `1.36.4`. Tới 22/09 bước 6 chưa chạy: không có bản 1.36 nào mới hơn 1.36.4.
 
 **B6.4** Cảnh báo dùng `node_cpu_seconds_total`, ví dụ
 `1 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.8` kéo dài 15 phút, vì `m7i-flex` không có

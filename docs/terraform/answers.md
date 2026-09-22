@@ -9,9 +9,11 @@ từ lần chạy thật trước khi dùng; đừng nói con số bạn chưa �
 
 Các con số lấy từ [`docs/evidence/terraform.md`](../evidence/terraform.md):
 
-- **Số resource:** bootstrap 18, shared 38, cluster 91.
+- **Số resource:** bootstrap 18, shared 38 (cộng bucket etcd từ phase drills; con số mới chưa được ghi), cluster 84
+  (86 sau phase drills, apply 3 phút 46 giây).
 - **Thời gian:** ở step 15, bản cluster 65 resource (chưa có WireGuard) destroy mất 1 phút 27 giây và dựng
-  lại từ đầu mất 3 phút 19 giây. Bản đủ 84 resource: `[điền: thời gian make infra-destroy và make infra]`.
+  lại từ đầu mất 3 phút 19 giây. Bản đủ 84 resource: destroy 2 phút 15 giây, dựng lại 3 phút 47 giây, plan sau đó
+  `No changes`.
 - **Chi phí:** khoảng 0.53 USD/giờ khi cluster đang chạy.
 
 **Nếu bạn sửa code trước khi nộp CV, sửa cả đáp án:** các đáp án dưới đây mô tả đúng code hiện tại, kể cả
@@ -52,8 +54,9 @@ node, hai load balancer và một VPN gateway."
   HA; internal NLB cho Kubernetes API và Rancher; public NLB cho app; WireGuard gateway để vào Rancher.
 - **Mạng và quyền:** phần lớn rule security group tham chiếu group khác thay vì dải IP (ngoại lệ: internal
   NLB tin cả CIDR của VPC). Inline policy ghi đúng ARN.
-- **Con số:** stack cluster 84 resource dựng lại từ đầu trong `[điền: thời gian make infra]`, và plan ngay sau
-  đó `[điền: No changes]`. Chạy cluster tốn khoảng 0.53 USD/giờ.
+- **Con số:** stack cluster 84 resource dựng lại từ đầu trong 3 phút 47 giây, và plan ngay sau đó `No changes`.
+  Cả nền tảng, tới 17 Application khoẻ, dựng lại trong 21 phút 47 giây (phase drills). Chạy cluster tốn khoảng
+  0.53 USD/giờ.
 - **Ranh giới:** Terraform dừng ở máy. Ansible cấu hình node, Argo CD sở hữu mọi thứ bên trong cluster (A1.5,
   A1.6).
 
@@ -112,7 +115,7 @@ lại được và dùng tiếp cho nâng cấp, thay node."
 
 | | User data (cloud-init) | Ansible |
 |---|---|---|
-| Khi nào chạy | Một lần, lúc máy boot lần đầu | Bất cứ lúc nào; được viết để lần hai `changed=0` (`[điền: PLAY RECAP lần hai]`) |
+| Khi nào chạy | Một lần, lúc máy boot lần đầu | Bất cứ lúc nào; được viết để lần hai `changed=0` (đã đo: `changed=0` trên cả ba node, 2 phút 56 giây) |
 | Phối hợp giữa các máy | Không: mỗi máy chạy độc lập | Có: node 1 trước, rồi join từng node |
 | Token join | Phải tự dựng cơ chế chia sẻ | Node 1 tạo token hạn 15 phút cho từng lần join; giá trị giữ trong biến `no_log`, ghi tạm vào file chỉ root đọc được, rồi xoá |
 | Lỗi | Nằm trong `cloud-init-output.log` trên máy | Hiện ngay, dừng đúng task |
@@ -395,7 +398,8 @@ Tôi dùng `count` cho ba node và `for_each` cho bucket, secret và policy."
 *Nếu được hỏi thêm:*
 
 - `count = var.node_count` cho node và các target group attachment theo node.
-- `for_each` cho hai bucket của cluster (map `etcd-backups` / `ssm-transfer` kèm số ngày giữ), các secret, các
+- `for_each` cho bucket của cluster (map kèm số ngày giữ, nay chỉ còn `ssm-transfer`; `etcd-backups` đã sang
+  shared ở phase drills), các secret, các
   managed policy gắn vào role; `dynamic` block cho hai mức cảnh báo budget.
 - **Có giữ `count` cho node không?** Có. Đây là ba control plane, số lượng cố định và phải lẻ; node không bị bỏ ở
   giữa mà được thay tại chỗ bằng `-replace`; tên `node-1..3` sinh thẳng từ index. Nếu cần bỏ đúng node 2 hoặc thêm
@@ -626,14 +630,15 @@ Rủi ro đi kèm: `m7i-flex` không có metric CPU credit, nên monitoring cả
 
 **A6.1** **Ý chính:** "Bằng cách đo, không phải bằng niềm tin. Tôi xoá stack cluster rồi dựng lại từ đầu, không có
 bước thủ công nào ở giữa, và plan ngay sau đó báo không còn thay đổi. Bản 65 resource mất 1 phút 27 giây để xoá và
-3 phút 19 giây để dựng lại; bản đủ 84 resource: `[điền]`."
+3 phút 19 giây để dựng lại; bản đủ 84 resource mất 2 phút 15 giây và 3 phút 47 giây."
 
 *Nếu được hỏi thêm:*
 
 - `make shared-plan` sau khi dựng lại cluster cũng báo `No changes`, nên các stack cô lập với nhau.
 - Mọi bước verify của step 18 (WireGuard, DNS, listener) đạt trên bản 84 resource.
 - **Giới hạn cần nói thẳng:**
-  - "không bước thủ công" chỉ nói về Terraform; cả chuỗi từ hạ tầng tới app là `make up`: `[điền: thời gian]`.
+  - "không bước thủ công" chỉ nói về Terraform; cả chuỗi từ hạ tầng tới app mất 21 phút 47 giây, đo bằng
+    `infra/scripts/timed-rebuild.sh` (phase drills).
   - AMI không được ghim, nên mỗi lần dựng lại có thể bắt đầu từ image Ubuntu mới hơn (B3.4).
   - Một số bước về bản chất là thủ công nhưng đã được ghi lại và kiểm chứng: apply bootstrap, delegate DNS, nhập
     giá trị secret.
@@ -1031,18 +1036,21 @@ Ngược lại, khi node 1 đang stop, `NODE_1` trả về `None`, nên `make tu
 
 ### B3. Lifecycle và các lớp bảo vệ
 
-**B3.1** `make infra-destroy` chỉ chạy trên **state của cluster**, nên hai bucket đầu không bao giờ nằm
+**B3.1** `make infra-destroy` chỉ chạy trên **state của cluster**, nên ba bucket đầu không bao giờ nằm
 trong đó.
 
 | Bucket | Lớp bảo vệ | Tác dụng |
 |---|---|---|
 | State (bootstrap) | `prevent_destroy` | Chặn ở phía Terraform: plan nào định xoá nó đều lỗi trước khi xoá bất cứ thứ gì |
 | Artifacts (shared) | Không có `force_destroy` | Chặn ở phía AWS: S3 không xoá bucket còn object, nên destroy lỗi `BucketNotEmpty` |
-| `etcd-backups`, `ssm-transfer` (cluster) | `force_destroy = true` | Provider xoá hết object rồi mới xoá bucket, nên teardown không bao giờ bị kẹt |
+| `etcd-backups` (shared, từ phase drills) | Không có `force_destroy` | Như artifacts; không nằm trong state của cluster, nên theo cấu hình thì sống qua `make down` (chưa kiểm lại object sau một lần teardown) |
+| `ssm-transfer` (cluster) | `force_destroy = true` | Provider xoá hết object rồi mới xoá bucket, nên teardown không bao giờ bị kẹt |
 
-Mất snapshot etcd vẫn chấp nhận được vì một snapshot chỉ khôi phục được đúng cluster đã tạo ra nó. Sau
-teardown, cluster được dựng lại từ code và Git, không phải từ etcd. Snapshot bảo vệ trước sự cố khi cluster
-còn sống: upgrade hỏng, mất quorum, hoặc bài drill khôi phục.
+Ban đầu `etcd-backups` nằm trong stack cluster với `force_destroy = true`, và lập luận là: sau teardown, cluster được
+dựng lại từ code và Git, không phải từ etcd. Phase drills chuyển nó sang `shared`, vì một backup bị xoá cùng thứ nó
+backup thì không phải backup. Nhưng nói thẳng: giữ được snapshot qua teardown chỉ có giá trị nếu khôi phục nó lên một
+cluster dựng lại, với PKI mới, được, và việc đó chưa được thử. Drill khôi phục chạy trên chính cluster đã tạo ra
+snapshot, trước mọi lần teardown: cả ba member ra cùng cluster-id `9ed3a0fb6a89e03e`.
 
 **B3.2** Xoá block `aws_route53_zone`, hoặc chỉ xoá block `lifecycle` của nó, rồi apply. Lớp bảo vệ nằm
 trong cấu hình, nên khi bị xoá đi thì Terraform lên plan xoá zone mà không phàn nàn gì. `prevent_destroy`

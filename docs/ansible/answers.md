@@ -13,11 +13,14 @@ restart; `make cluster` chạy lại trên cluster đã có mất 2 phút 59 gi�
 
 **Cần điền hoặc xác nhận:**
 
-- Thời gian `make cluster` trên node mới; PLAY RECAP lần hai; `kubectl get nodes -o wide`; bảng member etcd.
+- `kubectl get nodes -o wide`; bảng member etcd. (Thời gian `make cluster` trên node mới và PLAY RECAP lần hai đã có:
+  6 m 10 s, `changed=0`.)
 - `server:` trong `/etc/kubernetes/kubelet.conf` của node control plane (A1.6).
 - `spec.calicoNetwork.bgp` trong `kubectl get installation default -o yaml` (A6.4).
-- `upgrade.yml` (P1 trong thiết kế) đã có chưa, và số request lỗi khi nâng cấp (A3.3).
-- Script boot chờ credential cho SSM agent (thuộc Terraform) đã thêm chưa (A4.4).
+- `upgrade.yml` **đã có** (phase drills) nhưng **chưa chạy**: 1.36.4 là bản vá mới nhất của 1.36, nên số request lỗi khi
+  nâng cấp không đo được (A3.3).
+- Script boot chờ credential cho SSM agent **chưa có**; `infra/scripts/timed-rebuild.sh` thay bằng một lần reboot có điều
+  kiện (A4.4). Nhánh reboot đó chưa từng phải chạy.
 
 **Nếu bạn sửa code trước khi nộp CV, sửa cả đáp án:** các đáp án mô tả đúng code hiện tại, kể cả điểm yếu đã biết.
 
@@ -49,7 +52,9 @@ restart; `make cluster` chạy lại trên cluster đã có mất 2 phút 59 gi�
   trên node 1; `kubeadm_join` cho node 2 và 3, từng node một; `cni_calico` và `untaint_control_plane`.
 - **Inventory** lấy từ EC2 API theo tag; Makefile truyền DNS name của NLB từ `terraform output`.
 - **Kết quả:** ba node `Ready`; kubectl trên workstation qua SSM port-forward; tắt một node thì API vẫn trả lời.
-- **Chạy lại:** được viết để không đổi gì `[điền: PLAY RECAP lần hai]`; trên cluster đã có mất 2 phút 59 giây.
+- **Chạy lại:** được viết để không đổi gì: lần hai ra `changed=0` trên cả ba node, mất 2 phút 56 giây.
+- **Từ máy trần:** `make cluster` trên node mới mất 6 phút 10 giây; từ stack trống tới ba node Ready là 9 phút 57 giây
+  thời gian lệnh, chưa tính khoảng chờ SSM agent đăng ký.
 
 **A1.2** **Ý chính:** "Để control plane chịu được mất một node. Một control plane thì mất máy đó là mất API và etcd. Ba
 control plane thì etcd có ba member, chịu được mất một. Chỉ có ba máy 8 GB, nên tôi bỏ taint để cả ba cùng chạy
@@ -205,7 +210,10 @@ nâng kubelet, uncordon, chờ `Ready` và Argo CD khoẻ mới sang node tiếp
 - **Trước khi nâng:** snapshot etcd; đổi cả `kubernetes_minor`, vì repository của pkgs.k8s.io tách theo minor.
 - **Quy tắc:** mỗi lần một minor; kubelet không được mới hơn API server.
 - **Cổng kiểm tra không đạt:** giữ `1.36.4`, như thiết kế ghi.
-- **Đo:** một vòng `curl` đếm request lỗi: `[điền]`. `[điền: upgrade.yml đã có chưa]`.
+- **Đo:** một vòng `curl` đếm request lỗi. `upgrade.yml` đã có từ phase drills (bốn play, play đầu kiểm tra trước khi
+  đụng node), đã qua `--syntax-check` và `--list-hosts`, nhưng **chưa chạy**: không có bản 1.36 nào mới hơn 1.36.4, nên
+  chưa có con số nào. Cách đo được: dựng ở 1.36.3 rồi nâng lên 1.36.4. Kể cả khi đo, đó mới là đường patch; câu hỏi
+  này về nâng minor, cần nâng Rancher trước và đổi `kubernetes_minor`, và chưa được thử.
 - Tôi cũng sẽ đối chiếu ma trận phiên bản của Calico và các addon khác, dù thiết kế chỉ gác bằng Rancher (common B6.6).
 
 **A3.4** **Ý chính:** "Certificate của các thành phần có hạn một năm, CA có hạn mười năm. `kubeadm certs
@@ -269,7 +277,10 @@ credential, chuyển sang Default Host Management và bị `AccessDeniedExceptio
 
 - **Giả thuyết, chưa chứng minh:** agent chạy trước khi credential của role có trong metadata service. Chưa chứng minh được
   vì hai node kia tạo cùng lúc, cùng role, vẫn bình thường.
-- **Phòng ngừa đề xuất:** script boot chờ credential rồi restart agent `[điền: đã thêm chưa]`.
+- **Phòng ngừa đề xuất:** script boot chờ credential rồi restart agent. **Chưa thêm.** Thay vào đó
+  `infra/scripts/timed-rebuild.sh` hỏi SSM có bản ghi của node không, và reboot nó một lần nếu SSM chưa từng thấy nó;
+  nhánh đó chưa từng phải chạy. Lần gặp lại ngày 22/09 thì ping lại là được, nhưng lần đó không đọc bản ghi SSM và log
+  console, nên không phân biệt được với sự cố ở phase này về nguyên nhân.
 - **Lệnh:** `aws ssm describe-instance-information`, `aws ec2 describe-instance-status`, `aws ec2 get-console-output`.
 
 **A4.5** **Ý chính:** "`NXDOMAIN` chứng minh pod đã tới được DNS server, vì câu trả lời đến từ `10.96.0.10`. Việc tiếp theo
@@ -285,7 +296,7 @@ hiệu không tới được server.
 ### A5. Thiết kế playbook
 
 **A5.1** **Ý chính:** "Chạy lại trên cluster đã dựng thì không task nào được phép thay đổi gì, và PLAY RECAP phải báo
-`changed=0` trên cả ba node `[điền: kết quả thật]`. Mỗi role giữ điều đó bằng module so nội dung trước khi ghi, task
+`changed=0` trên cả ba node, như lần chạy lại đã đo (2 phút 56 giây, `../evidence/ansible.md`). Mỗi role giữ điều đó bằng module so nội dung trước khi ghi, task
 `command` có điều kiện hoặc `changed_when`, và file đánh dấu cho các bước kubeadm."
 
 *Nếu được hỏi thêm:* giới hạn là các task apply của Calico đặt `changed_when: false`, nên nâng `calico_version` vẫn ra
@@ -917,7 +928,7 @@ hỏng), controller vẫn ghi được trạng thái `NotReady` của node, và 
 **B10.3** Trên cluster đã có, gần như mọi task kiểm tra rồi bỏ qua, nhưng vẫn tốn thời gian: mỗi task là một session SSM
 và một lần truyền file qua S3, nhân với ba node. Cộng thêm các bước chờ không đổi gì như `rollout status` của Calico, chờ
 `/readyz`, kiểm tra đồng hồ, hai lần `apt update` mỗi node (B2.5), và `terraform init` mà target `cluster` phụ thuộc.
-Con số dựng từ máy trần phải đo riêng: `[điền]`.
+Con số dựng từ máy trần thì lớn hơn: 6 phút 10 giây cho `make cluster` trên node mới, so với 2 phút 56 giây khi chạy lại.
 
 **B10.4** Lệnh, viết trên **một dòng** (tách dòng thì `make` chạy sai):
 

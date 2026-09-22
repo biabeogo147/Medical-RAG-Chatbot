@@ -189,7 +189,9 @@ records the rebuild time it adds.
 3. **[`guide.md`](guide.md)** — eighteen steps. Part 0 rebuilds the cluster, Parts 1 to 3 are the three
    drills.
 4. **[`../evidence/drills.md`](../evidence/drills.md)** — written before the run, so a missing number shows up
-   as a missing number.
+   as a missing number. Filled in on 2026-09-22.
+5. **[`questions.md`](questions.md) · [`answers.md`](answers.md)** — interview questions on the three drills and the
+   CV measurements, in Vietnamese.
 
 Design source: [§4.6 and criteria #12–#14](../selfmanaged-k8s-ops-design.md). Day-to-day operation of what
 already exists: [`../runbook.md`](../runbook.md).

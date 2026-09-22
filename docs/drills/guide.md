@@ -365,8 +365,8 @@ aws s3api head-object --bucket medical-rag-etcd-backups-242834061265 --key <the 
 
 **Check.** The job `COMPLETIONS 1/1`; the object's length is megabytes, not bytes; and the **initContainer's
 log carries the `etcdutl snapshot status` table** — a hash, a revision, a key count and a size. A revision of
-0 or a key count of 0 means the snapshot is empty and uploaded happily anyway, which is the exact failure
-`status` exists to catch.
+0 or a key count of 0 means the snapshot is empty and uploaded happily anyway. `status` refuses only a file it cannot
+read; the empty case is caught by you reading the table, which is why this check exists.
 
 Reading the table out of the log is deliberate: the snapshot file lives on the node, `etcdutl` lives in the
 etcd image, and the workstation has neither.

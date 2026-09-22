@@ -27,17 +27,19 @@ các bộ khác.
 - Chi phí riêng của phase (A7.6) — EBS của Jenkins, lưu trữ ECR, giờ CPU của build pod.
 - Số build của lần `NullPointerException` (A8.1) — log đã bị xoay mất nên không truy lại được.
 - Lifecycle policy giữ được image `release-*` hay không — chưa đủ 30 image có tag để preview chứng minh (B4.6).
-- Cổng CRITICAL chặn được một lỗ hổng có bản sửa — chưa từng xảy ra (A5.2).
+- Cổng chặn *đúng* một CRITICAL có bản sửa — chưa từng xảy ra. Cơ chế chặn thì đã được chứng minh bằng positive
+  control ở phase drills (A5.2).
 
 **Nếu bạn sửa code trước khi nộp CV, sửa cả đáp án:** các đáp án dưới đây mô tả đúng code hiện tại, kể cả điểm
 yếu đã biết.
 
 | Điểm yếu trong code | Câu liên quan |
 |---|---|
-| Không có Kyverno: chữ ký không ai kiểm | A5.6, A9.2, A9.4 |
-| Cổng CRITICAL chưa bao giờ đỏ | A5.2, B5.1 |
-| Token của bot push thẳng được lên `main`, kể cả values prod | A6.6, A9.3 |
-| Bước 19 không chạy: tính tái lập chưa được chứng minh | A1.5, A9.2, B6.4 |
+| Kyverno chỉ chặn ở prod (dev chỉ ghi `Audit`); image addon không được kiểm | A5.6 |
+| Chữ ký chứng minh key, không chứng minh pipeline: digest cũ đã ký vẫn qua | A5.6, A9.2 |
+| Cổng chưa từng bắt được một CRITICAL thật; chỉ positive control làm nó đỏ | A5.2, B5.1 |
+| Token của bot push thẳng được lên `main`, kể cả values prod | A6.6, A9.2, A9.3 |
+| Chưa có commit nào chạy hết pipeline trên một cụm vừa dựng lại | A1.5, A9.2, B6.4 |
 | Trivy tải lại 114.8 MiB database mỗi build | A7.4 |
 | Namespace build pod ở mức Pod Security `privileged` | A4.3, B3.2 |
 
@@ -93,9 +95,10 @@ phút 48 qua Argo CD. Nửa sau tôi có nhúng tay vào nên nó không phải 
 
 **A1.5** **Ý chính:** "Ba thứ tôi chứng minh được trên cluster thật. Một commit đi tới pod dev mà tôi không gõ
 lệnh nào trong pipeline. Image prod đã quét, đã ký, và `cosign verify` nhận. Và vai trò của node không còn quyền
-push ECR hay ký KMS — cái này tôi đo bằng simulator rồi kiểm lại bằng một pod thật ở namespace khác. Còn ba thứ
-vẫn là giả định: cổng CRITICAL biết chặn, lifecycle giữ được image prod, và cả phase dựng lại được từ con số
-không — cái cuối tôi chưa chạy thử lần nào."
+push ECR hay ký KMS — cái này tôi đo bằng simulator rồi kiểm lại bằng một pod thật ở namespace khác. Sau phase này,
+hai thứ trước đây là giả định đã có bằng chứng: cổng làm build đỏ được (một build positive control), và hai
+Application `jenkins-platform`, `jenkins` về `Synced Healthy` sau một lần dựng lại cả cụm. Còn lại là giả định: lifecycle giữ được image prod, và một commit chạy hết
+pipeline trên cụm vừa dựng lại."
 
 *Nếu được hỏi thêm:* bảng "chứng minh được / mới là giả định" nằm ở `docs/jenkins/README.md` §14.
 
@@ -255,14 +258,26 @@ thứ tự duy nhất giữ được báo cáo kể cả khi cổng đỏ."
 quét; còn `--severity` cộng `--exit-code` sẽ đánh trượt mọi build vì những lỗ hổng không ai vá được. Một cổng
 không bao giờ qua được là một cổng người ta tắt đi.
 
-**A5.2** **Ý chính:** "Chưa bao giờ. Cả năm CRITICAL của image gốc đều không có bản vá, nên cổng trả 0 cả trước
-lẫn sau khi tôi đổi base sang Debian 13. Nó mới chứng minh 'không chặn nhầm thứ không ai xử lý được'; chưa chứng
-minh 'biết chặn thứ phải chặn'."
+**A5.2** **Ý chính:** "Với một CRITICAL thật thì chưa bao giờ: cả năm CRITICAL của image gốc đều không có bản vá, nên
+cổng trả 0 cả trước lẫn sau khi đổi base sang Debian 13. Vì vậy tôi chạy một **positive control**: trên một branch tạm,
+nới cổng ra để đếm finding có bản sửa ở mọi mức. Build đó đỏ ở stage Scan với `Fixable, any severity: 6`. Nó chứng
+minh cơ chế chặn hoạt động; nó không chứng minh cổng từng bắt được một CRITICAL."
 
-*Nếu được hỏi thêm:* cách thử là hạ bộ lọc `jq` xuống MEDIUM một lần, vì `pip` có năm phát hiện MEDIUM *có* bản
-sửa. Tôi ghi nó vào mục còn thiếu chứ không nói dối là đã thử.
+*Nếu được hỏi thêm:*
 
-**Mẹo:** phân biệt rõ "không chặn nhầm" với "biết chặn" — đây là chỗ nhiều người nói quá.
+- **Con số khớp trước khi chạy:** report của build `main` gần nhất có 6 finding sửa được, 5 MEDIUM và 1 LOW, nên tôi
+  biết trước build phải đỏ. Build 2 của branch `jenkins/step-gate-control` ra đúng 6, rồi `[ 6 -eq 0 ]` và
+  `Finished: FAILURE`: build đỏ ở lệnh cuối của gate trong stage Scan. Các dòng đánh dấu stage trong log thì không bắt
+  được, nên tôi không khẳng định bằng mắt rằng stage sau không chạy; theo cách pipeline khai báo chạy, một stage fail
+  thì các stage sau bị bỏ.
+- **Lần thử đầu không thử được gì:** build 1 kết thúc `NOT_BUILT`. Tôi chưa sửa `Jenkinsfile` nên commit rỗng, push
+  đẩy lên đúng commit docs của `main`, và skip guard bỏ qua nó một cách hợp lệ. Bây giờ bước đó kiểm `git diff --stat`
+  trước khi commit.
+- **Branch phải khớp `jenkins/step-*`:** Jenkins chỉ phát hiện `main` và mẫu đó.
+- Evidence: `../evidence/drills.md`, mục "Measured for the CV", M4.
+
+**Mẹo:** phân biệt ba điều: "không chặn nhầm", "cơ chế chặn được" (positive control), và "đã bắt được một CRITICAL
+thật" (chưa). Đây là chỗ nhiều người nói quá.
 
 **A5.3** **Ý chính:** "Cosign ký **digest**, bằng key bất đối xứng trong KMS, alias `medical-rag-cosign`. Key
 private không bao giờ rời KMS; pipeline chỉ được xin nó ký. Ký digest vì tag có thể bị trỏ sang image khác, còn
@@ -284,18 +299,24 @@ công khai, mà chẳng đổi lại được gì: ở đây việc verify dùng
 và biến mất hẳn khỏi `attest`, cùng `--rekor-url` và `--offline`. Thay thế là một signing config không liệt kê
 service nào, sinh ngay trong stage. Nếu image là public thì tôi sẽ bật Rekor, vì khi đó log công khai có giá trị.
 
-**A5.6** **Ý chính:** "Hiện tại **không ai**. Đó là lỗ hổng lớn nhất còn lại của phase. Pipeline ký mọi image trên
-`main`, nhưng không có admission controller nào từ chối một image chưa ký, nên về mặt kiểm soát thì chữ ký chưa
-đem lại được gì ngoài khả năng tự kiểm chứng bằng tay."
+**A5.6** **Ý chính:** "Kyverno, ở lúc admission. Ở phase này thì chưa ai kiểm cả, và đó là lỗ hổng lớn nhất khi đóng
+phase: một digest sửa tay trong values prod đi vòng qua cả pipeline, vì skip guard bỏ qua commit chỉ đụng `deploy/`.
+Phase drills đóng một nửa lỗ đó: prod giờ từ chối image chưa ký ngay lúc tạo pod. Nửa còn lại vẫn mở: một digest
+sửa tay trỏ vào một image cũ *đã ký* vẫn qua, vì chữ ký chứng minh key chứ không chứng minh commit."
 
 *Nếu được hỏi thêm:*
 
-- Hệ quả nặng hơn: skip guard bỏ qua commit chỉ đụng `deploy/`, nên **một digest sửa tay trong values prod đi
-  thẳng vào cluster** — không build, không quét, không ký, và không ai kiểm. Cả pipeline tôi vừa kể có thể bị đi
-  vòng bằng một lần sửa file. Đó mới là lý do Kyverno là việc P1.
-- Việc cần làm: Kyverno `verifyImages` với public key của KMS, `Enforce` ở prod và `Audit` ở dev.
+- **Cách làm:** `ImageValidatingPolicy` với public key cosign (lưu trong Git, nên admission không gọi KMS; còn chưa đo
+  xem nó có gọi ra Sigstore công khai không), `Deny` ở prod và
+  `Audit` ở dev. Không dùng `ClusterPolicy` với `verifyImages`, vì cosign v3 lưu chữ ký dưới dạng OCI referrer
+  (A5.4), không có tag `.sig`.
+- **Bằng chứng:** image `1eaa43bf3512` từ phase app, chưa từng được ký, bị từ chối với
+  `admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-verify-images-prod" denied the request: Policy verify-images-prod failed: the image is not signed with the medical-rag cosign key`.
+  Pod dùng image đã ký vẫn được tạo ngay sau đó.
+- **Giới hạn:** chỉ hai namespace app được kiểm; image của addon thì không. Chi tiết: `../drills/answers.md`.
 
-**Mẹo:** đây gần như chắc chắn là câu hỏi tiếp theo sau khi bạn khoe ký bằng KMS. Trả lời thẳng.
+**Mẹo:** đây gần như chắc chắn là câu hỏi tiếp theo sau khi bạn khoe ký bằng KMS. Trả lời thẳng: cái gì đã làm ở
+phase nào, và cái gì vẫn chưa được kiểm.
 
 ### A6. Promotion qua Git
 
@@ -369,8 +390,11 @@ secret đó. Nghĩa là nó khác sau mỗi lần dựng lại cluster, và khô
 viết bằng JCasC, credential, và cap của pod template. Không có gì được click ra cả. Dựng lại thì Argo CD apply
 file đó, nên controller quay lại giống hệt — trừ mật khẩu admin, vốn được sinh mới."
 
-*Nếu được hỏi thêm:* tôi **chưa chứng minh** điều này, vì bước 19 không chạy. Phase GitOps đo được một lần dựng
-lại 14 m 11 s, nhưng cụm đó không có Jenkins trong nó.
+*Nếu được hỏi thêm:* ở phase drills, một lần dựng lại cả cụm từ stack trống, bấm giờ bằng script, đưa cả 17
+Application về `Synced` và `Healthy` trong 21 m 47 s, kể cả `jenkins-platform` ở wave 3 và `jenkins` ở wave 4
+(`../evidence/drills.md`, M3). Đó mới là Application khoẻ: chưa ai đăng nhập, chưa có job nào được quét lại hay build
+nào chạy, và chưa có commit nào được đẩy qua pipeline trên cụm vừa dựng. Con số 14 m 11 s của phase GitOps không so
+được: cụm đó chỉ có 9 Application và không có Jenkins.
 
 **A7.4** **Ý chính:** "Prometheus đã có sẵn từ phase GitOps nên tôi đọc **request** CPU của build pod từ đó —
 300m `buildkit` cộng 100m `jnlp` ở bước 10. Mức dùng thật của CPU và bộ nhớ thì tôi chưa đo. Thời gian thì lấy
@@ -468,15 +492,18 @@ cả hai ARN và chứng minh bằng một lệnh simulator mà kế hoạch kh�
 
 ### A9. Nhìn lại
 
-**A9.1** **Ý chính:** "Đẩy Kyverno lên trước. Tôi xây cả một chuỗi ký mà không có ai kiểm chữ ký, nên tới cuối
-phase thì phần đắt nhất — KMS, cosign, attestation — vẫn chưa đổi được thành quyền kiểm soát nào."
+**A9.1** **Ý chính:** "Đẩy Kyverno lên cùng phase. Tôi xây cả một chuỗi ký mà tới cuối phase vẫn chưa ai kiểm chữ ký,
+nên phần đắt nhất — KMS, cosign, attestation — phải đợi tới phase drills mới đổi được thành quyền kiểm soát."
 
 *Nếu được hỏi thêm:* thứ hai là ghim phiên bản plugin theo cả bộ thay vì theo từng cái, vì đó là sự cố tốn nhất.
 
-**A9.2** **Ý chính:** "Hai cái ngang nhau: không ai kiểm chữ ký, và cả phase chưa bao giờ được dựng lại từ con số
-không nên tính tái lập vẫn là giả định."
+**A9.2** **Ý chính:** "Chữ ký chỉ chứng minh 'ký bằng key này', không chứng minh 'đã qua pipeline của `main`': ai
+chiếm được pod build là ký được. Và token của bot push thẳng được lên `main`, nên 'prod chỉ đổi qua PR' mới là quy
+ước."
 
-*Nếu được hỏi thêm:* cái thứ ba là cổng CRITICAL chưa bao giờ đỏ, nên tôi không có bằng chứng nó biết chặn.
+*Nếu được hỏi thêm:* hai điểm yếu tôi từng nêu ở đây đã được đóng ở phase drills: Kyverno giờ kiểm chữ ký ở prod
+(A5.6), và cổng đã đỏ trong một positive control (A5.2). Thứ còn lại là chưa có commit nào chạy hết pipeline trên một
+cụm vừa dựng lại.
 
 **A9.3** **Ý chính:** "Ba thứ. Tách tài khoản bot khỏi tài khoản người, để 'prod chỉ qua PR' là luật chứ không
 phải quy ước. Đẩy build ra khỏi node của ứng dụng, vì hiện pipeline ăn vào chính CPU mà app dùng. Và có người
@@ -677,7 +704,8 @@ mươi chỗ. Điều này chưa được preview chứng minh vì repository ch
 **B5.1** Một lần, trong container `trivy`, ra `trivy-report.json` dạng JSON đầy đủ không lọc severity. Báo cáo
 được `trivy convert --format table` in ra console cho người đọc, được `jq` đếm trong container `tools` cho cổng
 chặn, và được `archiveArtifacts` lưu lại. Quét trước, chặn sau là thứ tự duy nhất giữ được báo cáo khi cổng đỏ.
-Vì báo cáo không lọc severity nên số HIGH có sẵn trong đó, không cần quét lần hai.
+Vì báo cáo không lọc severity nên số HIGH có sẵn trong đó, không cần quét lần hai. Cũng nhờ vậy mà positive control
+chỉ cần sửa filter `jq` của gate, không cần quét lại (A5.2).
 
 *Ở đâu:* `Jenkinsfile`, `stage('Scan')`.
 
@@ -727,9 +755,9 @@ lẻ, phần lớn là một bước thiếu điều kiện tiên quyết hoặc
 
 *Ở đâu:* `../evidence/jenkins.md`, mục "Problems found and fixed".
 
-**B6.4** Thiếu lớn nhất là **cả bước 19**: không có phép đo nào cho việc dựng lại, nên tính tái lập của phase vẫn
-là giả định. Cách đo: `make down`, dựng lại từ Git, rồi đẩy một thay đổi nhỏ và xem nó đi hết vòng trên cụm mới —
-có runbook 13 bước sẵn. Ba thứ nhỏ hơn: một ca dương tính cho cổng CRITICAL, dung lượng repository và số image
-không tag, và preview lifecycle khi đã quá 30 image có tag.
+**B6.4** Nửa đầu của bước 19 đã có ở phase drills: dựng lại cả cụm từ Git, và hai Application của Jenkins về
+`Synced Healthy` (21 m 47 s cho cả 17 Application). Nửa sau vẫn thiếu: đẩy một thay đổi code nhỏ và xem nó đi hết vòng trên cụm mới.
+Ca dương tính cho cổng đã có (positive control, A5.2). Hai thứ nhỏ hơn: dung lượng repository và số image không tag,
+và preview lifecycle khi đã quá 30 image có tag.
 
-*Ở đâu:* `../evidence/jenkins.md`, mục "Still to check".
+*Ở đâu:* `../evidence/drills.md`, M3 và M4; phần còn lại ở `../evidence/jenkins.md`, mục "Still to check" (mục đó viết trước phase drills).

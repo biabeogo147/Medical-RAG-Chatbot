@@ -17,6 +17,10 @@ vi của công cụ cần xác nhận (trên cluster hoặc trong tài liệu ch
   2 m 22 s để `root` chuyển `Healthy`. Tổng **14 m 11 s thời gian chạy lệnh** (cộng từ giá trị `real` chính xác); khoảng chờ
   giữa các lệnh không được đo. Lần đó health check còn là bản cũ, chỉ đọc health, nên các wave không chờ nhau thật và con số
   có thể thấp hơn thực tế (A7.2). Lần dựng lại 19/09 với check đã sửa không được đo thời gian.
+- **Dựng lại có bấm giờ (22/09, phase drills):** từ cluster stack trống tới cả **17** Application `Synced` và `Healthy`,
+  không app nào đang giữa một lần sync: **21 m 47 s đồng hồ tường**, chạy một lần không cần người (`infra/scripts/timed-rebuild.sh`, `../evidence/drills.md` M3).
+  Các wave của Argo CD chiếm 10 m 40 s. 0 CertificateRequest. Không so được với 14 m 11 s: lần đó chỉ có 9 Application
+  và vòng chờ chỉ đọc health.
 - **Sự cố 18/09:** lần dựng lại đó xin một certificate mới. Suy ra từ event, cert-manager xử lý `Certificate` khi chưa có
   Secret, sớm hơn Secret khôi phục ít nhất ~48 s.
 - **Dựng lại 19/09, sau khi sửa health check:** Secret khôi phục có trước `Certificate` 3 s (thật ra 2–4 s), `status.revision`
@@ -525,7 +529,8 @@ Argo CD: AppProject chỉ cho phép repo và namespace đích đã biết. Nếu
 
 - Argo CD kiểm được chữ ký GPG của commit. Từ 3.5 cấu hình ở `spec.sourceIntegrity` của AppProject; `signatureKeys` cũ đã
   deprecated. Nó chỉ áp dụng cho source Git, không cho chart từ Helm repo.
-- **Lớp thứ hai trong cluster:** Kyverno (P1 trong thiết kế) chặn image chưa ký ở prod.
+- **Lớp thứ hai trong cluster:** Kyverno chặn image chưa ký ở prod, đã làm ở phase drills (`Common A6.2`). Nó không bắt
+  được một digest sửa tay trỏ vào một image cũ *đã ký*.
 - Hiện tại tôi là người duy nhất push được. Đó là giới hạn chấp nhận cho một project cá nhân, không phải thiết kế cho team.
 
 **A6.4** **Ý chính:** "Application controller có quyền trên mọi resource của cluster; nó cần vậy để cài bất cứ thứ gì. Nên
@@ -571,9 +576,10 @@ có sự cố ở A8.1, nên các wave không chờ nhau thật và con số có
 - **Chưa tính:** khoảng chờ giữa các lệnh, như SSM agent đăng ký và mở tunnel. Nên con số thật từ đầu tới cuối lớn hơn.
 - Tổng 14:11 cộng từ giá trị `real` chính xác; cộng các số đã làm tròn thì ra 14:10.
 - Với check hiện tại, chờ riêng `root` là đủ vì `root` chỉ `Healthy` khi mọi con đều `Healthy` và `Synced` (B7.3).
-- Lần dựng lại 19/09 với check đã sửa là để chứng minh việc khôi phục certificate; thời gian lần đó không được đo. `[điền: thời
-  gian dựng lại với check đã sửa]`
-- Thiết kế có `make up` cho cả chuỗi, nhưng Makefile chưa có. Hiện chạy bốn lệnh.
+- Lần dựng lại 19/09 với check đã sửa là để chứng minh việc khôi phục certificate; thời gian lần đó không được đo.
+- **Con số với check đã sửa** có ở phase drills: 21 m 47 s đồng hồ tường cho 17 Application (`infra/scripts/timed-rebuild.sh`, `../evidence/drills.md` M3). Lần đó
+  không có ai gõ `yes`: script tự kiểm plan chỉ có create rồi mới apply.
+- Thiết kế có `make up` cho cả chuỗi, nhưng Makefile chưa có. Hiện chạy bốn lệnh, hoặc `timed-rebuild.sh`.
 
 **A7.3** **Ý chính:** "Vì Terraform không biết các EBS volume mà CSI driver tạo cho Prometheus. `terraform destroy` xoá máy,
 còn volume ở lại và vẫn tính tiền. `make down` tắt sync của `root`, xoá Application có volume, xoá PVC, chờ tới khi AWS không

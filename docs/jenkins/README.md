@@ -170,9 +170,10 @@ it refuses host paths, host networking and privileged containers, none of which 
   failing second is the only order that keeps the record when the gate goes red. The count is done in `jq`
   because `trivy convert` has no `--ignore-unfixed` — that flag belongs to the scan commands — and `--severity`
   with `--exit-code` would instead fail every build on findings nobody can act on.
-- **The gate has never gone red.** All five CRITICAL findings in the original image were unfixed, so it returned
-  `0` both before and after step 13's base-image change. It has shown that it does not block what nobody can act
-  on; nothing has shown it blocks what it should. §15 says what would.
+- **The gate has never gone red on a real CRITICAL.** All five CRITICAL findings in the original image were
+  unfixed, so it returned `0` both before and after step 13's base-image change. Its failure path was exercised
+  later, in the drills phase: a positive-control build on a temporary branch, with the filter widened to fixable
+  findings of any severity, printed `Fixable, any severity: 6` and failed (`../evidence/drills.md`, M4).
 - **Criterion #9 compares like with like.** The earlier "before" came from ECR's scanner. Step 1 measures the same
   image with Trivy 0.74.0; step 13 measures the hardened image with the same version: CRITICAL **5 → 0**, total
   findings 269 → 158, by moving both base images to Debian 13.
@@ -190,9 +191,10 @@ the corpus — that is a deliberate manual write, never automated
 ([concepts §20](guide/0-concepts.md#20-the-index-version-in-ci)). The index itself is built by a Job inside the
 cluster at the app chart's wave 1, not by Jenkins.
 
-This stage is Part 3's only **positive control**: renaming the PDF without uploading it made the stage go red,
-which is the one place the *pipeline* has been shown to stop something rather than merely allow it. Part 2 has one
-of its own — the admission policy refusing a `hostPath` pod.
+This stage was Part 3's only **positive control**: renaming the PDF without uploading it made the stage go red,
+the one place in this phase where the *pipeline* was shown to stop something rather than merely allow it. Part 2 has
+one of its own — the admission policy refusing a `hostPath` pod. The Trivy gate got its positive control later, in the
+drills phase (`../evidence/drills.md`, M4).
 
 ## 9. One commit, three builds
 
@@ -346,18 +348,19 @@ argument [gitops README §4](../gitops/README.md#4-app-of-apps-and-sync-waves) m
 | The build pods use `medical-rag-ci`, not the node role | **Measured** twice: the simulator, and a pod in `default` that assumed the node role and was refused `kms:Sign` |
 | The anti-loop guard catches both the bot commit and the prod merge | **Measured**, by two different conditions (§9) |
 | Base-image hardening reduces findings | **Measured**: CRITICAL 5 → 0, total 269 → 158 |
-| The gate blocks a fixable CRITICAL | **Assumed.** It has never returned anything but `0` |
+| The gate can fail a build | **Measured** in the drills phase, by a positive control: 6 fixable findings, build red at Scan |
+| The gate blocks a fixable CRITICAL | **Assumed.** No fixable CRITICAL has appeared |
 | `release-*` images survive the second lifecycle rule | **Assumed.** Fewer than 30 tagged images exist, so no preview has exercised it |
-| The phase comes back from Git after a teardown | **Assumed.** Step 19 was not run |
+| The phase comes back from Git after a teardown | **Half measured** in the drills phase (`../evidence/drills.md`, M3): a timed rebuild brought all 17 Applications, `jenkins-platform` and `jenkins` included, back Synced and Healthy in 21 m 47 s. Nobody logged in, and no commit has yet gone through the rebuilt pipeline |
 | The split plugin suite caused that `NullPointerException` | **Inferred** from the symptom and from the fix working; the stack trace was rotated away |
 
 ## 15. Known limits and what is out of scope
 
 | Limit | Why it is accepted | What would fix it |
 |---|---|---|
-| **Nothing has shown the phase survives a rebuild** | Step 19's teardown and rebuild were not run (2026-09-21); the phase was closed on the cluster it grew into. The GitOps phase measured a rebuild at 14 m 11 s, but that cluster had no Jenkins in it | Run step 19: tear down, rebuild from Git, and take one release through the rebuilt cluster |
-| **Nothing verifies a signature.** Every image `main` builds is signed, and no admission controller checks it | Kyverno is a later, optional phase | `verifyImages` with the KMS public key, `Enforce` in prod and `Audit` in dev |
-| **The CRITICAL gate has never blocked anything** | Every CRITICAL finding so far has been unfixed, which the gate ignores by design | Change the gate's `jq` filter to MEDIUM for one build, to exercise the failure path against `pip`'s fixable findings |
+| **No release has gone through a rebuilt cluster** | The drills phase's timed rebuild brought the Jenkins Applications back Synced and Healthy (21 m 47 s for all 17, `../evidence/drills.md` M3), but no commit has been pushed through the rebuilt pipeline | Push one small code change after a rebuild and follow it to the dev pod |
+| **Signatures are checked only for the app, in two namespaces** | Closed for the app in the drills phase: Kyverno `ImageValidatingPolicy`, `Deny` in prod and `Audit` in dev, refused an unsigned image at admission | Widen the policy to the addons' images, which are not signed by this pipeline |
+| **The gate has never caught a real fixable CRITICAL** | None has appeared. Its failure path was proven by a positive control (drills phase, M4) | Nothing to fix; keep the positive control as a periodic check |
 | The bot's token is yours, so GitHub cannot enforce "prod only by pull request" | One-person repository | A separate bot account or GitHub App, and a rule requiring a code owner for `deploy/envs/prod/` |
 | Polling adds up to two minutes | Jenkins is reachable only through the VPN | A webhook relay or a GitHub App |
 | The skip guard cannot read a merge commit's files, so every merge costs a build | Treating unknown as "must build" is the safe direction | Nothing worth doing; squash merges, which this repository is set to use, are single-parent |
