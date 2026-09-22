@@ -229,6 +229,18 @@ doing what it claims, and that is a more valuable finding than a clean run.
 
 ---
 
+## Measured for the CV
+
+Procedure: [`guide-measurements.md`](guide-measurements.md). M0 to M2 are recorded in Part 1 above; this section
+holds the two that are not part of the drills guide.
+
+| # | What | Result |
+|---|---|---|
+| M3 | Wall clock, `make infra` started → every Application Synced+Healthy; Application count; CertificateRequests | *pending* |
+| M4 | Positive-control build: build number, red stage, fixable count and severities | *pending* |
+
+---
+
 ## What these results decided
 
 *To be written after the run.*
