@@ -97,6 +97,9 @@ number is expected and is not a regression.
   `registry.k8s.io/etcd:3.6.8-0@sha256:397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5`.
   The CronJob mounts three certificate files rather than `/etc/kubernetes/pki/etcd`, because that directory
   also holds `ca.key`, `server.key` and `peer.key`.
+- **Before step 9 (guide-measurements M0).** Namespace `restore-drill` with ConfigMap `canary`,
+  `written-at=2026-09-22T04:14:20Z`, created before the first scheduled run at 06:00 UTC, so that snapshot holds
+  data the restore can be checked against. Not in Git: Argo CD cannot recreate it.
 
 **What the restore must also answer**, beyond the RTO: what did *not* come back. Anything created between the
 snapshot and the deletion is lost by definition — the RPO made visible. Name it rather than letting it pass.
@@ -237,7 +240,7 @@ holds the two that are not part of the drills guide.
 | # | What | Result |
 |---|---|---|
 | M3 | Wall clock, `make infra` started → every Application Synced+Healthy; Application count; CertificateRequests | *pending* |
-| M4 | Positive-control build: build number, red stage, fixable count and severities | *pending* |
+| M4 | Positive-control build: build number, red stage, fixable count and severities | Branch `jenkins/step-gate-control`, gate changed to count fixable findings of any severity. The last `main` build's report (build 13) held **6 fixable: 5 MEDIUM, 1 LOW**. The branch build's gate printed `Fixable, any severity: 6` and ran `[ 6 -eq 0 ]` (11:24:37 local, 04:24:37 UTC). **Build 2: `Finished: FAILURE`**, red at the Scan gate — the failing `[ 6 -eq 0 ]` is that gate's last command. The log's stage-marker lines were not captured (the grep for `[Pipeline] {` matched nothing, likely because of the timestamp prefix). **First try failed to test anything**: the Jenkinsfile edit was never made, `git commit` found nothing, the push sent `main`'s own docs commit, and the Skip guard ended it `NOT_BUILT` (`only docs or deploy files changed`). The guide now checks `git diff --stat` first |
 
 ---
 
