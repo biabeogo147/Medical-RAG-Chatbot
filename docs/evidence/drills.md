@@ -146,6 +146,17 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
   exited **0**. So the cluster matched Git and the client-side diff was wrong. Fix:
   `argocd.argoproj.io/compare-options: ServerSideDiff=true` on the Application, as `platform-tls` already has.
   Left unfixed, the next rebuild would have stopped at wave -2 with nothing reported as an error.
+- **Problem found: the fix could not arrive by Git.** After the `ServerSideDiff` commit (`f3e80e3`) was pushed,
+  the live `kyverno` Application still had no `compare-options` annotation. `root`'s operation had started at
+  01:42:37 UTC on the previous commit (`41da7f0`) and was still `Running`, message
+  `waiting for healthy state of argoproj.io/Application/kyverno`. Argo CD does not start a new sync while one
+  runs, so the commit that would make `kyverno` Synced could only be applied after `kyverno` was Synced: a
+  deadlock, not a delay. Broken by annotating the live Application with the value Git already held
+  (`kubectl annotate … compare-options=ServerSideDiff=true`): `kyverno` read `Synced Healthy` 10 s later,
+  `root`'s operation ended `Succeeded`, and `make apps` showed 16 Applications, all `Synced` `Healthy`. It can
+  happen only when an Application is fixed while `root` is waiting on it; a rebuild creates the Application
+  with the annotation already on it. **The general lesson for the health gate**: a fix to an Application that
+  the gate is waiting on has to be applied to the live object, or `root`'s operation terminated first.
 
 **The distinction this phase has to hold.** A policy that allows everything and a policy that matches nothing
 look identical from the outside: no denials either way. The Audit step exists to tell them apart before

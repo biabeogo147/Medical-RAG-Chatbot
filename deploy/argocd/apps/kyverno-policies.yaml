@@ -1,0 +1,30 @@
+# Plain manifests: the image-signature policies (drills guide step 13). Separate from the controller, so a
+# broken policy can be removed without uninstalling Kyverno.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno-policies
+  namespace: argocd
+  annotations:
+    # After platform-secrets, before the app at waves 1 and 2, so prod's pods are admitted under the policy
+    # from the first one.
+    argocd.argoproj.io/sync-wave: "0"
+    # From the start, not after the fact: the API server fills in defaults on these objects, and a
+    # client-side diff would read that as drift and hold `root` at wave 0 (drills evidence, step 13a).
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+  labels:
+    medical-rag/report-failed-sync: "true"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+    targetRevision: main
+    path: deploy/argocd/manifests/kyverno-policies  # cosign.pub is not YAML, so Argo CD does not apply it
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

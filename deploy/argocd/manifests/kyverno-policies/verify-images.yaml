@@ -1,0 +1,116 @@
+# Image-signature admission for the app (drills guide steps 13 and 14, design §4.6 criterion #13).
+#
+# ImageValidatingPolicy, not a ClusterPolicy with verifyImages: the Jenkinsfile signs with cosign v3, which
+# stores each signature only as a sigstore bundle OCI referrer (no sha256-*.sig tag exists in the
+# repository), and that is the case ImageValidatingPolicy verifies (kyverno/kyverno#17363). Measured in the
+# drills evidence, step 13.
+#
+# One policy per environment, because validationActions is per policy: both start on Audit; step 14 moves
+# prod to Deny and leaves dev on Audit. The two are identical apart from the name, the namespace and the
+# failurePolicy — keep them that way.
+#
+# matchImageReferences: the app's repository only, by tag or by bare digest, in any account and region.
+#   Not `medical-rag*`: that also matches medical-rag-ci, the pipeline's tools image, which is not signed;
+#   a Deny policy written that way would stop every Jenkins build pod. Every container of the app's pods
+#   uses this one image (web, the index-pull initContainer, the index-build Job), so all are checked.
+# credentials: the admission controller fetches the signature from ECR itself. `amazon` uses the pod's AWS
+#   credentials, here the node role's through IMDS, which already holds ecr:BatchGetImage on this repository.
+# validationConfigurations: nothing rewrites the pod (mutateDigest), and the refusal in step 14 must be
+#   about the signature rather than a missing digest (verifyDigest).
+# attestors: the static key from step 12, identical to cosign.pub next to this file (step 13 diffs them).
+#   No transparency log: the pipeline signs with a signing config that names no services, so there is no
+#   Rekor entry to find.
+---
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-images-dev
+spec:
+  validationActions: [Audit]
+  # dev only reports, so a Kyverno outage must not stop dev's pods.
+  failurePolicy: Ignore
+  webhookConfiguration:
+    timeoutSeconds: 15  # the signature is fetched from ECR on every admission
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: medical-rag-dev
+  matchImageReferences:
+    - glob: "*.dkr.ecr.*.amazonaws.com/medical-rag:*"
+    - glob: "*.dkr.ecr.*.amazonaws.com/medical-rag@*"
+  credentials:
+    providers: [amazon]
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: true
+  attestors:
+    - name: cosign
+      cosign:
+        key:
+          data: |
+              -----BEGIN PUBLIC KEY-----
+              MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEBTmQ5L9rsblIGguEBI+LTBStUzon
+              roOO1fSnaSS3C5rP+tyxyL4zyUDAZMKHHSlnbAzbKiRc4miXYVzPHMsDpg==
+              -----END PUBLIC KEY-----
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(i, verifyImageSignatures(i, [attestors.cosign])).all(e, e > 0) &&
+        (!has(images.initContainers) ||
+        images.initContainers.map(i, verifyImageSignatures(i, [attestors.cosign])).all(e, e > 0))
+      message: "the image is not signed with the medical-rag cosign key"
+---
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-images-prod
+spec:
+  validationActions: [Audit]
+  # Fail closed: once prod denies, a Kyverno outage must not let an unchecked image in.
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 15  # the signature is fetched from ECR on every admission
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: medical-rag-prod
+  matchImageReferences:
+    - glob: "*.dkr.ecr.*.amazonaws.com/medical-rag:*"
+    - glob: "*.dkr.ecr.*.amazonaws.com/medical-rag@*"
+  credentials:
+    providers: [amazon]
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: true
+  attestors:
+    - name: cosign
+      cosign:
+        key:
+          data: |
+              -----BEGIN PUBLIC KEY-----
+              MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEBTmQ5L9rsblIGguEBI+LTBStUzon
+              roOO1fSnaSS3C5rP+tyxyL4zyUDAZMKHHSlnbAzbKiRc4miXYVzPHMsDpg==
+              -----END PUBLIC KEY-----
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(i, verifyImageSignatures(i, [attestors.cosign])).all(e, e > 0) &&
+        (!has(images.initContainers) ||
+        images.initContainers.map(i, verifyImageSignatures(i, [attestors.cosign])).all(e, e > 0))
+      message: "the image is not signed with the medical-rag cosign key"
