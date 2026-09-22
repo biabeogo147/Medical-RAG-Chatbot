@@ -18,7 +18,7 @@ metadata:
   name: etcd-snapshot
   namespace: etcd-backup
 spec:
-  schedule: "*/15 * * * *"  # TEMPORARY for the drills run, M1: prove the job fast. Back to "0 */6 * * *" before M2.
+  schedule: "0 */6 * * *"
   timeZone: Etc/UTC             # 00, 06, 12, 18 UTC; stated rather than inherited from the controller manager
   concurrencyPolicy: Forbid     # two snapshots at once only double the load on etcd
   startingDeadlineSeconds: 600  # a run missed by more than 10 minutes is skipped, not run late

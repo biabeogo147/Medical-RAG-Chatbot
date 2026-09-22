@@ -100,6 +100,15 @@ number is expected and is not a regression.
 - **Before step 9 (guide-measurements M0).** Namespace `restore-drill` with ConfigMap `canary`,
   `written-at=2026-09-22T04:14:20Z`, created before the first scheduled run at 06:00 UTC, so that snapshot holds
   data the restore can be checked against. Not in Git: Argo CD cannot recreate it.
+- **Step 9 (M1): the first scheduled snapshot passed.** Run under a **temporary `*/15 * * * *` schedule**,
+  committed at 04:38:40 UTC (live read of `.spec.schedule`), chosen to see the first run in minutes rather than
+  wait for 06:00. The Job was still created by the CronJob controller: `manual=` empty.
+  - Job `etcd-snapshot-29834205`: `start=2026-09-22T04:45:00Z`, `done=04:45:08Z` (**8 s**), `ok=1`. Taken after
+    the canary (04:14:20Z).
+  - `etcdutl snapshot status`: hash `65062525`, **revision 134191**, **total keys 2434**, 62 MB, version 3.6.0.
+  - Upload: `s3://medical-rag-etcd-backups-242834061265/snapshots/20260922T044503Z-medical-rag-node-3.db`,
+    **62,402,592 bytes**, taken on `medical-rag-node-3`. The node role's S3 grant from step 2 works.
+  - The schedule was then reverted to `0 */6 * * *` in Git; the file is byte-identical to `d772a09` again.
 
 **What the restore must also answer**, beyond the RTO: what did *not* come back. Anything created between the
 snapshot and the deletion is lost by definition — the RPO made visible. Name it rather than letting it pass.
@@ -269,5 +278,8 @@ holds the two that are not part of the drills guide.
 - **Whether admission now needs the public Sigstore.** The error named "getting Rekor public keys". If Kyverno
   fetches them from `rekor.sigstore.dev` (or its TUF root) at admission, then with prod on `failurePolicy:
   Fail` an outage there, or a cut in NAT egress, blocks prod's pods. Not measured.
+- **A job created by the 6-hourly schedule itself.** The first proven run was under the temporary `*/15`
+  string. A job at 12:00 or 18:00 UTC would show `0 */6 * * *` firing too; read `kubectl -n etcd-backup get jobs`
+  before M3's `make down` removes the history.
 - Kyverno at wave -2 becomes a new single point of failure for every rebuild: if it never reports `Healthy`
   and `Synced`, nothing from wave -1 onward syncs. Record the rebuild time it adds.
