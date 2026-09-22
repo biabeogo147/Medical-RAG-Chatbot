@@ -1,13 +1,14 @@
 # Drills phase — evidence
 
 Measurements for design criteria **#12** (etcd restore), **#13** (Kyverno), **#14** (upgrade), plus the
-rebuild that preceded them. AWS account `<account-id>`, region `ap-southeast-1`. Every command ran on the ops
+rebuild that preceded them. AWS account `242834061265`, region `ap-southeast-1`. Every command ran on the ops
 workstation unless a line says otherwise. Checks not listed here returned the output the
 [guide](../drills/guide.md) expects. The problems these close are stated in
 [`../drills/README.md`](../drills/README.md).
 
-**Nothing below has been measured yet.** This file is the shape the numbers go into, written before the run so
-that a missing number is visible as a missing number rather than as an absence nobody notices.
+**The run started on 2026-09-22.** This file was written before it as the shape the numbers go into, so that
+a missing number is visible as a missing number rather than as an absence nobody notices. Rows still marked
+*pending* have not been measured.
 
 ## Results
 
@@ -37,6 +38,40 @@ The cluster stack was destroyed on 2026-09-21. `shared` and `bootstrap` survived
 | 5 | `time make bootstrap`, the `kubectl wait application/root` duration, and the `make apps` table (14 Applications) |
 | 6 | The two `oidc-check` lines |
 | 7 | The certificate's `notAfter`, and whether any `CertificateRequest` appeared |
+
+**Measured.**
+
+- **Step 3.** Plan summary: *pending*. Read back after the apply: the bucket
+  `medical-rag-etcd-backups-242834061265` exists (creation time `2026-09-21 23:54:10` as `aws s3 ls` prints it,
+  in the workstation's local time), and `aws ecr describe-repositories` reports `medical-rag-ci` as `IMMUTABLE`.
+- **Step 4.** `time make infra`: **3 m 50 s**. `time make cluster`: **6 m 23 s**; `PLAY RECAP` line: *pending*.
+  The node policy read back with `get-role-policy`, statement `S3ReadWriteObjects`, lists both
+  `arn:aws:s3:::medical-rag-ssm-transfer-242834061265/*` and `arn:aws:s3:::medical-rag-etcd-backups-242834061265/*`.
+  The first `make ping` failed on node 2 (`i-00f6ac0724e0966bb`) with `TargetNotConnected`; nodes 1 and 3
+  answered. A second `make ping` a few minutes later, with nothing changed, answered `SUCCESS` on all three.
+  So this time the agent registered late rather than never, unlike the Ansible-phase incident in
+  [`ansible.md`](ansible.md), which needed a reboot. The SSM record and console log were not read, so the two
+  cannot be told apart by cause.
+- **Step 5.** `time make bootstrap`: **56.9 s**. The guide's
+  `kubectl -n argocd wait application/root --for=jsonpath='{.status.health.status}'=Healthy` printed
+  `condition met` after **1 m 18 s**, yet the `make apps` run straight after showed `root` `OutOfSync`
+  `Progressing` with 6 Applications. **The wait passed falsely**: `root` read `Healthy` for a moment before its
+  waves ran, and the wait caught that moment. Several `make apps` runs later: 10 Applications, waves -3 to 0
+  all `Synced` `Healthy`, none of waves 1 to 4 (`medical-rag-dev`, `medical-rag-prod`, `jenkins-platform`,
+  `jenkins`) created, and `root` `OutOfSync` `Healthy`. Nothing was stuck: read a few minutes later, `root`'s
+  last operation was `Succeeded` (`successfully synced (all tasks run)`) and `make apps` showed **14
+  Applications, every one `Synced` `Healthy`**. The later waves had simply still been running. **The defect is
+  the check**: `root` reports `Healthy` *while* its sync is in progress, so a wait on health alone can return at
+  any point. Waiting for `Synced` first, then `Healthy`, would mark the end, because `root` is `Synced` only once
+  the last wave's Application exists. **The rebuild time for step 5 was therefore not measured on this run**;
+  the 1 m 18 s is when the wait returned, not when the platform was up.
+- **Step 6.** `make oidc-check` against `https://medical-rag-oidc-242834061265.s3.ap-southeast-1.amazonaws.com`:
+  `same  .well-known/openid-configuration` and `same  openid/v1/jwks`. The rebuilt API server signs with the key
+  the issuer publishes.
+- **Step 7.** Certificate `wildcard-recruitai` `READY True`, `notAfter` **2026-12-17T13:08:54Z**, and
+  `kubectl -n ingress-nginx get certificaterequests` printed `No resources found`: the wildcard was restored
+  from the PushSecret backup, and no Let's Encrypt issuance was spent. Both admin passwords were read (32
+  characters each; not recorded). WireGuard handshake: *not reported*.
 
 **Comparison available.** The GitOps phase measured a full rebuild at **14 m 11 s** on 2026-09-18 — but that
 cluster had no Jenkins and no app in it. This rebuild carries 13 Applications across eight waves, so a larger

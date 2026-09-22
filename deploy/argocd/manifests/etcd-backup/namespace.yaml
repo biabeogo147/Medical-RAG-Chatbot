@@ -1,0 +1,9 @@
+# The namespace is also created by the Application's CreateNamespace=true; declaring it here puts it in Git
+# and lets the label below be reviewed. `privileged`, because the CronJob's pod needs hostNetwork (etcd
+# listens on 127.0.0.1) and a hostPath (the etcd client certificates) — both refused by `baseline`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: etcd-backup
+  labels:
+    pod-security.kubernetes.io/enforce: privileged

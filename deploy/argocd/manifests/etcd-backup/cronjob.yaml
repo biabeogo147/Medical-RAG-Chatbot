@@ -1,0 +1,120 @@
+# An etcd snapshot every 6 hours, checked, then uploaded to S3 (drills guide steps 8 and 9, concepts §1–§2).
+# Six hours is the RPO: at worst, a restore loses what changed since the last run.
+#
+# Three containers, in order, because no single image has all three tools:
+#   1. snapshot  (etcd image)  etcdctl snapshot save into a shared emptyDir
+#   2. status    (etcd image)  etcdutl snapshot status, which fails on a truncated or corrupt file
+#   3. upload    (tools image) aws s3 cp
+# The first two are initContainers, so the upload starts only if both succeeded. The etcd image is
+# distroless (no shell), which is why save and status are two containers rather than one script.
+#
+# Credentials: none configured. The upload reaches S3 with the node's instance role through IMDS; the role
+# was granted this bucket in infra/terraform/cluster/iam.tf. That role holds more than this job needs (eight
+# Secrets Manager secrets, the ACME TXT record); a dedicated IRSA role would be tighter. Listed in
+# docs/evidence/drills.md under "Still to check".
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-snapshot
+  namespace: etcd-backup
+spec:
+  schedule: "0 */6 * * *"
+  timeZone: Etc/UTC             # 00, 06, 12, 18 UTC; stated rather than inherited from the controller manager
+  concurrencyPolicy: Forbid     # two snapshots at once only double the load on etcd
+  startingDeadlineSeconds: 600  # a run missed by more than 10 minutes is skipped, not run late
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3     # kept, so a failed run can still be read the next morning
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        spec:
+          restartPolicy: Never  # a failed pod stays, with its logs, instead of being restarted in place
+          # etcd listens for clients on 127.0.0.1:2379 as well as the node address; the loopback one is
+          # reachable only from the node's own network namespace.
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          # Every node here is a control plane, but the selector states the dependency: the pod needs a
+          # local etcd member and its certificates.
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          initContainers:
+            - name: snapshot
+              # The image kubeadm runs etcd with on every node (read from the etcd pods' imageID), so the
+              # tools match the server: etcd 3.6.8.
+              image: registry.k8s.io/etcd:3.6.8-0@sha256:397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5
+              command:
+                - /usr/local/bin/etcdctl
+                - --endpoints=https://127.0.0.1:2379
+                - --cacert=/etc/kubernetes/pki/etcd/ca.crt
+                # The client certificate kubeadm creates for etcd's own health checks; any certificate
+                # signed by the etcd CA is accepted as a client.
+                - --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt
+                - --key=/etc/kubernetes/pki/etcd/healthcheck-client.key
+                - snapshot
+                - save
+                - /backup/snapshot.db
+              securityContext:
+                runAsUser: 0    # the certificate keys are root-only (0600) on the node
+              volumeMounts:
+                - { name: etcd-ca, mountPath: /etc/kubernetes/pki/etcd/ca.crt, readOnly: true }
+                - { name: etcd-client-crt, mountPath: /etc/kubernetes/pki/etcd/healthcheck-client.crt, readOnly: true }
+                - { name: etcd-client-key, mountPath: /etc/kubernetes/pki/etcd/healthcheck-client.key, readOnly: true }
+                - { name: backup, mountPath: /backup }
+            # The step that turns an upload into a backup: a truncated file would upload perfectly happily.
+            # The table it prints (hash, revision, total keys, size) is what step 9 reads from the log.
+            - name: status
+              image: registry.k8s.io/etcd:3.6.8-0@sha256:397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5
+              command:
+                - /usr/local/bin/etcdutl
+                - snapshot
+                - status
+                - /backup/snapshot.db
+                - --write-out=table
+              securityContext:
+                runAsUser: 0    # etcdctl wrote the file 0600 as root
+              volumeMounts:
+                - { name: backup, mountPath: /backup, readOnly: true }
+          containers:
+            - name: upload
+              # The pipeline's tools image: it has a shell and the AWS CLI, it is already in ECR, and the node
+              # role can already pull it. Pinned by digest, as in the Jenkinsfile.
+              image: 242834061265.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag-ci:2ed703f3a494@sha256:106f85c5a76dcd1847e1c8e20ece5933f7b733cabbe4e9d93f64b2f431e6b38f
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  key="snapshots/$(date -u +%Y%m%dT%H%M%SZ)-${NODE_NAME}.db"
+                  aws s3 cp /backup/snapshot.db "s3://${BUCKET}/${key}" --only-show-errors
+                  echo "uploaded s3://${BUCKET}/${key} ($(stat -c %s /backup/snapshot.db) bytes)"
+              env:
+                - name: BUCKET
+                  value: medical-rag-etcd-backups-242834061265
+                - name: AWS_REGION
+                  value: ap-southeast-1
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+              securityContext:
+                runAsUser: 0    # the image's own user (ci, 1000) cannot read the 0600 snapshot
+              volumeMounts:
+                - { name: backup, mountPath: /backup, readOnly: true }
+          # Three files, not the directory: /etc/kubernetes/pki/etcd also holds ca.key, server.key and
+          # peer.key, and a pod holding the CA key could mint itself any etcd identity.
+          volumes:
+            - name: etcd-ca
+              hostPath: { path: /etc/kubernetes/pki/etcd/ca.crt, type: File }
+            - name: etcd-client-crt
+              hostPath: { path: /etc/kubernetes/pki/etcd/healthcheck-client.crt, type: File }
+            - name: etcd-client-key
+              hostPath: { path: /etc/kubernetes/pki/etcd/healthcheck-client.key, type: File }
+            # The limit keeps a runaway file from filling the node disk; step 9 records the real size.
+            - name: backup
+              emptyDir:
+                sizeLimit: 2Gi

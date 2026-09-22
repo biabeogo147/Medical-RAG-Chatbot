@@ -1,0 +1,26 @@
+# Plain manifests: an etcd snapshot every 6 hours, uploaded to the shared stack's bucket (drills guide step 8).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: etcd-backup
+  namespace: argocd
+  annotations:
+    # Depends on nothing installed by another Application: the bucket comes from Terraform, the tools image
+    # from ECR, the certificates from kubeadm.
+    argocd.argoproj.io/sync-wave: "0"
+  # No resources-finalizer: deleting the Application must not take the CronJob's history with it.
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+    targetRevision: main
+    path: deploy/argocd/manifests/etcd-backup
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: etcd-backup
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
