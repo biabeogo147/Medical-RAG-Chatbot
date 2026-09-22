@@ -1,0 +1,19 @@
+# Kyverno chart 3.8.2 (drills guide step 13). Only what differs from the chart's defaults.
+
+# Two admission-controller replicas with a budget of one. Kyverno's resource webhooks fail closed, so while
+# the only replica is gone no Pod can be created outside the excluded namespaces, including prod's
+# replacement replica. And step 18 drains every node in turn: with one replica and a minAvailable: 1
+# budget, the drain would block forever. The chart ships the budget disabled; it is enabled here.
+admissionController:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+# The other controllers are not in the admission path; one replica each.
+backgroundController:
+  replicas: 1
+cleanupController:
+  replicas: 1
+reportsController:
+  replicas: 1

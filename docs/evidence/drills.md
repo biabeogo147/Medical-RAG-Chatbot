@@ -111,6 +111,28 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
 | 13 | The **Kyverno chart version chosen**, and the `policyreport` rows for dev and prod while in `Audit`. **A report with zero rows is a failure**, not a pass |
 | 14 | The admission error **verbatim**, and that a signed image still deploys afterwards |
 
+**Measured.**
+
+- **Step 12.** `diff` between `cosign public-key --key awskms:///alias/medical-rag-cosign` and
+  `deploy/argocd/manifests/kyverno-policies/cosign.pub`: no difference (`same key`). `openssl pkey` reports
+  `Public-Key: (256 bit)` and `NIST CURVE: P-256`.
+- **Step 13, before choosing anything.**
+  - **Where the signatures are.** `cosign tree` on prod's digest (`sha256:f5b6789a…269e`, also dev's) lists
+    only OCI referrers, of two kinds: `https://sigstore.dev/cosign/sign/v1` (signatures) and
+    `https://spdx.dev/Document` (SBOM attestations). The repository has **no `sha256-*` tag at all**, so a
+    verifier that looks only for cosign v2's `.sig` tag would report `fail` on every signed image.
+  - **Chart version.** `helm search repo kyverno/kyverno` offered 3.9.1 (v1.19.1), 3.9.0 (v1.19.0) and 3.8.2
+    (v1.18.2). **Chosen: 3.8.2**, `kubeVersion: '>=1.25.0-0'`. Not 3.9.x: kyverno/kyverno#17363 reports that
+    v1.19.0 fails to verify a key-signed image whose signature exists only as a sigstore bundle referrer —
+    this repository's exact case — and that v1.18.1 verifies it. The fix is milestoned for 1.19.2. Whether
+    v1.18.2 behaves like v1.18.1 is what the Audit run has to show.
+  - **Policy type.** `ImageValidatingPolicy`, not the guide's `ClusterPolicy` with `verifyImages`: the working
+    configuration in that issue is an `ImageValidatingPolicy`, and the `verifyImages` documentation does not
+    cover cosign v3 referrers.
+  - **The guide was wrong about the PDB.** The chart's `admissionController.podDisruptionBudget` defaults to
+    `enabled: false` (with `minAvailable: 1` underneath), and `replicas` to `~`. There is no default budget to
+    block a drain; the values enable one.
+
 **The distinction this phase has to hold.** A policy that allows everything and a policy that matches nothing
 look identical from the outside: no denials either way. The Audit step exists to tell them apart before
 `Enforce` is switched on.

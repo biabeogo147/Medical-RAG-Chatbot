@@ -1,0 +1,42 @@
+# Kyverno: admission control that checks image signatures (drills guide step 13, design §4.6 criterion #13).
+# The policies themselves are a separate Application (kyverno-policies), so a broken policy can be removed
+# without uninstalling the controller.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    # With the other operators that ship CRDs, so it is admitting before the app syncs at waves 1 and 2.
+    # The cost: if it never reports Healthy and Synced, the health gate stops everything from wave -1 on.
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    medical-rag/report-failed-sync: "true"
+spec:
+  project: default
+  sources:
+    - repoURL: https://kyverno.github.io/kyverno
+      chart: kyverno
+      # 3.8.2 is Kyverno v1.18.2. Not 3.9.x (v1.19): v1.19.0 cannot verify a key-signed image whose signature
+      # exists only as a sigstore bundle OCI referrer, which is how cosign v3 in the Jenkinsfile stores it
+      # (kyverno/kyverno#17363, open for 1.19.2; v1.18.1 reported working).
+      targetRevision: 3.8.2
+      helm:
+        releaseName: kyverno
+        valueFiles:
+          - $values/deploy/argocd/values/kyverno.yaml
+    - repoURL: https://github.com/biabeogo147/Medical-RAG-Chatbot.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Kyverno's CRDs are larger than a client-side apply allows (the annotation limit), as with
+      # kube-prometheus-stack.
+      - ServerSideApply=true
