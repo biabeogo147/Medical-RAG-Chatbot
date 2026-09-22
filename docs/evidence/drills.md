@@ -88,6 +88,16 @@ number is expected and is not a regression.
 | 10 | t1 (restore begins), t2 (all Applications `Healthy`), **RTO = t2 − t1**, and which point in time the snapshot was from |
 | 11 | The RPO, the RTO, and anything that did not come back |
 
+**Measured.**
+
+- **Step 8.** Application `etcd-backup` `Synced` `Healthy` at 00:47:03 UTC on 2026-09-22, about 20 s after the
+  refresh. CronJob `etcd-snapshot`: `0 */6 * * *`, `TIMEZONE Etc/UTC`, `SUSPEND False`, no last schedule.
+  As the guide says, this proves the object exists and nothing more. The first scheduled run is 06:00 UTC.
+  The etcd image is the one kubeadm runs, read from the etcd pods' `imageID`: identical on all three nodes,
+  `registry.k8s.io/etcd:3.6.8-0@sha256:397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5`.
+  The CronJob mounts three certificate files rather than `/etc/kubernetes/pki/etcd`, because that directory
+  also holds `ca.key`, `server.key` and `peer.key`.
+
 **What the restore must also answer**, beyond the RTO: what did *not* come back. Anything created between the
 snapshot and the deletion is lost by definition — the RPO made visible. Name it rather than letting it pass.
 
