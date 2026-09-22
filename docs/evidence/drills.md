@@ -15,14 +15,14 @@ a missing number is visible as a missing number rather than as an absence nobody
 | # | Criterion | Status | Number |
 |---|---|---|---|
 | 12 | etcd restore | Not measured | RTO: *pending* |
-| 13 | Kyverno | Not measured | Admission error: *pending* |
+| 13 | Kyverno | **Measured** (signature half; see Still to check) | Admission error: `admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-verify-images-prod" denied the request: Policy verify-images-prod failed: the image is not signed with the medical-rag cosign key` |
 | 14 | Upgrade | Not measured | Failed requests: *pending*. **Note:** the design words #14 as a *minor* upgrade; this drill exercises the patch path only, so the best outcome here is *partially measured* |
 
 | Question | Answer |
 |---|---|
 | How much cluster state can be lost? | RPO is set by the CronJob schedule: **6 hours** by design. Confirm against the first two snapshots' timestamps |
 | How long does a restore take? | *pending* — measured from the decision to restore to every Application `Healthy` |
-| Does prod refuse an unsigned image? | *pending* |
+| Does prod refuse an unsigned image? | **Yes.** An unsigned image was refused by Kyverno at admission, and signed replacement pods were admitted under the same policy minutes later (step 14) |
 | Does a rolling upgrade drop requests? | *pending* |
 
 ---
@@ -173,6 +173,25 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
   admission controller's log since the pods were deleted. The completed `index-build` pods keep their first-run
   `fail` rows until the next background scan. The log at this level shows no HTTP call to Sigstore, which
   does not show there is none; the question stays under "Still to check".
+- **Step 14, the good path first.** `cosign verify --key awskms:///alias/medical-rag-cosign --insecure-ignore-tlog`
+  on prod's digest `sha256:f5b6789a…269e`: `The signatures were verified against the specified public key`.
+  The test image, `medical-rag:1eaa43bf3512` (`sha256:c10cd57e…6769`, pushed 2026-09-19T11:12:25Z), still in
+  ECR, and `cosign verify` on it fails: unsigned.
+- **Step 14, the refusal.** `verify-images-prod` moved to `validationActions: [Deny]` (dev stays `Audit`). A
+  pod in `medical-rag-prod` with that image and a spec that meets Pod Security `restricted`, so that PSA could
+  not be the one refusing it:
+  `Error from server: error when creating "STDIN": admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-verify-images-prod" denied the request: Policy verify-images-prod failed: the image is not signed with the medical-rag cosign key`.
+  The webhook name carries `svc-fail`: the refusal came from Kyverno, through the fail-closed webhook.
+  Afterwards `kubectl get pod unsigned-test` returned `NotFound`.
+- **Step 14, a signed image still deploys.** Both prod web pods deleted; the ReplicaSet recorded
+  `SuccessfulCreate` for `medical-rag-8654f9c58f-wc9qd` and `-7mmkr` 11 s and 22 s after the `Killing` events,
+  no `FailedCreate`, and the Deployment read `2/2`. Those two pods were admitted under `Deny`.
+- **Problem found: "delete a prod pod" deleted both, twice.** The guide's step 13 command and the one used
+  in step 14 delete by label, which selects **every** web pod, and `kubectl delete pod` does not consult a
+  PodDisruptionBudget — only an eviction does. Events show both prod pods `Killing` at the same second
+  (02:14:52 and again in step 14), with the first replacement created 11 s later. The guide's claim that this is
+  safe because of the budget is wrong. Whether prod actually refused requests in those seconds was not
+  measured. One pod at a time, by name, is the fix for the guide.
 
 **The distinction this phase has to hold.** A policy that allows everything and a policy that matches nothing
 look identical from the outside: no denials either way. The Audit step exists to tell them apart before
