@@ -58,11 +58,17 @@ severity, and the control cannot go red.
 `CRITICAL with a fix available:` to `Fixable, any severity:`. Nothing else.
 ```powershell
 git switch -c jenkins/step-gate-control
+git diff --stat Jenkinsfile
 git add Jenkinsfile
 git commit -m "Positive control: count fixable findings of any severity (temporary branch, not for main)"
 git push -u origin jenkins/step-gate-control
 git switch main
 ```
+`git diff --stat` must print `1 file changed, 1 insertion(+), 2 deletions(-)`. If it prints nothing, the edit
+was not made: `git commit` then finds nothing to commit, the push sends `main`'s own commit, and the Skip
+guard ends the build as `NOT_BUILT` ("only docs or deploy files changed"), which is what happened on the
+first try.
+
 **3. Jenkins UI (through the VPN)** → `medical-rag` → branch `jenkins/step-gate-control`. Wait for the build.
 
 **Check.** The build is **red at `Scan`**, and its log shows `Fixable, any severity: N` with **N > 0** —
