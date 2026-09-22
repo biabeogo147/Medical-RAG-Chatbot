@@ -14,14 +14,14 @@ a missing number is visible as a missing number rather than as an absence nobody
 
 | # | Criterion | Status | Number |
 |---|---|---|---|
-| 12 | etcd restore | Not measured | RTO: *pending* |
+| 12 | etcd restore | **Measured** | **RTO 7 m 02 s** (t1 04:51:04Z → every Application Synced+Healthy, node Leases and pods settled 04:58:06Z); canary back with its original value; RPO of this run 6 m 01 s, ≤ 6 h by schedule |
 | 13 | Kyverno | **Measured** (signature half; see Still to check) | Admission error: `admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-verify-images-prod" denied the request: Policy verify-images-prod failed: the image is not signed with the medical-rag cosign key` |
 | 14 | Upgrade | **Not measured**: 1.36.4 is the newest 1.36 patch (step 15) | Failed requests: *not measured*. **Note:** the design words #14 as a *minor* upgrade; this drill exercises the patch path only, so the best outcome here is *partially measured* |
 
 | Question | Answer |
 |---|---|
 | How much cluster state can be lost? | RPO is set by the CronJob schedule: **6 hours** by design. Confirm against the first two snapshots' timestamps |
-| How long does a restore take? | *pending* — measured from the decision to restore to every Application `Healthy` |
+| How long does a restore take? | **7 m 02 s**, from deleting the namespace to every Application Synced and Healthy, operator typing included (step 10) |
 | Does prod refuse an unsigned image? | **Yes.** An unsigned image was refused by Kyverno at admission, and signed replacement pods were admitted under the same policy minutes later (step 14) |
 | Does a rolling upgrade drop requests? | *pending* |
 
@@ -109,6 +109,27 @@ number is expected and is not a regression.
   - Upload: `s3://medical-rag-etcd-backups-242834061265/snapshots/20260922T044503Z-medical-rag-node-3.db`,
     **62,402,592 bytes**, taken on `medical-rag-node-3`. The node role's S3 grant from step 2 works.
   - The schedule was then reverted to `0 */6 * * *` in Git; the file is byte-identical to `d772a09` again.
+    Live `.spec.schedule` read `0 */6 * * *` at **04:47:40 UTC**. The temporary schedule produced exactly
+    **one** job and one S3 object.
+- **Step 10 (M2): the restore drill passed.** Snapshot `20260922T044503Z-medical-rag-node-3.db`, copied to all
+  three nodes (checksum `ded1f327…`, 62,402,592 bytes on each).
+  - Pre-check: on every node the manifest's `--name` and `--initial-advertise-peer-urls` equalled the values the
+    restore would use (`medical-rag-node-{1,2,3}`, `https://10.10.{1.252,2.245,3.197}:2380`).
+  - **t1 = 04:51:04Z**, `kubectl delete namespace restore-drill` right after reading the canary.
+  - Phase 1: all four static pods stopped on all three nodes within about 30 s. The `crictl.yaml does not
+    exist` lines are warnings; the endpoint was given explicitly.
+  - Phase 3 at 04:54:06Z: all three nodes restored with the **same cluster-id `9ed3a0fb6a89e03e`** and the same
+    three members, revision bumped from 134191 to **1000134191** and marked compacted.
+  - The loop first answered at 04:56:35Z (17 Applications, 2 not yet reconciled after t1); all reconciled at
+    04:57:51Z; node Leases renewed and no pod outside Running/Completed at **t2 = 04:58:06Z**.
+  - After: three nodes `Ready`; **`canary` back with `written-at=2026-09-22T04:14:20Z`**; `make apps` a minute
+    later showed all 17 Synced Healthy; the CronJob read `0 */6 * * *` again — the snapshot held the temporary
+    `*/15`, and Argo CD put Git's value back.
+- **Step 11.** **RTO = 7 m 02 s.** **RPO of this run = 6 m 01 s** (t1 − the key's 04:45:03Z); by schedule, ≤ 6 h.
+  What did not come back: anything written after 04:45:03Z, which in this window was the schedule revert, put
+  back by Argo CD from Git. One oddity: the snapshot captured its own Job mid-run, so after the restore
+  `etcd-snapshot-29834205` shows `DURATION 10m` (04:45 until the restored controller closed it) where the real
+  run took 8 s.
 
 **What the restore must also answer**, beyond the RTO: what did *not* come back. Anything created between the
 snapshot and the deletion is lost by definition — the RPO made visible. Name it rather than letting it pass.
