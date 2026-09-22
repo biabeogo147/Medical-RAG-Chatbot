@@ -10,6 +10,11 @@ metadata:
     # With the other operators that ship CRDs, so it is admitting before the app syncs at waves 1 and 2.
     # The cost: if it never reports Healthy and Synced, the health gate stops everything from wave -1 on.
     argocd.argoproj.io/sync-wave: "-2"
+    # Compare through a server-side dry run. Without it the eleven policies.kyverno.io CRDs read OutOfSync
+    # forever: the API server adds `conversion: {strategy: None}` to each, the client-side diff counts that
+    # default as drift, and `root` then waits on this Application and never passes wave -2. Measured with
+    # `kubectl diff --server-side` against the rendered CRD: exit 0, nothing to change (drills evidence).
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   labels:
     medical-rag/report-failed-sync: "true"
 spec:

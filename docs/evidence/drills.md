@@ -132,6 +132,20 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
   - **The guide was wrong about the PDB.** The chart's `admissionController.podDisruptionBudget` defaults to
     `enabled: false` (with `minAvailable: 1` underneath), and `replicas` to `~`. There is no default budget to
     block a drain; the values enable one.
+- **Step 13a, the controller.** Application `kyverno` synced (`successfully synced (all tasks run)`):
+  `kyverno-admission-controller` 2/2 on `medical-rag-node-2` and `medical-rag-node-3`, the other three
+  controllers 1/1, PDB `MIN AVAILABLE 1`, `ALLOWED DISRUPTIONS 1`. The `ImageValidatingPolicy` CRD serves
+  `v1`, `v1alpha1` and `v1beta1`, storage `v1beta1`. One startup-probe failure on an admission pod
+  (`tls: internal error`), before its webhook certificate existed; 0 restarts.
+- **Problem found: `kyverno` stayed `OutOfSync`, so `root` stayed `Progressing`.** The eleven
+  `policies.kyverno.io` CRDs read `OutOfSync` after a successful sync. Not caused by the
+  `kyverno-migrate-resources` Job (its log: `stored version is already up to date, nothing to do`), and
+  `managedFields` show no writer to `spec` but `argocd-controller`. The rendered and live `spec` of
+  `imagevalidatingpolicies.policies.kyverno.io` differ **only** in `conversion: {strategy: None}`, a default the
+  API server adds; `kubectl diff --server-side --field-manager=argocd-controller` against the rendered CRD
+  exited **0**. So the cluster matched Git and the client-side diff was wrong. Fix:
+  `argocd.argoproj.io/compare-options: ServerSideDiff=true` on the Application, as `platform-tls` already has.
+  Left unfixed, the next rebuild would have stopped at wave -2 with nothing reported as an error.
 
 **The distinction this phase has to hold.** A policy that allows everything and a policy that matches nothing
 look identical from the outside: no denials either way. The Audit step exists to tell them apart before
