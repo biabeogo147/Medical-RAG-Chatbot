@@ -19,7 +19,7 @@
 #   about the signature rather than a missing digest (verifyDigest).
 # attestors: the static key from step 12, identical to cosign.pub next to this file (step 13 diffs them).
 #   No transparency log: the pipeline signs with a signing config that names no services, so there is no
-#   Rekor entry to find.
+#   Rekor entry to find. ctlog.url is still set, because Kyverno refuses to build the verifier without it.
 ---
 apiVersion: policies.kyverno.io/v1
 kind: ImageValidatingPolicy
@@ -59,6 +59,9 @@ spec:
               roOO1fSnaSS3C5rP+tyxyL4zyUDAZMKHHSlnbAzbKiRc4miXYVzPHMsDpg==
               -----END PUBLIC KEY-----
         ctlog:
+          # Required even with the log ignored: without it Kyverno 1.18.2 fails every image with
+          # "getting Rekor public keys: rekor URL must be provided" (drills evidence, step 13b).
+          url: https://rekor.sigstore.dev
           insecureIgnoreTlog: true
           insecureIgnoreSCT: true
   validations:
@@ -106,6 +109,9 @@ spec:
               roOO1fSnaSS3C5rP+tyxyL4zyUDAZMKHHSlnbAzbKiRc4miXYVzPHMsDpg==
               -----END PUBLIC KEY-----
         ctlog:
+          # Required even with the log ignored: without it Kyverno 1.18.2 fails every image with
+          # "getting Rekor public keys: rekor URL must be provided" (drills evidence, step 13b).
+          url: https://rekor.sigstore.dev
           insecureIgnoreTlog: true
           insecureIgnoreSCT: true
   validations:

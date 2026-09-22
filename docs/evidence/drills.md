@@ -157,6 +157,16 @@ snapshot and the deletion is lost by definition — the RPO made visible. Name i
   happen only when an Application is fixed while `root` is waiting on it; a rebuild creates the Application
   with the annotation already on it. **The general lesson for the health gate**: a fix to an Application that
   the gate is waiting on has to be applied to the live object, or `root`'s operation terminated first.
+- **Step 13b, first Audit run: every signed image failed.** Both `ImageValidatingPolicy` objects `READY true`,
+  `kyverno-policies` `Synced Healthy`. After deleting a web pod in each namespace, all pods came back Ready
+  (Audit blocks nothing) and the policy reports held **5 rows, all `fail`**: dev's web and `index-build` pods,
+  prod's two web pods and `index-build`. So the globs match — the zero-row outcome did not happen — but the
+  verdict was wrong. The admission controller's log gave the cause:
+  `image verification failed error="failed to build cosign verification opts: getting Rekor public keys:  rekor URL must be provided"`,
+  logged after `verifying cosign image signature … digest=sha256:f5b6789a…269e`. The signature fetch from ECR
+  therefore worked, and verification never started; this is not kyverno/kyverno#17363. Kyverno 1.18.2
+  requires `ctlog.url` even with `insecureIgnoreTlog: true`, and the policy had left it out. Fix: `url:
+  https://rekor.sigstore.dev` on both policies, as in the Kyverno documentation and the issue's working policy.
 
 **The distinction this phase has to hold.** A policy that allows everything and a policy that matches nothing
 look identical from the outside: no denials either way. The Audit step exists to tell them apart before
@@ -201,5 +211,8 @@ doing what it claims, and that is a more valuable finding than a clean run.
 - **Design §4.6 also asks for baseline Pod Security policies under Kyverno.** This phase does not add them:
   the two Jenkins namespaces already carry Pod Security labels and a `ValidatingAdmissionPolicy`, and the
   app namespaces enforce `restricted`. Criterion #13 is therefore met on the signature half only.
+- **Whether admission now needs the public Sigstore.** The error named "getting Rekor public keys". If Kyverno
+  fetches them from `rekor.sigstore.dev` (or its TUF root) at admission, then with prod on `failurePolicy:
+  Fail` an outage there, or a cut in NAT egress, blocks prod's pods. Not measured.
 - Kyverno at wave -2 becomes a new single point of failure for every rebuild: if it never reports `Healthy`
   and `Synced`, nothing from wave -1 onward syncs. Record the rebuild time it adds.
