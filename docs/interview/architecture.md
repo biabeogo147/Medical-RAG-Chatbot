@@ -17,6 +17,7 @@ SSM để vào máy — **không có SSH**. Bên trong VPC: ingress-nginx nhận
 kube-apiserver và `443` tới các UI nội bộ. Pod ra internet qua NAT.
 
 ```mermaid
+%%{init: {"theme":"base","flowchart":{"useMaxWidth":false},"themeVariables":{"background":"#ffffff","textColor":"#1b1430","lineColor":"#6b7684","primaryTextColor":"#1b1430"}}}%%
 flowchart TB
     APPUSER["App user"] -->|"HTTP 80"| PUBLIC["Public NLB"]
     OP["Operator"] -->|"WireGuard, UDP 51820"| WG["WireGuard gateway"]
@@ -51,6 +52,7 @@ trên chính ba node control plane** (stacked), nên mất một node còn quoru
 khác biệt. Không CI nào và không laptop nào cần quyền vào cụm để deploy.
 
 ```mermaid
+%%{init: {"theme":"base","flowchart":{"useMaxWidth":false},"themeVariables":{"background":"#ffffff","textColor":"#1b1430","lineColor":"#6b7684","primaryTextColor":"#1b1430"}}}%%
 flowchart LR
     DEV["You, on the laptop"] -->|"git push"| GH["GitHub<br/>deploy/argocd/"]
 
@@ -81,6 +83,7 @@ cụm nằm ngoài cụm. Ops workstation giữ một kubeconfig admin, nhưng c
 **8 wave, từ −3 tới 4**. Một wave chỉ bắt đầu khi mọi Application của wave trước đã `Healthy` **và** `Synced`.
 
 ```mermaid
+%%{init: {"theme":"base","flowchart":{"useMaxWidth":false},"themeVariables":{"background":"#ffffff","textColor":"#1b1430","lineColor":"#6b7684","primaryTextColor":"#1b1430"}}}%%
 flowchart TB
     ROOT["root · make bootstrap"] --> W3["wave −3 · nền tảng<br/>argocd, ingress-nginx, EBS CSI"]
     W3 --> W2["wave −2 · operator và CRD của chúng<br/>external-secrets, cert-manager, kyverno"]
@@ -117,6 +120,7 @@ Còn một tầng wave nữa **bên trong** chart của từng app (0, 1, 2) —
 instance profile của node và tạo ra Kubernetes Secret. Git chỉ giữ **tên** secret, không giữ giá trị.
 
 ```mermaid
+%%{init: {"theme":"base","flowchart":{"useMaxWidth":false},"themeVariables":{"background":"#ffffff","textColor":"#1b1430","lineColor":"#6b7684","primaryTextColor":"#1b1430"}}}%%
 flowchart LR
     CLI["put-secret-value<br/>by you, once"] --> SM["Secrets Manager"]
 
@@ -154,6 +158,7 @@ ba.
 của dev**, và commit đó lại bị cổng thứ nhất chặn — nên nó không thành vòng lặp.
 
 ```mermaid
+%%{init: {"theme":"base","flowchart":{"useMaxWidth":false},"themeVariables":{"background":"#ffffff","textColor":"#1b1430","lineColor":"#6b7684","primaryTextColor":"#1b1430"}}}%%
 flowchart TB
     NEW["New commit on main"] --> Q1{"Author is<br/>jenkins-bot?"}
     Q1 -->|"yes"| SKIP["NOT_BUILT<br/>chỉ stage tag đã chạy"]
