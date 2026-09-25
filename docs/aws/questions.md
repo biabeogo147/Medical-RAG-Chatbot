@@ -214,8 +214,8 @@ thể hiện thế nào trong code Terraform của project?
 
 **B4.10** Token đăng nhập ECR sống bao lâu? IAM policy và repository policy của ECR khác nhau thế nào?
 
-**B4.11** KMS key policy và IAM policy quan hệ với nhau thế nào? Vì sao `kms:Sign` trong policy của node là đủ để
-ký, và muốn chỉ CI được ký thì cluster tự dựng này thiếu gì?
+**B4.11** KMS key policy và IAM policy quan hệ với nhau thế nào? Vì sao một `kms:Sign` trong IAM policy của role CI là
+đủ để ký, và làm sao bảo đảm chỉ CI ký được?
 
 **B4.12** Secrets Manager giữ version của secret thế nào? `put-secret-value` và External Secrets tương tác ra sao?
 

@@ -161,8 +161,9 @@ tầng đi trước (secret, certificate, ingress, monitoring) đã sẵn sàng 
 
 - **Thiết kế:** hai Application `medical-rag-dev` và `medical-rag-prod`. Prod chỉ đổi qua pull request đã review (`Common
   A1.2`, `Common B4.1`).
-- **Build index:** chạy như một hook `PreSync` trong Application của app. Đây là thứ tự *trong* một Application, khác với wave
-  giữa các Application (A3.1, `Common B2.2`).
+- **Build index:** chạy như một hook `Sync` ở wave 1 trong Application của app, sau Secret và ServiceAccount ở wave 0 và
+  trước Deployment ở wave 2. Không dùng `PreSync`, vì `PreSync` chạy trước cả ServiceAccount và ExternalSecret của nó
+  (`App A3.2`). Đây là thứ tự *trong* một Application, khác với wave giữa các Application (A3.1, `Common B2.2`).
 - **Monitoring:** Prometheus đã chọn mọi ServiceMonitor, nên ServiceMonitor của app sẽ được nhận mà không phải sửa gì (B6.4).
 
 **A1.9** **Ý chính:** "Vì chỉ Jenkins biết image nào đã qua quét và ký. Image được push lên ECR rồi mới quét và ký, nên trong
@@ -247,7 +248,7 @@ như `PreSync` hay `PostSync`, ví dụ migrate database. Wave xếp thứ tự 
 - **Trong một Application:** ví dụ `platform-tls` có ClusterIssuer ở wave 0, Certificate ở wave 1, PushSecret ở wave 2 (B4.3).
 - **Giữa các Application:** wave được đặt trên *chính các object Application* bên trong `root`. `root` apply chúng từng wave,
   và chờ Application con healthy. Nhưng "healthy" của một Application mặc định không được tính (A3.2).
-- **Hook:** app sẽ dùng hook `PreSync` để build index (`Common B2.2`).
+- **Hook:** app dùng hook `Sync` ở wave 1 để build index, không phải `PreSync` (`App A3.2`, `Common B2.2`).
 
 **A3.2** **Ý chính:** "Từ Argo CD 1.8, health của resource Application không còn được tính, nên với `root`, mọi Application con
 đều healthy ngay lúc được tạo, và các wave không thật sự chờ nhau. Tôi khôi phục bằng một health check Lua cho kind
@@ -445,15 +446,17 @@ một lệnh. Không có key giải mã nào trong Git hay trong Argo CD, và xo
 Điểm yếu của lựa chọn này: phụ thuộc AWS, và quyền đọc đi theo node role (A5.2).
 
 **A5.2** **Ý chính:** "Từ instance profile của node. ClusterSecretStore không có block `auth`, nên SDK AWS dùng chuỗi credential
-mặc định và lấy role của node qua metadata service. Rủi ro là mọi pod trên node đều dùng được role đó. Tôi giới hạn role chỉ
-đọc sáu secret có tên, và chỉ ghi đúng một secret là bản backup certificate."
+mặc định và lấy role của node qua metadata service. Rủi ro là mọi pod không bị chặn metadata service đều dùng được role đó
+(bốn namespace app và Jenkins thì bị chặn). Tôi giới hạn role chỉ
+đọc tám secret có tên, và chỉ ghi đúng một secret là bản backup certificate."
 
 *Nếu được hỏi thêm:*
 
-- **Vì sao chưa có cách tốt hơn:** cluster tự dựng không có IRSA hay EKS Pod Identity. Hop limit 2 là để pod gọi được metadata
-  service (`Terraform B7.1`).
-- **Kế hoạch:** NetworkPolicy chặn `169.254.169.254` cho namespace của app (phase app), sau đó là IRSA tự host (P2 trong thiết
-  kế).
+- **Vì sao External Secrets vẫn dùng role của node:** IRSA tự host đã dựng ở phase app, nhưng mới cấp role riêng cho app, Job
+  build index và Jenkins build pod; pod nền tảng chưa được chuyển. Hop limit 2 là để chúng gọi được metadata service
+  (`Terraform B7.1`).
+- **Đã làm:** bốn namespace (dev, prod, `jenkins`, `jenkins-agents`) chặn `169.254.169.254` bằng NetworkPolicy. **Còn lại:**
+  role riêng cho External Secrets qua cùng issuer.
 - Quyền nguy hiểm nhất của role, và thiệt hại nếu một pod bị chiếm: `Terraform B7.3`.
 
 **A5.3** **Ý chính:** "Một lệnh `put-secret-value` vào Secrets Manager, không commit gì. ExternalSecret của Alertmanager refresh
@@ -614,7 +617,9 @@ thật: Grafana."
 - **Grafana:** từ 256Mi lên 512Mi sau lỗi 502 (A8.8).
 - **Chật:** ba node 8 GB chạy cả control plane. Đó là lý do Rancher, Alertmanager và mỗi component của Argo CD chỉ có một
   replica.
-- `[điền: kubectl top nodes và kubectl top pods -A]`
+- Cluster không có metrics-server, nên `kubectl top` không chạy được; số dùng thật đọc từ Prometheus. Phần CPU còn hứa được
+  trên ba node, đo lúc đầu phase Jenkins (trước Jenkins, Kyverno và CronJob etcd): 560m, 775m và 720m
+  (`evidence/jenkins.md`, bước 1.2).
 
 **A7.6** **Ý chính:** "Đọc changelog của chart và release notes của app trước. Sau đó chạy `helm template` bản cũ và bản mới với
 cùng values rồi diff, để biết chính xác cái gì đổi. Nâng từng component một, trong một pull request sửa đúng một dòng
@@ -985,7 +990,8 @@ qua metadata service.
 
 **Node role:**
 
-- Đọc được sáu secret: `llm`, `github`, `rancher`, `rancher-tls`, `alertmanager`, `wildcard-tls`.
+- Đọc được tám secret: `llm`, `github`, `rancher`, `rancher-tls`, `alertmanager`, `wildcard-tls`, và từ phase app thêm
+  `app-dev`, `app-prod`.
 - Chỉ ghi được `wildcard-tls`, bằng `PutSecretValue` và `DeleteResourcePolicy`. External Secrets gọi cả hai ở mỗi lần push.
 
 Tên secret nằm trong `infra/terraform/cluster/main.tf`, quyền trong `iam.tf`.

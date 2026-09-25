@@ -39,7 +39,7 @@ yếu đã biết.
 | Chữ ký chứng minh key, không chứng minh pipeline: digest cũ đã ký vẫn qua | A5.6, A9.2 |
 | Cổng chưa từng bắt được một CRITICAL thật; chỉ positive control làm nó đỏ | A5.2, B5.1 |
 | Token của bot push thẳng được lên `main`, kể cả values prod | A6.6, A9.2, A9.3 |
-| Chưa có commit nào chạy hết pipeline trên một cụm vừa dựng lại | A1.5, A9.2, B6.4 |
+| Pipeline đã chạy trên cụm vừa dựng lại tới commit của bot, nhưng chưa ai theo một commit tới pod dev `Ready` | A1.5, A9.2, B6.4 |
 | Trivy tải lại 114.8 MiB database mỗi build | A7.4 |
 | Namespace build pod ở mức Pod Security `privileged` | A4.3, B3.2 |
 
@@ -392,8 +392,9 @@ file đó, nên controller quay lại giống hệt — trừ mật khẩu admin
 
 *Nếu được hỏi thêm:* ở phase drills, một lần dựng lại cả cụm từ stack trống, bấm giờ bằng script, đưa cả 17
 Application về `Synced` và `Healthy` trong 21 m 47 s, kể cả `jenkins-platform` ở wave 3 và `jenkins` ở wave 4
-(`../evidence/drills.md`, M3). Đó mới là Application khoẻ: chưa ai đăng nhập, chưa có job nào được quét lại hay build
-nào chạy, và chưa có commit nào được đẩy qua pipeline trên cụm vừa dựng. Con số 14 m 11 s của phase GitOps không so
+(`../evidence/drills.md`, M3). Đó mới là Application khoẻ: chưa ai đăng nhập. Pipeline thì có chạy trên cụm vừa dựng:
+bot ghi commit cho dev `1255b50` sau lần dựng lại đầu phase drills và `624a8e2` bốn phút sau khi M3 kết thúc, tức build đã
+qua test, build, scan, ký tới stage `Promote to dev`. Chưa ai theo commit đó tới lúc pod dev `Ready`. Con số 14 m 11 s của phase GitOps không so
 được: cụm đó chỉ có 9 Application và không có Jenkins.
 
 **A7.4** **Ý chính:** "Prometheus đã có sẵn từ phase GitOps nên tôi đọc **request** CPU của build pod từ đó —
@@ -502,8 +503,8 @@ chiếm được pod build là ký được. Và token của bot push thẳng đ
 ước."
 
 *Nếu được hỏi thêm:* hai điểm yếu tôi từng nêu ở đây đã được đóng ở phase drills: Kyverno giờ kiểm chữ ký ở prod
-(A5.6), và cổng đã đỏ trong một positive control (A5.2). Thứ còn lại là chưa có commit nào chạy hết pipeline trên một
-cụm vừa dựng lại.
+(A5.6), và cổng đã đỏ trong một positive control (A5.2). Thứ còn lại: pipeline đã chạy trên cụm vừa dựng lại tới commit
+của bot cho dev (`624a8e2`), nhưng chưa ai theo một commit tới lúc pod dev `Ready` trên cụm đó.
 
 **A9.3** **Ý chính:** "Ba thứ. Tách tài khoản bot khỏi tài khoản người, để 'prod chỉ qua PR' là luật chứ không
 phải quy ước. Đẩy build ra khỏi node của ứng dụng, vì hiện pipeline ăn vào chính CPU mà app dùng. Và có người
@@ -760,4 +761,4 @@ lẻ, phần lớn là một bước thiếu điều kiện tiên quyết hoặc
 Ca dương tính cho cổng đã có (positive control, A5.2). Hai thứ nhỏ hơn: dung lượng repository và số image không tag,
 và preview lifecycle khi đã quá 30 image có tag.
 
-*Ở đâu:* `../evidence/drills.md`, M3 và M4; phần còn lại ở `../evidence/jenkins.md`, mục "Still to check" (mục đó viết trước phase drills).
+*Ở đâu:* `../evidence/drills.md`, M3 và M4; phần còn lại ở `../evidence/jenkins.md`, mục "Still to check" (đã cập nhật sau phase drills).

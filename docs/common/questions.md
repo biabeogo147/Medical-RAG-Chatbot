@@ -230,8 +230,8 @@ Câu về `Jenkinsfile`, cổng chặn Trivy, cosign và skip guard nằm ở [J
 
 ### B5. Secret và quyền
 
-**B5.1** Năm secret trong Secrets Manager là gì, ai đọc được cái nào? Có secret nào của hệ thống chưa nằm trong
-năm cái đó không?
+**B5.1** Các secret trong Secrets Manager là gì, ai đọc được cái nào? Có secret nào của hệ thống không nằm trong
+Secrets Manager không?
 
 **B5.2** Jenkins không có quyền deploy vào cluster. Vậy cụ thể nó có những quyền gì, trên AWS, trên Kubernetes
 và trên GitHub?

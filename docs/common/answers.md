@@ -16,7 +16,6 @@ Con số nào chưa đo được viết dưới dạng `[điền: …]`. Không 
 |---|---|---|
 | Thời gian thực tế làm project | Lịch sử commit | A1.6 |
 | Kiểm tra Rancher qua VPN: không có rule 443 public, timeout khi tắt VPN, chuỗi certificate, 308 từ public NLB | Evidence Rancher | A4.5 |
-| NetworkPolicy chặn metadata: manifest và bằng chứng test | Evidence phase GitOps | A6.3, A6.4, B1.6, B5.3 |
 | Các `[điền]` của Phần B | manifest, values | B2.4, B2.10, B4.1–B4.3, B5.1–B5.3, B6.1, B6.2, B6.4–B6.6 |
 
 **Cần xác nhận khi xong dự án:**
@@ -28,8 +27,7 @@ Con số nào chưa đo được viết dưới dạng `[điền: …]`. Không 
   chưa từng thấy và reboot nó một lần (A10.1, chuyện dự phòng 2).
 - Các alert rule ở A7.5 đã cấu hình chưa, và có receiver không.
 - `max_retries=1` của client Gemini có nghĩa là tổng số lần gọi hay số lần thử lại (A3.4).
-- Phần B dựa trên thiết kế và code hiện có; chỗ phụ thuộc file chưa viết (`deploy/`, `Jenkinsfile` mới) phải kiểm
-  lại khi phase đó xong.
+- Phần B dựa trên code hiện có: `deploy/` và `Jenkinsfile` đều đã viết và đã chạy.
 
 ---
 
@@ -458,9 +456,10 @@ snapshot etcd lại nằm trên S3. Các điểm còn lại đều có cách s�
    Cách sửa là cho từng addon một role IRSA riêng.
 2. **Secret trong etcd và snapshot:** cần `EncryptionConfiguration` cho API server, và mã hoá bucket backup bằng KMS
    key riêng mà role của node không decrypt được (B5.4).
-3. **File pickle của index:** app nạp `index.pkl` với `allow_dangerous_deserialization=True`, nên ai ghi được vào bucket
-   artifacts là chạy được code trong pod app. Cách sửa: chỉ Job build được ghi, app chỉ đọc, và kiểm tra hash trong
-   manifest trước khi nạp.
+3. **File pickle của index:** app nạp `index.pkl` với `allow_dangerous_deserialization=True`, nên ai ghi được `faiss/*`
+   trong bucket artifacts là chạy được code trong pod app. Đã có: trong cluster chỉ role IRSA `index-builder` ghi được `faiss/*`, role của
+   app chỉ đọc, và role node không có bucket này (`infra/terraform/shared/irsa.tf`). Còn thiếu: kiểm tra hash trong manifest
+   trước khi nạp.
 4. **Token GitHub của bot** push thẳng được lên `main`, nên "prod chỉ đổi qua PR" hiện là quy ước (B5.2).
 5. **Workstation có `AdministratorAccess`:** ai mở được session trên nó là admin.
 6. **App không có HTTPS**, và **một NAT gateway** là điểm lỗi đơn.
@@ -547,7 +546,7 @@ credit (B6.4).
 
 ### A8. Chi phí và ràng buộc
 
-**A8.1** **Ý chính:** "Cluster khoảng 0.53 USD mỗi giờ và chỉ chạy khi cần; phần luôn giữ khoảng 7 USD mỗi tháng. Tôi
+**A8.1** **Ý chính:** "Cluster khoảng 0.53 USD mỗi giờ và chỉ chạy khi cần; phần luôn giữ khoảng 9 USD mỗi tháng. Tôi
 kiểm soát chi phí bằng thiết kế, xoá cluster khi không dùng, và bằng budget cảnh báo lọc theo tag của project."
 
 *Nếu được hỏi thêm:*
@@ -556,7 +555,7 @@ kiểm soát chi phí bằng thiết kế, xoá cluster khi không dùng, và b�
 |---|---|
 | Cluster khi đang chạy (3 node, NAT, 2 NLB, WireGuard, ổ đĩa, IPv4) | ≈ 0.53 USD/giờ |
 | Workstation khi đang chạy | ≈ 0.03 USD/giờ |
-| Luôn giữ (KMS key, 5 secret, Route 53, bucket, image, ổ đĩa workstation) | ≈ 7 USD/tháng |
+| Luôn giữ (KMS key, 10 secret, Route 53, bucket, image, ổ đĩa workstation) | ≈ 9 USD/tháng, ước tính (evidence đo ≈ 7 lúc mới có 5 secret) |
 
 Cách giảm: xoá cluster khi không dùng; một NAT gateway thay vì ba; S3 gateway endpoint miễn phí; WireGuard thay vì VPN
 managed. Budget 100 USD/tháng gửi email ở 50% và 100% chi phí thực.
@@ -880,12 +879,16 @@ hỏi hay câu trả lời thành chữ thường. Đã thử `<img src=x onerro
 
 **B2.10** Phải có PDF mới tính được version (B2.1). Image cố ý không chứa thư mục `data/`, còn code build đọc PDF từ
 `DATA_PATH` trên đĩa, không tải từ S3. Vì vậy phải có một bước đưa PDF vào Job (ví dụ initContainer tải từ bucket), và
-Jenkins cũng cần PDF để biết version có đổi không trước khi ghi `index.version`. `[điền: cơ chế thật]`.
+Jenkins cũng cần PDF để biết version có đổi không trước khi ghi `index.version`.
+
+**Cơ chế thật:** Job đọc corpus từ S3 (`CORPUS_STORE`, prefix `corpus/`) bằng role IRSA `index-builder`, và dừng trước mọi
+lời gọi embedding nếu corpus không băm ra đúng version đã ghim (`INDEX_EXPECTED_VERSION`). Jenkins tính version từ PDF trong
+Git, bằng target `indexversion` của Dockerfile, ở stage `Index version` (`Jenkinsfile`; Jenkins guide step 15).
 
 ### B3. Container và manifest
 
 **B3.1** Stage `builder` dùng image `uv` cài dependency theo `uv.lock` vào `.venv`; stage `test` chạy ruff và pytest;
-stage runtime là `python:3.12-slim-bookworm`, chỉ chép `.venv`, `src`, `gunicorn.conf.py` và `start.sh`.
+stage runtime là `python:3.12-slim-trixie` (Debian 13, từ phase Jenkins), chỉ chép `.venv`, `src`, `gunicorn.conf.py` và `start.sh`.
 
 - **User:** UID/GID 10001 tên `app`, không có home, shell `nologin`.
 - **Không có trong image:** công cụ build, dependency dev, test, thư mục `data/`, `.git`, `docs/`, `Jenkinsfile`.
@@ -984,13 +987,17 @@ ExternalSecret cần `SkipDryRunOnMissingResource` vì CRD của nó chưa có l
 
 | Secret | Chứa | Ai đọc được |
 |---|---|---|
-| `medical-rag/llm` | Key Gemini, token Hugging Face | Node (External Secrets) |
+| `medical-rag/app-dev`, `medical-rag/app-prod` | Key Gemini, token Hugging Face, `FLASK_SECRET_KEY` của từng môi trường | Node (External Secrets) |
 | `medical-rag/github` | Token của bot GitHub | Node |
 | `medical-rag/rancher` | Mật khẩu bootstrap của Rancher | Node |
 | `medical-rag/rancher-tls` | Certificate và private key Sectigo | Node |
+| `medical-rag/alertmanager` | Cấu hình SMTP gửi email cảnh báo | Node |
+| `medical-rag/wildcard-tls` | Bản backup của wildcard certificate | Node đọc, và chỉ ghi được đúng secret này |
+| `medical-rag/sa-signer` | Key ký token service account (issuer IRSA) | Không role nào trong cluster; Ansible đọc trên workstation |
 | `medical-rag/wireguard` | `serverPrivateKey`, `operatorPublicKey` | Chỉ WireGuard gateway, trong số các máy |
+| `medical-rag/llm` | Key Gemini, token Hugging Face, cách lưu cũ | Node; không còn gì đọc nó |
 
-Identity admin, gồm role của workstation, đọc được cả năm.
+Identity admin, gồm role của workstation, đọc được tất cả.
 
 **Mật khẩu admin Jenkins không nằm trong Secrets Manager.** **External Secrets** sinh nó **trong cluster**,
 bằng generator `Password` với `refreshInterval: "0"` — sinh một lần rồi thôi, nên nó không đổi dưới chân
@@ -1002,7 +1009,9 @@ không sinh. Nằm ở secret `jenkins-admin` namespace `jenkins`, key `jenkins-
 kubectl -n jenkins get secret jenkins-admin -o jsonpath='{.data.jenkins-admin-password}' | base64 -d
 ```
 
-**Chưa có chỗ trong thiết kế:** `FLASK_SECRET_KEY` của app và mật khẩu admin Grafana `[điền: nằm ở secret nào]`.
+`FLASK_SECRET_KEY` nằm trong `medical-rag/app-dev` và `medical-rag/app-prod`, tới pod qua ExternalSecret `app-secrets`. Mật khẩu
+admin Grafana, giống Jenkins, được **sinh trong cluster** (`monitoring/grafana-admin`, generator `Password`), không ở Secrets
+Manager.
 
 **B5.2**
 
@@ -1019,9 +1028,11 @@ kubectl -n jenkins get secret jenkins-admin -o jsonpath='{.data.jenkins-admin-pa
 `main` sẽ chặn luôn bot push bản dev, nên phải tách: values prod ở branch hoặc repo cần review, hoặc ruleset giới hạn
 đường dẫn bot được push (tuỳ gói GitHub). `[điền: đã cấu hình gì]`.
 
-**B5.3** Theo thiết kế: **external-secrets** (gọi Secrets Manager), **ebs-csi** (gọi EC2 API cho volume) và **Jenkins
-agent** (push ECR, ký KMS). initContainer tải index và Job build index dùng role IRSA riêng (`App A2`); CronJob
-backup etcd dùng role của node, được cấp đúng bucket `etcd-backups` (`infra/terraform/cluster/iam.tf`).
+**B5.3** **external-secrets** (gọi Secrets Manager), **cert-manager** (bản ghi TXT của DNS-01), **ebs-csi** (gọi EC2 API cho
+volume), **Kyverno** (kéo chữ ký image từ ECR) và **CronJob backup etcd** (được cấp đúng bucket `etcd-backups`,
+`infra/terraform/cluster/iam.tf`). Jenkins build pod **không** còn dùng role của node: nó push ECR và ký KMS bằng role
+`medical-rag-ci` qua IRSA (Jenkins step 9 và 18), và namespace của nó chặn metadata service (step 6). initContainer tải index và Job
+build index cũng dùng role IRSA riêng (`App A2`).
 
 **NetworkPolicy không chặn được mọi pod khác:**
 

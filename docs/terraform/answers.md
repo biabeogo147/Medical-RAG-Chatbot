@@ -49,7 +49,7 @@ node, hai load balancer và một VPN gateway."
 - **Bootstrap** chỉ apply từ CloudShell. Workstation chỉ vào được qua SSM, nên laptop không cần cài công cụ
   cloud nào.
 - **Shared:** ECR với tag immutable (trừ tag chữ ký và cache build), KMS key bất đối xứng để ký image,
-  bucket chứa index, năm secret mà Terraform tạo rỗng, Route 53 zone và một budget.
+  bucket chứa index và bucket snapshot etcd, mười secret mà Terraform tạo rỗng, Route 53 zone và một budget.
 - **Cluster:** VPC ba AZ với một NAT gateway; ba node ở subnet private mà Ansible dựng thành cluster kubeadm
   HA; internal NLB cho Kubernetes API và Rancher; public NLB cho app; WireGuard gateway để vào Rancher.
 - **Mạng và quyền:** phần lớn rule security group tham chiếu group khác thay vì dải IP (ngoại lệ: internal
@@ -83,7 +83,7 @@ project bổ sung cho nhau. Ở công ty tôi mặc định chọn EKS."
 *Nếu được hỏi thêm*, những gì tôi từ bỏ:
 
 - nâng cấp được quản lý sẵn và SLA của AWS
-- IRSA / Pod Identity, nên pod dùng chung role của node (A4.4)
+- IRSA / Pod Identity có sẵn; ở đây phải tự dựng IRSA, và pod nền tảng vẫn dùng chung role của node (A4.4)
 - AWS Load Balancer Controller, nên NLB là tĩnh và NodePort cố định
 - thêm việc phải bảo trì
 
@@ -452,10 +452,10 @@ thành Kubernetes Secret. Không máy nào có access key: mọi thứ dùng ins
 - **Rủi ro còn lại:** thứ gì gõ inline sẽ nằm trong lịch sử shell, và role admin của workstation đọc được mọi
   secret.
 
-**A4.2** **Ý chính:** "Chỗ đạt: inline policy của node ghi đúng ARN của một repository, ba bucket, bốn secret và
-một key, còn WireGuard gateway chỉ đọc được đúng một secret. Chỗ chưa đạt: workstation có `AdministratorAccess`,
-mọi pod tới được metadata service dùng chung role của node, và hai managed policy trên role đó có quyền toàn
-account."
+**A4.2** **Ý chính:** "Chỗ đạt: inline policy của node ghi đúng ARN — pull trên hai repository, hai bucket
+(`ssm-transfer` và `etcd-backups`), đọc tám secret, ghi một secret — và không còn quyền KMS; WireGuard gateway chỉ đọc
+được đúng một secret. Chỗ chưa đạt: workstation có `AdministratorAccess`, các pod nền tảng vẫn dùng chung role của
+node qua metadata service, và hai managed policy trên role đó có quyền toàn account."
 
 *Nếu được hỏi thêm:*
 
@@ -464,8 +464,8 @@ account."
 - Hai managed policy: đọc mọi SSM parameter; attach, detach, snapshot mọi EBS volume (B7.3). Account lại dùng chung
   với project khác.
 - Internal NLB tin cả CIDR của VPC (B5.4).
-- **Cách sửa:** tách role plan và role apply; IAM riêng cho từng workload bằng IRSA tự host; tham chiếu security
-  group thay cho CIDR.
+- **Cách sửa:** tách role plan và role apply; IAM riêng cho từng workload bằng IRSA tự host (đã làm cho app, index
+  build và Jenkins build pod; pod nền tảng thì chưa); tham chiếu security group thay cho CIDR.
 
 **A4.3** **Ý chính:** "Chỉ hai đường vào từ internet: TCP 80 trên public NLB cho app, và UDP 51820 trên WireGuard
 gateway. Không có SSH ở đâu cả, và node không có public IP. Tôi kiểm chứng bằng cách rà rule inbound, gửi request
@@ -480,23 +480,28 @@ thử và mô phỏng IAM."
 - **Đã kiểm chứng:**
   - request HTTP thường tới bucket state trả `AccessDenied`
   - IAM policy simulation: `kms:Sign` trên cosign key là `allowed`, `s3:GetObject` trên bucket lạ là `implicitDeny`
+    (lúc đóng phase Terraform; về sau Jenkins step 18 gỡ `kms:Sign` khỏi role node, và CI ký bằng role riêng)
   - rà rule inbound: TCP 80 là rule duy nhất mở ra internet, WireGuard thêm UDP 51820
   - qua tunnel, handshake WireGuard thành công và DNS trả về IP private của NLB
   - qua VPN, test TCP cho thấy 443 mở và 6443 đóng: `[điền: lệnh và kết quả]`
 
-**A4.4** **Ý chính:** "Tuỳ pod nằm ở namespace nào. Pod của app bị NetworkPolicy chặn gọi metadata service, nên
-không lấy được credential. Pod ở namespace được phép gọi, như Jenkins agent, External Secrets, EBS CSI, thì dùng
-được role của node. Nặng nhất là quyền ký image bằng KMS: image độc hại được ký sẽ qua được Kyverno."
+**A4.4** **Ý chính:** "Tuỳ pod nằm ở namespace nào. Bốn namespace chặn metadata service bằng NetworkPolicy: dev, prod
+và hai namespace Jenkins. Pod ở đó không lấy được role của node, và app, index build, Jenkins build pod đều có role
+riêng qua IRSA tự host. Pod nền tảng thì vẫn dùng role của node: External Secrets, cert-manager, EBS CSI, Kyverno,
+CronJob snapshot etcd. Nặng nhất còn lại là token GitHub của bot: ghi được vào repo mà Argo CD deploy từ đó."
 
 *Nếu được hỏi thêm:*
 
-- **Vì sao pod tới được role của node:** cluster tự quản lý không có sẵn IRSA hay Pod Identity, mà các driver cần
-  quyền AWS, nên hop limit của IMDSv2 để 2 (B7.1).
-- **Tiếp theo:** token GitHub (đổi được thứ Argo CD deploy), hai managed policy có quyền toàn account trên SSM
-  parameter và EBS volume. Danh sách xếp hạng đầy đủ ở B7.3.
-- **Lỗ còn lại:** pod `hostNetwork` không bị NetworkPolicy chặn, nên phải dùng Kyverno để cấm pod thường bật
-  `hostNetwork`. Việc dài hạn là IRSA tự host để mỗi workload có role riêng.
-- NetworkPolicy chặn metadata: `[điền: file manifest và bằng chứng test]`.
+- **Vì sao pod nền tảng còn tới được role của node:** chúng cần quyền AWS mà chưa được cấp role riêng, nên hop
+  limit của IMDSv2 để 2 (B7.1).
+- **Role node đã mất gì:** quyền ký KMS, quyền push ECR và bucket artifacts (Jenkins step 18, app phase). Danh sách
+  xếp hạng đầy đủ những gì còn lại ở B7.3.
+- **Lỗ còn lại:** pod `hostNetwork` không bị NetworkPolicy chặn; chặn nó phải bằng policy admission. Việc dài hạn là
+  role riêng cho pod nền tảng qua cùng issuer.
+- NetworkPolicy chặn metadata: `deploy/charts/medical-rag/templates/networkpolicy.yaml` và
+  `deploy/argocd/manifests/jenkins/networkpolicies.yaml`. Bằng chứng: từ container app IMDS timeout
+  (`evidence/app.md`, step 17); từ pod thử trong `jenkins` và `jenkins-agents` `wget: download timed out`
+  (`evidence/jenkins.md`, step 6), và từ build pod `curl: (28) Connection timed out` (step 9).
 
 **A4.5** **Ý chính:** "Hiện project chỉ chạy `fmt` và `validate` trên cả ba stack. Cách tôi sẽ làm: `tflint` và
 Checkov chạy ở pre-commit rồi chạy lại trong CI, còn quy tắc riêng của tổ chức thì viết bằng Conftest trên JSON
@@ -558,7 +563,7 @@ secret một lần, như WireGuard gateway đọc key lúc boot, nên đổi key
 
 ### A5. Chi phí
 
-**A5.1** **Ý chính:** "Cluster khoảng 0.53 USD mỗi giờ và chỉ sống theo giờ; phần luôn giữ khoảng 7 USD mỗi
+**A5.1** **Ý chính:** "Cluster khoảng 0.53 USD mỗi giờ và chỉ sống theo giờ; phần luôn giữ khoảng 9 USD mỗi
 tháng. Đơn giá lấy từ bảng giá AWS cho Singapore, còn chi phí thực được budget theo dõi theo tag `project`."
 
 *Nếu được hỏi thêm:*
@@ -567,9 +572,12 @@ tháng. Đơn giá lấy từ bảng giá AWS cho Singapore, còn chi phí thự
 |---|---|
 | Cluster, khi đang tồn tại | ≈ 0.53 USD/giờ |
 | Workstation, khi đang chạy | ≈ 0.03 USD/giờ |
-| Luôn giữ: KMS key, 5 secret, zone, bucket, image | ≈ 4 USD/tháng |
+| Luôn giữ: KMS key, 10 secret, zone, bucket, image | ≈ 6 USD/tháng |
 | Ổ đĩa của workstation khi đã stop | ≈ 2.90 USD/tháng |
-| **Tổng phần luôn giữ** | **≈ 7 USD/tháng** |
+| **Tổng phần luôn giữ** | **≈ 9 USD/tháng** |
+
+Evidence đo ≈ 7 USD/tháng lúc mới có 5 secret (`evidence/terraform.md`, step 15); con số 9 là ước tính sau khi lên 10
+secret (`terraform/README.md`), chưa đọc lại từ hoá đơn.
 
 - Cluster gồm ba node `m7i-flex.large`, NAT gateway, hai NLB, địa chỉ IPv4 public, 120 GB gp3 và WireGuard
   gateway.
@@ -1371,11 +1379,11 @@ trước.
 | Máy | Hop limit | Vì sao |
 |---|---|---|
 | Workstation, gateway | 1 | Chỉ host cần credential, nên container trên đó không lấy được instance role |
-| Node | 2 | EBS CSI driver và External Secrets chạy dưới dạng pod và xác thực bằng role của node, vì cluster tự quản lý không có IRSA hay Pod Identity |
+| Node | 2 | Các pod nền tảng (EBS CSI, External Secrets, cert-manager, Kyverno, CronJob etcd) xác thực bằng role của node; chỉ app, index build và Jenkins build pod có role riêng qua IRSA tự host |
 
 **Để 2 thì đánh đổi:** mọi pod tới được IMDS đều lấy được credential của node (xem B7.3). Vì vậy NetworkPolicy
-chặn egress tới `169.254.169.254/32` cho mọi namespace của app; chỉ external-secrets, ebs-csi và Jenkins agent
-được gọi.
+chặn egress tới `169.254.169.254/32` cho dev, prod, `jenkins` và `jenkins-agents`; pod nền tảng (External Secrets,
+cert-manager, EBS CSI, Kyverno, CronJob etcd) thì không bị chặn.
 
 **Giới hạn:** cả hop limit lẫn NetworkPolicy đều không chặn được pod `hostNetwork`. Pod đó dùng network của
 host, nên tới IMDS chỉ với một chặng. Muốn chặn phải dùng policy admission (không cho pod thường bật
@@ -1383,44 +1391,50 @@ host, nên tới IMDS chỉ với một chặng. Muốn chặn phải dùng poli
 
 **B7.2** `GetAuthorizationToken` là action cấp registry mà IAM không giới hạn theo repository được, nên
 resource hợp lệ duy nhất là `"*"`. Token tự nó không cấp quyền gì: mỗi lệnh pull hay push vẫn bị kiểm tra
-theo ARN của repository trong `EcrPullPush`. Node vẫn chỉ tới được `medical-rag`.
+theo ARN của repository trong `EcrPull`. Node chỉ pull được, và chỉ trên hai repository `medical-rag` và
+`medical-rag-ci`; push thuộc về role `ci` của Jenkins build pod.
 
 **B7.3** **Không, thiệt hại lan ra ngoài project.** Inline policy ghi đúng ARN, nhưng hai AWS managed policy
 gắn vào role là quyền toàn account, mà account này dùng chung với project khác.
 
-**Từ nguy hiểm nhất tới ít nhất:**
+**Từ nguy hiểm nhất tới ít nhất** (role node như hiện tại, `infra/terraform/cluster/iam.tf`):
 
-1. **`kms:Sign` trên cosign key.** Kẻ tấn công ký được image của họ, và image đó qua được bước kiểm tra chữ
-   ký lúc admission.
-2. **Token GitHub trong `medical-rag/github`.** Nếu token ghi được vào repo mà Argo CD theo dõi, họ đổi được
-   manifest và Argo CD tự deploy thay họ: tệ ngang hoặc hơn `kms:Sign`.
+1. **Token GitHub trong `medical-rag/github`.** Token của bot ghi được vào repo mà Argo CD theo dõi, nên kẻ tấn
+   công đổi được manifest và Argo CD tự deploy thay họ.
+2. **Bản ghi TXT `_acme-challenge`.** Tạo được bản ghi đó là qua được DNS-01, tức xin được certificate tin cậy cho
+   `*.recruitai.io.vn` từ Let's Encrypt.
 3. **`AmazonSSMManagedInstanceCore`:** `ssm:GetParameter(s)` trên `*`, tức đọc được mọi parameter trong
    account, kể cả `SecureString` mã hoá bằng key mặc định `aws/ssm`.
 4. **`AmazonEBSCSIDriverPolicy`:** attach, detach, snapshot, modify **mọi** EBS volume trong account, không
    có điều kiện. Một pod có thể snapshot hoặc gắn đĩa của project khác.
 5. **Ghi vào bucket `ssm-transfer`.** Plugin `aws_ssm` của Ansible tải file module từ bucket này rồi chạy với
    quyền root. Ghi đè file trong lúc Ansible đang chạy là chiếm được root trên node.
-6. **`GetSecretValue` trên các secret còn lại:** key của Gemini và Hugging Face, mật khẩu bootstrap và
-   private key TLS của Rancher.
-7. **Quyền push ECR.** Push được tag mới; tag release là immutable nên không ghi đè được.
-8. **Đọc và xoá trên bucket artifacts và etcd-backups.** Sửa được FAISS index (versioning cho phép quay lại),
-   hoặc đọc snapshot etcd, vốn chứa mọi Kubernetes Secret.
+6. **Đọc và xoá trên bucket `etcd-backups`.** Snapshot etcd chứa mọi Kubernetes Secret; xoá thì mất bản backup
+   (bucket không bật versioning).
+7. **`GetSecretValue` trên tám secret:** key Gemini và Hugging Face của hai môi trường, Flask key, mật khẩu
+   bootstrap và private key TLS của Rancher, cấu hình SMTP, và bản backup wildcard certificate (cả quyền ghi đè
+   bản backup đó).
+
+**Đã không còn trong role node:** `kms:Sign` (Jenkins step 18: build pod ký bằng role `ci`), quyền push ECR, và
+bucket artifacts (Job build index ghi bằng role `index-builder`, app chỉ đọc bằng role của nó). Ký được image lọt qua Kyverno vì thế không còn đi qua
+role node.
 
 **Cái gì hạn chế thiệt hại:**
 
-- NetworkPolicy chặn IMDS cho namespace của app, nên danh sách trên chỉ áp dụng cho pod trong external-secrets,
-  ebs-csi, Jenkins agent, hoặc pod `hostNetwork` `[điền: manifest và bằng chứng test]`.
-- Kyverno kiểm tra chữ ký image trên prod; một quyền `kms:Sign` bị đánh cắp từ Jenkins agent vẫn vượt qua được.
-- **Còn lại:** IRSA tự host, để mỗi workload có role riêng và bỏ được hai managed policy khỏi role dùng chung.
-  Tài liệu thiết kế ghi đây là giới hạn đã biết.
+- NetworkPolicy chặn IMDS cho bốn namespace: dev, prod, `jenkins`, `jenkins-agents`. Danh sách trên chỉ áp dụng
+  cho pod nền tảng (External Secrets, cert-manager, EBS CSI, Kyverno, CronJob etcd) và pod `hostNetwork`.
+  Bằng chứng: A4.4.
+- **Còn lại:** role riêng cho pod nền tảng qua cùng issuer IRSA, để bỏ được hai managed policy và các secret khỏi
+  role dùng chung. Tài liệu thiết kế ghi đây là giới hạn đã biết.
 
 **B7.4** Gateway là máy lộ ra ngoài nhiều nhất: có public IP và một port UDP mở. Nếu dùng role của node, bị
 chiếm quyền ở đó sẽ lộ tất cả những gì ở B7.3. Role riêng của nó có `AmazonSSMManagedInstanceCore` và một
 statement inline: `GetSecretValue` và `DescribeSecret` chỉ trên `medical-rag/wireguard`.
 
 Node không đọc được secret này vì policy của node liệt kê ARN secret tường minh: `llm`, `github`, `rancher`,
-`rancher-tls`. Không có wildcard nào bao được `wireguard`. (Shared tạo năm secret; node đọc bốn, gateway đọc
-riêng cái thứ năm.)
+`rancher-tls`, `alertmanager`, `wildcard-tls`, `app-dev`, `app-prod` (`infra/terraform/cluster/main.tf`). Không có
+wildcard nào bao được `wireguard`. (Shared tạo mười secret; node đọc tám, gateway đọc riêng `wireguard`, và
+`sa-signer` thì không role nào trong cluster đọc được.)
 
 Lưu ý: `AmazonSSMManagedInstanceCore` vẫn cho gateway đọc mọi SSM parameter trong account, giống node.
 

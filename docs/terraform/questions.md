@@ -224,8 +224,8 @@ lọc đó ngay sau khi `-replace` node 1 thì sao?
 ### B3. Lifecycle và các lớp bảo vệ
 
 **B3.1** So sánh `prevent_destroy` trên bucket state, việc không có `force_destroy` trên bucket
-artifacts, và `force_destroy = true` trên hai bucket của cluster. `make infra-destroy` làm gì với từng
-bucket? Vì sao mất snapshot etcd sau mỗi lần teardown vẫn chấp nhận được?
+artifacts và bucket `etcd-backups`, và `force_destroy = true` trên bucket `ssm-transfer` của cluster.
+`make infra-destroy` làm gì với từng bucket? Vì sao bucket snapshot etcd phải chuyển khỏi stack cluster?
 
 **B3.2** Route 53 zone có `prevent_destroy`. Hãy mô tả một cách để Terraform vẫn xoá được nó mà không
 báo lỗi gì. Khi zone còn chứa record, AWS thêm lớp bảo vệ thứ hai nào?

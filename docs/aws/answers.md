@@ -14,7 +14,6 @@ liệu hay kiểm tra phải lấy từ lần chạy thật. Ghi chú **[kiểm 
 - Budget có thật sự báo khi account còn credit không: `shared/bugdets.tf` không đặt `cost_types`, và nếu budget tính cả
   credit thì chi phí ròng gần bằng 0 và cảnh báo không bao giờ bắn (A5.2, B6.2).
 - Ngày kết thúc Free plan, khác với ngày hết hạn credit (B6.1).
-- NetworkPolicy chặn metadata service: manifest và bằng chứng (A3.2, A3.6).
 
 ---
 
@@ -26,7 +25,7 @@ liệu hay kiểm tra phải lấy từ lần chạy thật. Ghi chú **[kiểm 
 thái hay là bí mật và phải giữ lại khi xoá cluster thì để dịch vụ managed: S3, ECR, KMS, Secrets Manager, Route 53. Cluster
 chạy trên EC2 trải ba AZ sau NLB, quyền đi qua IAM role, và người vận hành vào máy bằng Session Manager."
 
-*Nếu được hỏi thêm:* khoảng 0.53 USD/giờ khi cluster chạy; khi xoá, phần giữ lại khoảng 7 USD/tháng.
+*Nếu được hỏi thêm:* khoảng 0.53 USD/giờ khi cluster chạy; khi xoá, phần giữ lại khoảng 9 USD/tháng.
 
 **A1.2** **Ý chính:** "AWS lo phần cứng, datacenter, mạng vật lý, hypervisor, và bản thân các dịch vụ managed như S3, KMS, NLB.
 Phần từ hệ điều hành trở lên là của tôi: vá Ubuntu, Kubernetes, etcd, mạng trong VPC, security group, IAM và dữ liệu.
@@ -194,14 +193,16 @@ với xác thực theo máy, hoặc chứng chỉ máy."
   **[kiểm chứng: condition key aws:EC2InstanceSourceVPC]**.
 
 **A3.2** **Ý chính:** "IMDSv2 bắt mọi lời gọi metadata phải lấy token bằng một request `PUT` trước, nên một lỗi SSRF chỉ bắt ứng dụng
-gọi `GET` không lấy được credential. Hop limit của phản hồi token để 1 thì chỉ process trên chính host nhận được. Node để 2 vì EBS
-CSI, External Secrets và Jenkins agent chạy trong pod mà cần role của node."
+gọi `GET` không lấy được credential. Hop limit của phản hồi token để 1 thì chỉ process trên chính host nhận được. Node để 2 vì các
+pod nền tảng (EBS CSI, External Secrets, cert-manager, Kyverno, CronJob snapshot etcd) cần role của node."
 
 *Nếu được hỏi thêm:*
 
 - 1 là mặc định của API; một số AMI mới mặc định 2 **[kiểm chứng]**.
-- Cái giá: mọi pod tới được metadata service đều dùng được role của node. NetworkPolicy của namespace app giảm rủi ro này, nhưng
-  không chặn namespace không có policy, không chặn pod `hostNetwork`, và Jenkins agent vẫn được phép gọi (Common B5.3).
+- Cái giá: mọi pod tới được metadata service đều dùng được role của node. Bốn namespace chặn nó bằng NetworkPolicy: dev, prod,
+  `jenkins` và `jenkins-agents`. Pod app, Job build index và Jenkins build pod có role riêng qua IRSA tự host; controller Jenkins
+  thì không cần role AWS nào. Không chặn namespace nền tảng, không chặn pod
+  `hostNetwork` (Common B5.3).
 
 **A3.3** **Ý chính:** "Node không có cổng inbound nào, không có key SSH để mất hay rotate, và IAM quyết định ai được mở session. Mỗi lần
 mở session là một sự kiện trong CloudTrail. So với bastion on-premises, không còn một máy SSH public phải vá; máy public duy nhất của
@@ -235,13 +236,14 @@ tôi phải nói: vào tới cluster, secret nằm trong etcd chưa mã hoá, v�
 - On-premises tôi dùng Vault; External Secrets giữ nguyên, chỉ đổi backend.
 - Cách sửa phần etcd: A3.9.
 
-**A3.6** **Ý chính:** "EKS cho mỗi service account một IAM role riêng. Cluster tự dựng không có, nên mọi pod tới được metadata service
-đều dùng chung role của node, gồm cả quyền ký image và đọc secret. Tôi giảm rủi ro bằng NetworkPolicy; cách sửa đầy đủ là tự dựng
-IRSA."
+**A3.6** **Ý chính:** "EKS cho mỗi service account một IAM role riêng. Cluster tự dựng không có sẵn, nên tôi tự dựng IRSA: app ở
+dev và prod, Job build index và Jenkins build pod đều có role riêng, và namespace của chúng chặn metadata service. Còn lại là pod
+nền tảng, vẫn dùng chung role của node; role đó đã mất quyền ký KMS, quyền push ECR và bucket artifacts."
 
-*Nếu được hỏi thêm:* IRSA tự dựng gồm: cấu hình API server phát token service account với issuer là một URL công khai; đặt tài liệu
-OIDC discovery và public key trên S3; tạo IAM OIDC identity provider trỏ tới URL đó; cài pod-identity-webhook để tiêm token và biến
-môi trường vào pod.
+*Nếu được hỏi thêm:* IRSA tự dựng ở đây gồm: API server phát token service account với issuer là một URL công khai, ký bằng một key
+cố định giữ trong Secrets Manager để sống qua rebuild; tài liệu OIDC discovery và public key trên S3; một IAM OIDC identity provider
+trỏ tới URL đó (`infra/terraform/shared/oidc.tf`, `irsa.tf`). Không cài pod-identity-webhook: chart tự mount token projected và đặt
+biến môi trường. Sau mỗi rebuild, `make oidc-check` so key đang ký với key đã công bố.
 
 **A3.7** **Ý chính:** "CloudTrail ghi mọi lời gọi API quản lý, và lịch sử 90 ngày xem được miễn phí. Nhưng tôi phải nói thẳng: lệnh
 chạy trên workstation hiện ra dưới tên role admin dùng chung của máy, và mọi người vào máy đều là `ssm-user`. Khi hai người cùng mở
@@ -264,7 +266,7 @@ dùng identity policy và bucket policy; boundary và SCP là thứ tôi sẽ th
   giới hạn `iam:PassRole` (Terraform A4.6).
 - **Cross-account:** CI ở account build push sang ECR của account prod bằng cách assume một role có trust policy trỏ tới account
   build; bên thứ ba thì thêm `sts:ExternalId` để chống confused deputy.
-- **Hai điểm yếu tự nói trước:** workstation có `AdministratorAccess`, và mọi pod dùng chung role của node.
+- **Hai điểm yếu tự nói trước:** workstation có `AdministratorAccess`, và pod nền tảng vẫn dùng chung role của node.
 
 **A3.9** **Ý chính:** "Mọi thứ đều được mã hoá at-rest bằng key do AWS quản lý: S3 dùng SSE-S3, EBS dùng key mặc định, ECR và Secrets
 Manager cũng vậy. KMS key tự quản lý duy nhất là key ký image. Chỗ không được mã hoá là Kubernetes Secret trong etcd, và vì vậy cả
@@ -335,7 +337,7 @@ Vì vậy bài drill HA stop rồi start node 2, và node tự về `Ready` mà 
 
 ### A5. Chi phí, giới hạn và rủi ro
 
-**A5.1** **Ý chính:** "Cluster tốn khoảng 0.53 USD mỗi giờ khi chạy; khi xoá chỉ còn khoảng 7 USD mỗi tháng cho phần giữ lại.
+**A5.1** **Ý chính:** "Cluster tốn khoảng 0.53 USD mỗi giờ khi chạy; khi xoá chỉ còn khoảng 9 USD mỗi tháng cho phần giữ lại.
 On-premises, phần cứng đã mua thì tắt đi cũng không lấy lại tiền. Đổi lại, mọi thứ phải dựng lại được nhanh và không có bước tay, và
 những gì cần giữ phải tách sang stack riêng."
 
@@ -450,8 +452,8 @@ trạng thái gói bằng API, liệt kê loại máy hợp lệ, và đổi c�
 *Nếu được hỏi thêm:* chuyện thứ hai là SSM agent của node 2 không lấy được credential lúc boot, và nguyên nhân mới là giả thuyết (Ansible
 A4.4). Chi tiết chuyện Free plan: Terraform A7.1.
 
-**A6.7** **Ý chính:** "Reliability yếu nhất: một NAT gateway cho cả ba AZ, và backup etcd bị xoá cùng cluster. Security đứng thứ hai: role của
-node dùng chung cho mọi pod, workstation có quyền admin, Secret trong etcd chưa mã hoá. Cost optimization và operational excellence là phần
+**A6.7** **Ý chính:** "Reliability yếu nhất: một NAT gateway cho cả ba AZ, và bucket backup etcd chưa có versioning hay Object Lock. Security
+đứng thứ hai: pod nền tảng vẫn dùng chung role của node, workstation có quyền admin, Secret trong etcd chưa mã hoá. Cost optimization và operational excellence là phần
 mạnh: xoá cluster khi không dùng, mọi thứ là code, có drill."
 
 *Nếu được hỏi thêm:* sửa reliability trước: NAT mỗi AZ hoặc theo region, thêm versioning và Object Lock cho bucket backup (đã ở shared) (A5.5, A6.1). Nói một
@@ -610,7 +612,10 @@ websocket của Rancher thường đã có **[kiểm chứng]**.
 **B2.7** Chỉ kiểm tra NodePort có mở trên node. Với `externalTrafficPolicy: Cluster`, kube-proxy nhận kết nối trên mọi node rồi
 chuyển tới pod ingress-nginx ở bất kỳ đâu, nên **mọi node đều healthy** dù node đó không có pod ingress nào. Health check vì vậy
 không phản ánh pod cục bộ, và có thêm một chặng SNAT. Dùng `Local` kèm `healthCheckNodePort` thì NLB chỉ gửi tới node có pod, và
-giữ được IP client `[điền: externalTrafficPolicy thật của ingress-nginx]`.
+giữ được IP client. Ở project này là `Local`, và ingress-nginx chạy dạng DaemonSet nên node nào cũng có một pod để nhận
+(`deploy/argocd/values/ingress-nginx.yaml`). Health check của NLB vẫn là TCP trên chính NodePort. `Local` còn là thứ giữ IP thật
+của client cho allowlist `10.10.0.0/16` trên các UI nội bộ: để `Cluster` thì kube-proxy đổi source thành địa chỉ VPC của node, và
+allowlist sẽ cho traffic từ internet đi qua.
 
 ### B3. Compute và lưu trữ
 
@@ -793,19 +798,19 @@ plugin trả về, chỉ dùng `defaultCacheDuration: 12h` khi plugin không tr�
 - **Repository policy** gắn vào chính repository, dùng để cho account hay principal **khác** truy cập, ví dụ cho một account
   prod pull image từ account build.
 
-Cùng account như project này, IAM policy của role là đủ. Nhưng role của node có quyền push, nên mọi pod lấy được credential của
-node đều push được; một repository policy `Deny` push cho mọi principal trừ một role riêng của CI siết được chuyện này, dù cùng
+Cùng account như project này, IAM policy của role là đủ. Role của node chỉ còn quyền pull; push thuộc về role `ci` của Jenkins
+build pod (Jenkins step 18). Một repository policy `Deny` push cho mọi principal trừ role `ci` sẽ siết thêm một lớp, dù cùng
 account.
 
 **B4.11** Với KMS, **key policy là gốc**: không identity nào dùng được key nếu key policy không cho, kể cả admin của account.
 Key policy mặc định có một statement cho phép chính account, nghĩa là "để IAM policy quyết định".
 
-Terraform tạo key với key policy mặc định, nên `kms:Sign` trong inline policy của role node là đủ. Nếu key policy bị thay bằng
-một policy chỉ liệt kê vài principal mà thiếu statement đó, IAM policy của node không còn tác dụng.
+Terraform tạo key với key policy mặc định, nên một `kms:Sign` trong IAM policy của một role là đủ để role đó ký. Nếu key policy bị
+thay bằng một policy chỉ liệt kê vài principal mà thiếu statement đó, IAM policy không còn tác dụng.
 
-**Muốn chỉ CI được ký:** Jenkins agent ở đây ký bằng chính role của node, vì cluster tự dựng không có IRSA (A3.6). Key policy chỉ
-cho role `medical-rag-nodes` gọi `kms:Sign` vẫn không phân biệt được pod: mọi pod lấy được credential của node đều ký được
-(Terraform B7.3). Tách hẳn thì CI cần một role riêng, qua IRSA tự dựng hoặc một identity khác ngoài node.
+**Chỉ CI được ký, và đã làm vậy:** chỉ role `medical-rag-ci` có `kms:Sign`. Jenkins build pod assume role đó qua IRSA tự dựng (A3.6);
+role của node mất `kms:Sign` ở Jenkins step 18, và evidence ghi lại lỗi `AccessDeniedException` khi một pod thử ký bằng role node.
+Siết thêm được bằng key policy chỉ cho `medical-rag-ci` gọi `kms:Sign`, để một IAM policy lỡ tay ở role khác cũng không ký được.
 
 **B4.12** Mỗi lần `put-secret-value` tạo một **version** mới và gắn nhãn `AWSCURRENT`; version trước được chuyển sang
 `AWSPREVIOUS`. Đọc secret mà không chỉ version thì nhận `AWSCURRENT`.

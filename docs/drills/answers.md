@@ -429,8 +429,8 @@ giờ tới.
 ### A7. Nhìn lại
 
 **A7.1** **Ý chính:** "Năm thứ: nâng cấp chưa chạy; khôi phục lên một cluster dựng lại chưa thử; admission có phụ
-thuộc Sigstore công khai không chưa đo; một job do chính lịch 6 giờ tạo ra chưa quan sát; và chưa có commit nào chạy hết
-pipeline trên một cluster vừa dựng lại."
+thuộc Sigstore công khai không chưa đo; một job do chính lịch 6 giờ tạo ra chưa quan sát; và chưa ai theo một commit tới
+lúc pod dev `Ready` trên cluster vừa dựng lại, dù pipeline có chạy trên đó tới commit của bot (`624a8e2`)."
 
 **A7.2** **Ý chính:** "Ba thứ. Backup có role riêng chỉ ghi được, versioning và Object Lock, và bản sao sang region
 khác. Kyverno kiểm cả image addon, cộng policy Pod Security baseline. Và drill chạy định kỳ theo lịch, có cảnh báo khi

@@ -406,7 +406,8 @@ Cái giá của VXLAN là thêm 50 byte header, và IP pod không định tuyế
 
 - **IPIP:** cũng chạy được ở đây, vì security group giữa các node mở mọi protocol; nhưng IPIP trong Calico cần BGP để phân
   phối route. Khi siết security group theo port, VXLAN chỉ cần một rule UDP 4789.
-- **Kiểm tra:** `Installation` không đặt `bgp: Disabled` tường minh `[điền: giá trị thật của spec.calicoNetwork.bgp]`.
+- **Kiểm tra:** template `Installation` (`roles/cni_calico/templates/installation.yaml.j2`) không đặt `bgp`, chỉ đặt
+  `encapsulation: VXLAN`, nên giá trị là mặc định của operator; giá trị trên cluster chưa được đọc lại.
 - **AWS VPC CNI:** pod lấy IP thật của VPC, nhưng số pod mỗi node bị giới hạn theo số network interface và số IP mỗi
   interface của loại máy; prefix delegation nới giới hạn nhưng tốn IP subnet, và cần thêm quyền IAM trên role vốn dùng chung.
 - **Cilium:** mạnh hơn (eBPF, observability), nhưng nặng hơn cho ba node 8 GB.

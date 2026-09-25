@@ -81,7 +81,8 @@ trong `envs/prod/values.yaml`."
 *Nếu được hỏi thêm:*
 
 - Sơ đồ: `docs/app/README.md` §5, và `docs/gitops/argocd-explained.md`.
-- Chưa có Jenkins, nên hiện tôi build image trên workstation bằng `make image` (A3.5).
+- Ở phase này image được build trên workstation bằng `make image` (A3.5). Từ phase Jenkins, pipeline build, quét, ký và
+  promote image; `make image` chỉ còn cho lần build tay.
 
 **A1.3** **Ý chính:** "Hai môi trường khác nhau ở vài giá trị: số replica, host, tên secret. Tôi chọn Helm vì hai thứ: một
 template duy nhất cho cả hai môi trường, và `required`, làm render thất bại ngay khi thiếu một giá trị bắt buộc như account ID
@@ -643,7 +644,8 @@ Jenkins đo lại."
 
 - `perl` hay `perl-base`: **[kiểm chứng]** trong báo cáo scan. `perl-base` là package bắt buộc của Debian, bản slim không bỏ
   được nó.
-- Cổng Trivy của pipeline: `Common A6.2`. Số "sau": `[điền]`.
+- Cổng Trivy của pipeline: `Common A6.2`. Số "sau", đo ở phase Jenkins với base Debian 13: CRITICAL 5 → 0, tổng 269 → 158
+  (`evidence/jenkins.md`, step 13).
 
 ---
 
