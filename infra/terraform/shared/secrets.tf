@@ -1,9 +1,10 @@
 # Terraform creates empty secrets only: the names and who may read them. Values are set once with
-#   aws secretsmanager put-secret-value --secret-id medical-rag/llm --secret-string '{...}'
+#   aws secretsmanager put-secret-value --secret-id medical-rag/app-dev --secret-string '{...}'
 # so they never appear in the Terraform state file or in Git. External Secrets syncs them into
 # Kubernetes later.
 resource "aws_secretsmanager_secret" "app" {
-  # medical-rag/llm: Gemini + HF keys. medical-rag/github: bot token.
+  # medical-rag/llm: nothing in deploy/ reads it any more; the app reads app-dev and app-prod.
+  # medical-rag/github: bot token.
   # medical-rag/app-dev and medical-rag/app-prod: GOOGLE_API_KEY, HUGGINGFACEHUB_API_TOKEN and
   # FLASK_SECRET_KEY for each environment, replaced independently (app guide step 8).
   for_each = toset(["llm", "github", "app-dev", "app-prod"])

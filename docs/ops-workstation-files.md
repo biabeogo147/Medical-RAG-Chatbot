@@ -124,7 +124,7 @@ A failed upload or a closed window can leave one behind. The audit checks for th
 |---|---|
 | AWS access keys | None exist. The workstation uses its EC2 instance role, so `~/.aws/credentials` should not exist |
 | Terraform state | S3 bucket `medical-rag-tfstate-<account>` |
-| App keys (Gemini, Hugging Face, Flask, GitHub bot) | Secrets Manager `medical-rag/llm`, `medical-rag/github` |
+| App keys (Gemini, Hugging Face, Flask, GitHub bot) | Secrets Manager `medical-rag/app-dev`, `medical-rag/app-prod`, `medical-rag/github` |
 | Rancher password | Secrets Manager `medical-rag/rancher` |
 | WireGuard gateway private key | Secrets Manager `medical-rag/wireguard`, and on the gateway while the cluster exists |
 | Laptop WireGuard private key | Inside the laptop's WireGuard app only |

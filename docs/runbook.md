@@ -8,6 +8,9 @@ commands here are the short form.
 | [`terraform/guide.md`](terraform/guide.md) | AWS: state bucket, ops workstation, shared services, cluster network and machines, DNS, VPN, internal UI names |
 | [`ansible/guide.md`](ansible/guide.md) | The HA Kubernetes cluster on those machines |
 | [`gitops/guide.md`](gitops/guide.md) | Argo CD and everything it installs |
+| [`app/guide.md`](app/guide.md) | The chatbot in dev and prod: chart, IRSA, index artifact, public names |
+| [`jenkins/guide.md`](jenkins/guide.md) | CI inside the cluster: build, scan, sign, promote |
+| [`drills/guide.md`](drills/guide.md) | Day 2: etcd snapshots and restore, Kyverno, the upgrade playbook |
 
 ## Prerequisites
 
@@ -63,7 +66,9 @@ make shared
 - Store the SMTP settings for alert email: [step 19](terraform/guide/7-internal-uis.md#step-19--internal-ui-names-dns-permission-for-cert-manager-two-secrets).
 - Store the application keys:
   ```bash
-  aws secretsmanager put-secret-value --secret-id medical-rag/llm \
+  aws secretsmanager put-secret-value --secret-id medical-rag/app-dev \
+    --secret-string '{"GOOGLE_API_KEY":"...","HUGGINGFACEHUB_API_TOKEN":"...","FLASK_SECRET_KEY":"..."}'
+  aws secretsmanager put-secret-value --secret-id medical-rag/app-prod \
     --secret-string '{"GOOGLE_API_KEY":"...","HUGGINGFACEHUB_API_TOKEN":"...","FLASK_SECRET_KEY":"..."}'
   aws secretsmanager put-secret-value --secret-id medical-rag/github \
     --secret-string '{"token":"..."}'
@@ -113,7 +118,7 @@ Push to `main`. Jenkins polls every 2 minutes ([design §4.5](selfmanaged-k8s-op
 
 1. runs lint and tests
 2. builds the image with rootless BuildKit and pushes it to ECR
-3. scans it with Trivy and generates the SBOM with Syft
+3. scans it with Trivy, and writes the SBOM with Trivy too (SPDX)
 4. signs it with Cosign, using the KMS key
 5. updates `deploy/envs/dev/values.yaml`; Argo CD rolls out `dev`
 6. opens a pull request with the same change for `prod`
@@ -123,27 +128,33 @@ Merging the pull request releases to `prod`.
 ## 6. Verify a release
 
 ```bash
-NLB=$(terraform -chdir=infra/terraform/cluster output -raw public_nlb_dns)
-curl "http://$NLB/readyz"             # prod
-curl "http://$NLB/dev/readyz"         # dev
-IMAGE_REPO=$(yq .image.repository deploy/envs/prod/values.yaml)
-IMAGE_TAG=$(yq .image.tag deploy/envs/prod/values.yaml)
-cosign verify --key awskms:///alias/medical-rag-cosign "${IMAGE_REPO}:${IMAGE_TAG}"
+# ingress-nginx routes by host name, and only / and /clear are exposed: /readyz answers 404 from outside.
+curl -s -o /dev/null -w '%{http_code}\n' http://app.recruitai.io.vn/   # prod: 200
+curl -s -o /dev/null -w '%{http_code}\n' http://dev.recruitai.io.vn/   # dev: 200
+kubectl -n medical-rag-prod get pods                                    # readiness, from inside
+ACCOUNT=$(yq .aws.accountId deploy/envs/common.yaml)
+TAG=$(yq .image.tag deploy/envs/prod/values.yaml)                        # "<commit>@sha256:<digest>"
+cosign verify --key awskms:///alias/medical-rag-cosign --insecure-ignore-tlog \
+  "$ACCOUNT.dkr.ecr.ap-southeast-1.amazonaws.com/medical-rag:$TAG"
 ```
+The signatures are not in the public transparency log, hence `--insecure-ignore-tlog`; every recorded
+verification used it ([`jenkins.md`](evidence/jenkins.md) step 14).
 
 ## 7. Operating the app
 
 - **Index refresh:** changing the PDF, the chunk settings or the embedding model produces a new index
-  version. An Argo CD PreSync Job builds it before the pods roll, and skips the build if that version
-  already exists.
+  version. An Argo CD Sync-hook Job at wave 1 builds it before the pods (wave 2) roll, and skips the build
+  if that version already exists.
 - **Index rollback:** revert `index.version` in `deploy/envs/<env>/values.yaml`. Argo CD syncs the
   previous index back.
 - **Retrieval and model tuning:** set `RETRIEVER_K` or `MODEL_NAME` in the environment values and promote
   through `dev` → `prod`. Changing `EMBEDDING_MODEL_NAME` also produces a new `index.version`, so promote
   both together.
-- **Cluster day-2:** etcd snapshots to S3, and Kubernetes upgrades one node at a time after the
+- **Cluster day-2:** etcd snapshots to S3 every 6 hours, and Kubernetes upgrades one node at a time after the
   [Rancher compatibility gate](selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate)
-  passes ([design §4.6](selfmanaged-k8s-ops-design.md#46-day-2-operations-p1)).
+  passes ([design §4.6](selfmanaged-k8s-ops-design.md#46-day-2-operations-p1)). To restore etcd, follow the
+  procedure that was actually run: [M2](evidence/guide-measurements.md#m2--the-restore-drill). Kyverno and the
+  upgrade playbook: [`drills/guide.md`](drills/guide.md).
 
 ## 8. End of every session
 

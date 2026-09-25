@@ -12,17 +12,25 @@
   reached through SSM Session Manager, act with instance roles, and are operated from a workstation in AWS.
 - **Git is the control plane.** After bootstrap, every change inside the cluster is a commit, and every
   admin UI is reachable only over WireGuard.
-- **Rebuilt in under 10 minutes, torn down after every session.** About 0.53 USD/hour while it runs.
+- **Rebuilt from an empty stack in 21 m 47 s, unattended, and torn down after every session.** About 0.53
+  USD/hour while it runs.
 
 ## By the numbers
 
 - **Empty cluster stack → 3 Ready control planes in [9 m 57 s](docs/evidence/ansible.md#rebuild-from-nothing):**
-  84 AWS resources in 3 m 47 s as measured on 2026-09-17 (the stack is 91 resources today), then the
+  84 AWS resources in 3 m 47 s as measured on 2026-09-17 (the stack is 86 resources today), then the
   cluster in 6 m 10 s.
 - **Idempotent:** [`terraform plan` → No changes](docs/evidence/terraform.md#reproducibility) after apply; a
   second Ansible run → [`changed=0` on every host](docs/evidence/ansible.md#rebuild-from-nothing) in 2 m 56 s.
 - **Loses a node, keeps the API:** a control plane stopped mid-session and the Kubernetes API
   [kept answering](docs/evidence/ansible.md#ha-drill); the node rejoined on boot without a playbook run.
+- **Whole platform back from an empty stack in 21 m 47 s**, unattended: 86 AWS resources, the cluster, and
+  17 Argo CD Applications Synced and Healthy, with no certificate re-issued ([M3](docs/evidence/drills.md#measured-for-the-cv)).
+- **etcd restored from a scheduled snapshot, RTO 7 m 02 s**, with a canary object back as it was
+  ([drill](docs/evidence/drills.md)). Snapshots every 6 hours by schedule, checked with `etcdutl` before upload; the one scheduled run observed so far
+  came from a temporary 15-minute schedule.
+- **prod refuses an unsigned image at admission** (Kyverno), and still admits signed ones
+  ([criterion #13](docs/evidence/drills.md#part-2--kyverno)).
 - **Infrastructure destroyed in 2 m 15 s.** 0.53 USD/hour while up (cluster + VPN gateway), about 9 USD/month
   kept for the registry, keys, DNS and the stopped workstation ([cost](docs/evidence/terraform.md#cost)).
 - **Container 926 → 483 MB (−48%)**, 22 tests, non-root with a read-only filesystem ([local evidence](docs/evidence/local.md)).
@@ -108,6 +116,8 @@ flowchart TB
         RAN["Rancher"]
         JK["Jenkins · pod agents"]
         APP["medical-rag<br/>dev · prod"]
+        KYV["Kyverno<br/>signed images only in prod"]
+        EB["etcd snapshot CronJob<br/>every 6 h to S3"]
     end
 
     CP --- RT --- CNI
@@ -120,15 +130,18 @@ flowchart TB
     ING -->|"VPC only :443"| RAN
     MON -.->|"scrapes"| CP
     JK -->|"commits image digests"| ARGO
+    KYV -->|"admission check"| APP
+    EB -.->|"snapshots"| CP
 
     classDef ans fill:#f7d9d9,stroke:#a63b3b,color:#1b1430;
     classDef argo fill:#fde3cf,stroke:#c2602a,color:#1b1430;
     class CP,RT,CNI ans
-    class ARGO,ING,CSI,ESO,CM,MON,RAN,JK,KYV,APP argo
+    class ARGO,ING,CSI,ESO,CM,MON,RAN,JK,KYV,EB,APP argo
 ```
 
-Sync waves run in order: Argo CD, ingress and storage first, then External Secrets and cert-manager,
-then the secrets and the restored certificate, then the TLS issuers, Rancher and monitoring.
+Sync waves run in order: Argo CD, ingress and storage first (−3), then External Secrets, cert-manager and
+Kyverno (−2), then the secrets and the restored certificate (−1), then the TLS issuers, Rancher, monitoring, the
+image policies and the etcd snapshot job (0), then the app in dev and prod (1, 2), and Jenkins last (3, 4).
 
 ### 3. What happens to a commit
 
@@ -174,7 +187,7 @@ you have the reason for the next one.
 |---|---|---|---|---|
 | 1 | **Docker, multi-stage** | A 926 MB image carrying the build toolchain, the PDF and `.git` | 483 MB, non-root, read-only filesystem, 22 tests inside the build | Every start still re-embedded the whole corpus before it could answer |
 | 2 | **Content-hashed FAISS index** | Re-embedding 7,079 chunks on every start, against a rate-limited API | Build once, store it in S3 under a hash, skip an unchanged corpus in < 1 s | An artifact with no cluster to serve it |
-| 3 | **Terraform, 3 stacks by lifetime** | Bash scripts and fixed IPs: nobody could rebuild the same thing twice | 91 resources from nothing — network, nodes, load balancers, VPN gateway — and a clean `plan` after | It stops at the machine: three blank Ubuntu hosts |
+| 3 | **Terraform, 3 stacks by lifetime** | Bash scripts and fixed IPs: nobody could rebuild the same thing twice | 86 resources from nothing — network, nodes, load balancers, VPN gateway — and a clean `plan` after | It stops at the machine: three blank Ubuntu hosts |
 | 4 | **SSM Session Manager** | Reaching a machine would mean an SSH key, a bastion and an open port | A shell and file transfer over an outbound connection; no key exists anywhere | Getting in is not the same as configuring what is inside |
 | 5 | **Ansible + kubeadm + containerd** | Blank hosts, and no managed control plane to hide etcd or upgrades behind | An HA control plane, and a second run that reports `changed=0` on every host | Pods cannot talk across zones, and the cluster is empty |
 | 6 | **Calico VXLAN** | The nodes sit in three different subnets; pod addresses do not route between them | Pod traffic wrapped in node addresses, with no BGP and no route table to edit | Every change inside the cluster is still a manual `kubectl apply` |
@@ -188,7 +201,7 @@ you have the reason for the next one.
 | 14 | **Rancher, VPN only** | Reading cluster state meant remembering the right kubectl command | A management UI on its private name, with the purchased certificate | Rolling out the app itself is still a hand-written manifest |
 | 15 | **Helm chart + Argo CD Applications** | One `k8s.yaml` for every environment, edited by hand for each release | `dev` and `prod` from one chart, with the image digest pinned in Git | Images are built by hand, unscanned and unsigned |
 | 16 | **Jenkins, BuildKit, Trivy, Cosign on KMS** | Whoever could build could ship, and nobody could say what was inside an image | Commit → test → build → scan → SBOM → sign → `dev`; `prod` through a reviewed PR | The cluster would still accept an image that nobody signed |
-| 17 *(not built)* | **Kyverno + etcd snapshots** | A signature nothing checks, and a cluster with no way back after a bad day | Would make `prod` admit only signed images, and copy etcd snapshots to S3 on a schedule | Both are P1 in the design and neither exists in `deploy/` yet; so are the restore and gated-upgrade drills |
+| 17 | **Kyverno + etcd snapshots** | A signature nothing checks, and a cluster with no way back after a bad day | `prod` admits only signed images (denial captured); etcd snapshots every 6 hours, checked with `etcdutl`, and a restore drilled at RTO 7 m 02 s | The upgrade drill is not measured: 1.36.4 had no newer patch to move to. `upgrade.yml` exists but has not run |
 
 **Workload:** Flask on gunicorn, LangChain, FAISS and Gemini. The index is a versioned artifact in S3,
 and `/readyz` and `/metrics` feed Kubernetes and Prometheus.
@@ -207,7 +220,9 @@ and `/readyz` and `/metrics` feed Kubernetes and Prometheus.
 ## Trade-offs, on purpose
 
 - **One NAT gateway**, not three: a cost choice, documented as a single point of failure.
-- **Every pod shares its node's instance role.** A self-managed cluster has no IRSA, so each permission is scoped to exact resources.
+- **Platform pods share the node's instance role** (External Secrets, cert-manager, EBS CSI, Kyverno, the etcd
+  CronJob), so each of its permissions is scoped to exact resources. App, index-build and Jenkins build pods have
+  their own roles through a self-hosted OIDC issuer (IRSA), and their namespaces block the metadata endpoint.
 - **`m7i-flex` nodes**, forced by the AWS Free plan. Their CPU burst runs out silently, so an alert watches sustained CPU.
 - **ingress-nginx is retired upstream** and kept knowingly; a maintained controller can take over the same NodePorts.
 - **The ops workstation holds admin rights.** It has no inbound ports, requires IMDSv2 and is stopped when idle.
@@ -244,6 +259,7 @@ Argo CD, the release path and teardown with `make down` are in the **[runbook](d
 | Resilience drills | [README](docs/drills/README.md) · [concepts](docs/drills/concepts.md) | [guide](docs/drills/guide.md) · [measurements](docs/evidence/guide-measurements.md) | [questions](docs/drills/questions.md) · [answers](docs/drills/answers.md) |
 | AWS vs on-premises | | | [questions](docs/aws/questions.md) · [answers](docs/aws/answers.md) |
 | The whole project | [design](docs/selfmanaged-k8s-ops-design.md) | [runbook](docs/runbook.md) | [questions](docs/common/questions.md) · [answers](docs/common/answers.md) |
+| Interview reference (Vietnamese) | [architecture](docs/interview/architecture.md) · [glossary](docs/interview/glossary.md) | | [CV lines](docs/interview/cv-lines.md) · [measurement conditions](docs/interview/modes.md) |
 
 Measured results: [`docs/evidence/`](docs/evidence/). Keys and files on the ops workstation: [`docs/ops-workstation-files.md`](docs/ops-workstation-files.md).
 

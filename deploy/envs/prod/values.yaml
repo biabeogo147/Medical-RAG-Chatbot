@@ -1,5 +1,5 @@
 # prod: what users rely on. Its values change only on purpose, after dev has run the same image and index;
-# until Jenkins opens pull requests for it, you edit this file by hand.
+# Jenkins opens a pull request that changes it, and merging that pull request is the release.
 environment: prod
 image:
   tag: "46fd6bbc6c18@sha256:f5b6789a475d76f3e25550d00e748be3d6245d0aac2e1e6d817cefbf23e2269e" # app guide step 11

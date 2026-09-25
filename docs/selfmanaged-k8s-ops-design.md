@@ -95,7 +95,7 @@ source addresses. Architecture and build steps: `docs/gitops/`.
 | kube-prometheus-stack | Cluster, control-plane (etcd, scheduler, controller manager, kube-proxy) and app metrics; Alertmanager sends email over SMTP; Grafana, Prometheus and Alertmanager UIs at internal names, VPN only |
 | Jenkins (Helm, JCasC) | CI controller. Agents are ephemeral pods. |
 | medical-rag (Helm chart) | The app, as 2 Argo CD Applications: `medical-rag-dev`, `medical-rag-prod`. Its pods get their own IAM roles through a self-hosted OIDC issuer, not the node role (app guide Part 1, `docs/app/`) |
-| kyverno (P1) | Image signature verification + baseline pod policies |
+| kyverno (P1) | Image signature verification + baseline pod policies. **As built (drills phase):** signature verification only; baseline Pod Security stays with PSA labels and a `ValidatingAdmissionPolicy` (`docs/evidence/drills.md`, Still to check) |
 | Rancher (Helm) | Private management UI at `https://rancher.recruitai.io.vn`, reachable only through WireGuard. It runs one replica and uses `ingress.tls.source: secret` with the Sectigo certificate, so cert-manager is not needed. The cluster remains on Kubernetes 1.36 until the compatibility gate passes. |
 
 ## 4. Components
@@ -222,6 +222,7 @@ These roles replace the `MLops-Common` bash scripts and must be idempotent: a se
   - `site.yml`: full cluster.
   - `upgrade.yml` (P1): after the §4.2.1 gate passes, `serial: 1`, drain, `kubeadm upgrade apply|node`,
     upgrade kubelet, uncordon, and wait for Ready plus Argo CD health before the next node.
+    **As built:** written in the drills phase and syntax-checked, not run: 1.36.4 had no newer patch to move to.
 
 ### 4.2.1 Rancher GitOps contract and compatibility gate
 
@@ -364,19 +365,22 @@ Images are referenced **by digest** in values as `tag@sha256:...`, so what was s
 ### 4.6 Day-2 operations (P1)
 - **etcd backup:**
   - A CronJob on control-plane nodes (nodeSelector + toleration, hostPath `/etc/kubernetes/pki/etcd`).
+    **As built:** it mounts three certificate files, not the directory, which also holds the private keys.
   - Runs `etcdctl snapshot save` every 6h and uploads to S3. `snapshot status` is verified before upload.
 - **Restore drill:**
   1. Delete a test namespace.
   2. Restore the latest snapshot on all 3 members.
   3. Verify the namespace is back.
   4. **Record the RTO** from the start of restore to all Argo CD apps Healthy.
+  **As run (2026-09-22):** all four control-plane static pods were stopped, and the restore bumped the revision
+  and marked it compacted; RTO 7 m 02 s. The runnable form is `docs/evidence/guide-measurements.md` M2.
 - **Kyverno:**
   - An `ImageValidatingPolicy` per environment for `*.dkr.ecr.*.amazonaws.com/medical-rag:*` and
     `…/medical-rag@*`, with the KMS public key. `Deny` in prod and `Audit` in dev. Not `medical-rag*`: that
     also matches `medical-rag-ci`, the unsigned tools image that Jenkins build pods and the etcd CronJob run,
     and would stop them the day a policy covers their namespaces.
     (Corrected in the drills phase; see `docs/drills/guide.md` step 13.)
-  - Baseline Pod Security policies.
+  - Baseline Pod Security policies. **Not built** (see the kyverno row in §3).
   - Demo: deploying an unsigned image to prod is rejected, with the admission error captured as evidence.
 - **Upgrade drill:** after the §4.2.1 gate passes, run `ansible-playbook upgrade.yml` one node at a
   time while a curl loop records failed requests.
@@ -426,6 +430,8 @@ deploy/{charts/medical-rag/, envs/{dev,prod}/, argocd/}
 docs/{evidence/, terraform/, ansible/}
 ```
 
+As built, `docs/` also holds `gitops/`, `app/`, `jenkins/`, `drills/`, `aws/`, `common/` and `interview/`.
+
 The `MLops-Common` submodule is kept for the on-prem history; the new Ansible roles supersede it. The README gains an architecture section and an "Evidence" table.
 
 ## 8. Make targets and teardown
@@ -437,9 +443,9 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | `make cluster` | Ansible `site.yml` |
 | `make tunnel` | SSM port-forward to the internal API NLB (the kubeconfig is written by `make cluster`) |
 | `make bootstrap` | Install Argo CD, apply `deploy/argocd/root.yaml` |
-| `make up` | infra + cluster + bootstrap, after DNS, certificate and WireGuard secrets exist |
+| `make up` | infra + cluster + bootstrap, after DNS, certificate and WireGuard secrets exist. **Not implemented**: the steps run one by one, and `infra/scripts/timed-rebuild.sh` chains them for a timed rebuild |
 | `make down` | Delete Argo CD apps (releases PVs), then `terraform destroy` of the cluster stack (`make infra-destroy`). The shared and bootstrap stacks are kept. |
-| `make cost` | Print hours up × hourly estimate |
+| `make cost` | Print hours up × hourly estimate. **Not implemented** |
 
 ## 9. Schedule (days 1–3)
 
@@ -466,7 +472,7 @@ The `MLops-Common` submodule is kept for the on-prem history; the new Ansible ro
 | Rancher controls the whole cluster | TCP 443 exists only on the internal NLB, open to the whole cluster VPC because Rancher's own agents connect to it from inside. From outside the VPC, access requires a valid WireGuard peer and Rancher credentials. Configure an MFA-enforcing external identity provider before treating MFA as a control. Disconnect the VPN and destroy the cluster when idle. |
 | A Kubernetes minor exceeds Rancher's chart constraint | The §4.2.1 gate: keep 1.36.4 until a candidate chart accepts the target, upgrade Rancher first, and require Argo CD health. |
 | The internal NLB is open to the whole VPC, including the Kubernetes API on 6443, and the VPN peer arrives with a VPC address | The gateway firewall forwards only DNS to the VPC resolver and TCP 443 from the tunnel, drops everything else, and blocks connections from the VPC towards the client. The API stays reachable only through the SSM tunnel from the workstation. |
-| **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use whatever the node role holds. | Self-hosted IRSA, built before the app's chart (app guide Part 1): a stable signing key, an S3-hosted issuer, an IAM OIDC provider and per-ServiceAccount roles. The chart mounts the token itself, with no pod-identity webhook. Four namespaces block `169.254.169.254/32` — both app environments and both Jenkins ones — and the node role has lost the artifacts bucket, ECR push and KMS. Platform pods (External Secrets, cert-manager, EBS CSI) stay on the node role in namespaces that do **not** block IMDS; moving them uses the same issuer. |
+| **Node instance profile is shared by every pod.** Self-managed clusters have no IRSA or Pod Identity out of the box, so any pod able to reach IMDS could use whatever the node role holds. | Self-hosted IRSA, built before the app's chart (app guide Part 1): a stable signing key, an S3-hosted issuer, an IAM OIDC provider and per-ServiceAccount roles. The chart mounts the token itself, with no pod-identity webhook. Four namespaces block `169.254.169.254/32` — both app environments and both Jenkins ones — and the node role has lost the artifacts bucket, ECR push and KMS. Platform pods (External Secrets, cert-manager, EBS CSI, and from the drills phase Kyverno and the etcd CronJob) stay on the node role in namespaces that do **not** block IMDS; moving them uses the same issuer. |
 | ingress-nginx was retired upstream in March 2026: no further releases or security fixes, and Kubernetes 1.36 postdates its last release | Kept because the NodePorts and Rancher's `ingressClassName` depend on it; traffic reaching it is the demo app or a VPN user. Migrate to a maintained controller or Gateway API; the NodePorts stay the same. |
 | Let's Encrypt allows 5 certificates per identical name set per 7 days, and the cluster is rebuilt more often | The wildcard certificate is pushed to `medical-rag/wildcard-tls` and restored in wave -1, before its `Certificate` exists; cert-manager keeps a valid restored certificate. Test changes against the staging issuer. |
 | Prometheus and Alertmanager UIs have no authentication | VPN-only names plus a VPC-only allowlist on their Ingresses; single VPN peer. P2: an OAuth proxy in front of all internal UIs. |
