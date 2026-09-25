@@ -375,7 +375,7 @@ Recipe lines start with a **tab**.
   fail. Only `ImageNotFoundException` means the push may go ahead; anything else is printed and stops.
 - **`--provenance=false --sbom=false`.** A single plain manifest, whose digest is the one the chart will
   pin. Buildx would otherwise push an index with attestation manifests. The SBOM is Jenkins' job later,
-  with Syft and `cosign attest`.
+  with `cosign attest` (the Jenkins phase writes it with Trivy rather than Syft).
 - **The test stage runs first.** An image that fails its own tests never reaches the registry. Here
   it usually prints `CACHED`: this step changes only the Makefile, which the test stage does not copy,
   so the result from step 10 still holds.

@@ -226,6 +226,10 @@ A5.5 and A5.6 need nothing: their remaining `[điền]` is about Kyverno, which 
 ([README](../README.md#15-known-limits-and-what-is-out-of-scope)). Last, reread `docs/jenkins/README.md` and correct
 anything this phase decided differently.
 
+> **Since then:** the Jenkins Q&A moved out of `docs/common/answers.md` into
+> [`docs/jenkins/answers.md`](../answers.md) (`a91b805`), and Kyverno was built in the drills phase
+> ([`drills.md`](../../evidence/drills.md) Part 2).
+
 **Record** the rebuild timings, the preview result, the repository size, and the release that ran after the rebuild.
 
 ---

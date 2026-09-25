@@ -66,13 +66,16 @@ design names it explicitly: *"`snapshot status` is verified before upload."*
 **`etcdutl snapshot restore FILE`** does **not** write into a running member. It expands the snapshot into a
 *new* data directory on disk. Restoring is therefore not one command but a procedure:
 
-1. Stop the API server and etcd on every node — by moving their static-pod manifests out of
-   `/etc/kubernetes/manifests/`, which makes the kubelet tear them down.
+1. Stop all four control-plane static pods on every node — the API server, etcd, the controller manager and
+   the scheduler — by moving their manifests out of `/etc/kubernetes/manifests/`, which makes the kubelet
+   tear them down. The controller manager and the scheduler hold caches from after the snapshot.
 2. Move the old `/var/lib/etcd` aside on all three.
 3. Run `etcdutl snapshot restore` on each node, each with **its own** `--name` and
    `--initial-advertise-peer-urls`, the same `--initial-cluster` list and the same `--initial-cluster-token`,
    and an explicit `--data-dir` — you are recreating a three-member cluster, not copying one member's disk.
    Without `--data-dir` it writes `./<name>.etcd` and the kubelet then starts etcd on an empty directory.
+   Add `--bump-revision` and `--mark-compacted`: the restored revision is behind what every watcher has
+   already seen, and without the bump new writes would reuse those revisions.
 4. Move the manifests back. The kubelet starts etcd, the members find each other, the API server comes up.
 
 **Why all three, not one.** The members would otherwise disagree about history. A member restored from the

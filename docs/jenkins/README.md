@@ -351,14 +351,14 @@ argument [gitops README §4](../gitops/README.md#4-app-of-apps-and-sync-waves) m
 | The gate can fail a build | **Measured** in the drills phase, by a positive control: 6 fixable findings, build red at Scan |
 | The gate blocks a fixable CRITICAL | **Assumed.** No fixable CRITICAL has appeared |
 | `release-*` images survive the second lifecycle rule | **Assumed.** Fewer than 30 tagged images exist, so no preview has exercised it |
-| The phase comes back from Git after a teardown | **Half measured** in the drills phase (`../evidence/drills.md`, M3): a timed rebuild brought all 17 Applications, `jenkins-platform` and `jenkins` included, back Synced and Healthy in 21 m 47 s. Nobody logged in, and no commit has yet gone through the rebuilt pipeline |
+| The phase comes back from Git after a teardown | **Half measured** in the drills phase (`../evidence/drills.md`, M3): a timed rebuild brought all 17 Applications, `jenkins-platform` and `jenkins` included, back Synced and Healthy in 21 m 47 s. Nobody logged in. Commits did go through the rebuilt pipeline as far as the bot's dev commit (`1255b50` after the Part 0 rebuild, `624a8e2` after M3); following one to a Ready dev pod was not recorded |
 | The split plugin suite caused that `NullPointerException` | **Inferred** from the symptom and from the fix working; the stack trace was rotated away |
 
 ## 15. Known limits and what is out of scope
 
 | Limit | Why it is accepted | What would fix it |
 |---|---|---|
-| **No release has gone through a rebuilt cluster** | The drills phase's timed rebuild brought the Jenkins Applications back Synced and Healthy (21 m 47 s for all 17, `../evidence/drills.md` M3), but no commit has been pushed through the rebuilt pipeline | Push one small code change after a rebuild and follow it to the dev pod |
+| **No release has been followed through a rebuilt cluster** | The drills phase's timed rebuild brought the Jenkins Applications back Synced and Healthy (21 m 47 s for all 17, `../evidence/drills.md` M3), and the pipeline ran on it as far as the bot's dev commit (`624a8e2`); nobody followed that commit to a Ready dev pod | Push one small code change after a rebuild and follow it to the dev pod |
 | **Signatures are checked only for the app, in two namespaces** | Closed for the app in the drills phase: Kyverno `ImageValidatingPolicy`, `Deny` in prod and `Audit` in dev, refused an unsigned image at admission | Widen the policy to the addons' images, which are not signed by this pipeline |
 | **The gate has never caught a real fixable CRITICAL** | None has appeared. Its failure path was proven by a positive control (drills phase, M4) | Nothing to fix; keep the positive control as a periodic check |
 | The bot's token is yours, so GitHub cannot enforce "prod only by pull request" | One-person repository | A separate bot account or GitHub App, and a rule requiring a code owner for `deploy/envs/prod/` |

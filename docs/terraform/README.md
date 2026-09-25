@@ -94,11 +94,11 @@ flowchart TB
         SB[("State bucket<br/>state of all three stacks")]
         WS["Ops workstation<br/>EC2 t3.small"]
     end
-    subgraph SHARED["shared/ · 38 resources · kept"]
-        SH["2 ECR repos · artifacts bucket · KMS key<br/>OIDC issuer + 4 IRSA roles<br/>10 secrets · Route 53 zone · budget"]
+    subgraph SHARED["shared/ · 43 resources · kept"]
+        SH["2 ECR repos · artifacts and etcd snapshot buckets · KMS key<br/>OIDC issuer + 4 IRSA roles<br/>10 secrets · Route 53 zone · budget"]
     end
-    subgraph CLUSTER["cluster/ · 91 resources · destroyed when idle"]
-        CL["VPC · 3 nodes · 2 NLBs · WireGuard gateway<br/>security groups · IAM roles · 2 buckets"]
+    subgraph CLUSTER["cluster/ · 86 resources · destroyed when idle"]
+        CL["VPC · 3 nodes · 2 NLBs · WireGuard gateway<br/>security groups · IAM roles · 1 bucket"]
     end
     CS -->|"terraform apply"| SB
     CS -->|"terraform apply"| WS
@@ -114,12 +114,12 @@ flowchart TB
 | Job | The state bucket and the machine you work from | What must survive a teardown | The Kubernetes machines, their network and entry points |
 | Applied from | AWS CloudShell ([guide step 4](guide/1-bootstrap.md#step-4--apply-the-bootstrap-stack-cloudshell)) | Ops workstation, `make shared` | Ops workstation, `make infra` |
 | State key | `bootstrap/terraform.tfstate` | `shared/terraform.tfstate` | `cluster/terraform.tfstate` |
-| Resources | 18 | 38 | 91 |
+| Resources | 18 | 43 | 86 |
 | Lifetime | Kept | Kept | **Destroyed when idle** (`make infra-destroy`) |
 | Cost | Workstation 0.03 USD/hour while running, 2.90 USD/month for its disk | ≈ 6 USD/month for everything kept, state bucket included | ≈ 0.53 USD/hour while it exists |
 | Needs | Nothing but CloudShell | `bootstrap/`: state bucket, workstation | `bootstrap/`, and `shared/` looked up by name |
 | Needed by | `shared/`, `cluster/` | `cluster/`, Jenkins, pods, External Secrets | Ansible, Argo CD, the app |
-| Protection | `prevent_destroy` on the state bucket | `prevent_destroy` on the zone and on the OIDC issuer bucket; a 7-day wait before a secret or the KMS key is really deleted | None needed: `force_destroy` empties its buckets on destroy |
+| Protection | `prevent_destroy` on the state bucket | `prevent_destroy` on the zone and on the OIDC issuer bucket; a 7-day wait before a secret or the KMS key is really deleted | None needed: `force_destroy` empties its bucket on destroy |
 
 #### `bootstrap/` — the foundation
 
@@ -165,10 +165,11 @@ Solid arrow: runs Terraform. Dotted arrow: is used by.
 ```mermaid
 flowchart LR
     WS(["Ops workstation<br/>make shared"])
-    subgraph SHARED["shared/ · 38 resources · kept"]
+    subgraph SHARED["shared/ · 43 resources · kept"]
         KMS["Image signing · 2<br/>KMS key ECC_NIST_P256, SIGN_VERIFY<br/>alias/medical-rag-cosign"]
         ECR["Images · 4<br/>medical-rag: scan on push, tags immutable<br/>keep 10 release-* then 30 tagged<br/>medical-rag-ci: tools image, keep 5"]
         ART[("Index artifacts · 6<br/>medical-rag-artifacts-‹account›<br/>versioned · encrypted · private · TLS-only<br/>old versions deleted after 30 days")]
+        ETCD[("etcd snapshots · 5<br/>medical-rag-etcd-backups-‹account›<br/>encrypted · private · TLS-only<br/>deleted after 14 days · no force_destroy")]
         OIDC[("Issuer documents · 5<br/>medical-rag-oidc-‹account›<br/>two public objects · versioned · TLS-only<br/>prevent_destroy")]
         IRSA["Workload identity · 9<br/>OIDC provider plus 4 roles and their policies<br/>app-dev · app-prod · index-builder · ci"]
         SEC["Secrets Manager · 10, created empty<br/>medical-rag/llm, github, app-dev, app-prod,<br/>alertmanager, wildcard-tls, sa-signer,<br/>rancher, rancher-tls, wireguard"]
@@ -223,7 +224,7 @@ flowchart TB
         S3E["S3 gateway endpoint"]
     end
     OUT["Internet<br/>packages, Gemini, HF, GitHub"]
-    BKT[("S3 buckets<br/>etcd-backups, ssm-transfer<br/>artifacts from shared/")]
+    BKT[("S3 buckets<br/>ssm-transfer<br/>artifacts and etcd-backups from shared/")]
     USERS -->|"TCP 80"| PNLB
     PNLB -->|"NodePort 30080"| NODES
     OPER -->|"UDP 51820<br/>vpn.recruitai.io.vn"| WG
@@ -235,7 +236,7 @@ flowchart TB
     S3E --> BKT
 ```
 
-**What the 91 resources are:**
+**What the 86 resources are** (`Plan: 86 to add` in the timed rebuild, [`drills.md`](../evidence/drills.md#measured-for-the-cv) M3):
 
 | Group | Count | Contents |
 |---|---|---|
@@ -243,8 +244,8 @@ flowchart TB
 | Entry points | 26 | Public NLB :80 with listener, target group and 3 attachments (6) · internal NLB :6443, the same set (6) · :443 listener, target group and 3 attachments (5) · Route 53 records: `rancher`, `vpn`, the 5 internal UI names and the 2 app names (9) |
 | Machines | 5 | 3 nodes (40 GB gp3) · WireGuard gateway (8 GB gp3) · its Elastic IP |
 | Security groups | 17 | 4 groups: `nodes`, `api-nlb` (internal NLB), `ingress-nlb` (public NLB), `wireguard`; 13 rules |
-| Identity | 9 | Node role (5): SSM and EBS CSI managed policies; the instance profile; an inline policy with ECR **pull only** on both repositories, the 2 cluster buckets, read on 8 secrets, write on `wildcard-tls` alone, and the `_acme-challenge` TXT record. No ECR push and no KMS: the Jenkins build pods sign with their own role (`shared/irsa.tf`) · Gateway role (4): SSM, read `wireguard` only, the instance profile |
-| Cluster buckets | 10 | `etcd-backups` and `ssm-transfer`, each with a public access block, encryption, a TLS-only policy and a lifecycle rule deleting objects after 14 days and 1 day. `force_destroy` is on, so destroy empties them |
+| Identity | 9 | Node role (5): SSM and EBS CSI managed policies; the instance profile; an inline policy with ECR **pull only** on both repositories, `ssm-transfer` and the shared `etcd-backups` bucket, read on 8 secrets, write on `wildcard-tls` alone, and the `_acme-challenge` TXT record. No ECR push and no KMS: the Jenkins build pods sign with their own role (`shared/irsa.tf`) · Gateway role (4): SSM, read `wireguard` only, the instance profile |
+| Cluster bucket | 5 | `ssm-transfer`, with a public access block, encryption, a TLS-only policy and a lifecycle rule deleting objects after 1 day. `force_destroy` is on, so destroy empties it. The `etcd-backups` bucket moved to `shared/` in the drills phase (`f047a2a`) so that a teardown cannot delete the backups |
 
 ## 3. Folder structure
 
@@ -284,13 +285,16 @@ because every `.tf` file in the folder is equivalent.
 | `workstation-init.sh` | cloud-init: Docker and Ansible from Ubuntu packages; Terraform, kubectl, Helm, cosign, yq and gh downloaded and checked against their published checksums; AWS CLI v2 and the Session Manager plugin from their vendor URLs |
 | `install-terraform.sh` | Installs Terraform into `~/bin` inside CloudShell, so the very first apply can run |
 
-### `shared/` — 38 resources
+### `shared/` — 43 resources
+
+38 until the drills phase moved the etcd bucket's 5 resources here. Counted from the code; that apply's plan
+summary was not recorded.
 
 | File | Creates | Used later by |
 |---|---|---|
 | `registry.tf` | Two ECR repositories. `medical-rag`: scan on push, immutable tags except `sha256-*` and `buildcache*`, keep the last 10 `release-*` images and then 30 tagged in total. `medical-rag-ci`: the pipeline's tools image, fully immutable, keep the last 5 | Jenkins build pods push the app image; the kubelet pulls both |
-| `storage.tf` | Bucket `medical-rag-artifacts-<account>`: versioned, encrypted, private, TLS-only, old versions expire after 30 days | The index build Job writes the FAISS index; pods pull the pinned version |
-| `kms.tf` | Asymmetric signing key (`ECC_NIST_P256`) + alias `alias/medical-rag-cosign` | The Jenkins build pods sign images with it, through their own role. Nothing verifies signatures yet: Kyverno is not installed |
+| `storage.tf` | Bucket `medical-rag-artifacts-<account>`: versioned, encrypted, private, TLS-only, old versions expire after 30 days. Bucket `medical-rag-etcd-backups-<account>`: encrypted, private, TLS-only, snapshots expire after 14 days, **no `force_destroy`** (drills phase) | The index build Job writes the FAISS index; pods pull the pinned version. The etcd snapshot CronJob writes snapshots |
+| `kms.tf` | Asymmetric signing key (`ECC_NIST_P256`) + alias `alias/medical-rag-cosign` | The Jenkins build pods sign images with it, through their own role. Kyverno verifies the signatures at admission with the public key in Git (`deploy/argocd/manifests/kyverno-policies/cosign.pub`) |
 | `oidc.tf` | Bucket `medical-rag-oidc-<account>`: two public objects (the discovery document and the key set), versioned, encrypted, TLS-only, `prevent_destroy`. Terraform creates the container only; `make oidc-publish` uploads the documents | AWS fetches them on every token exchange |
 | `irsa.tf` | The IAM OIDC provider for that issuer, plus 4 roles with their policies: `app-dev` and `app-prod` read `faiss/*`; `index-builder` reads `corpus/*` and `faiss/*` and writes `faiss/*` but is denied `faiss/LATEST`; `ci` pushes to `medical-rag`, signs with the KMS key and reads `corpus/*`. Each trusts one exact `namespace:serviceaccount` | The app's pods and the Jenkins build pods, instead of the node role |
 | `secrets.tf` | Seven empty secrets: `medical-rag/llm`, `github`, `app-dev`, `app-prod`, `alertmanager` (SMTP settings), `wildcard-tls` (certificate backup, tagged `managed-by=external-secrets`) and `sa-signer` (the service-account signing key, which no cluster role may read). Values are set with the AWS CLI or by External Secrets, never by Terraform | External Secrets syncs them into Kubernetes; only `wildcard-tls` is written back; Ansible reads `sa-signer` on the workstation |
@@ -298,14 +302,14 @@ because every `.tf` file in the folder is equivalent.
 | `rancher.tf` | Route 53 zone plus empty `medical-rag/rancher`, `medical-rag/rancher-tls` and `medical-rag/wireguard` secrets | Rancher, External Secrets and the VPN gateway |
 | `outputs.tf` | The app repository URL, the artifacts bucket, the KMS alias and ARN, and nine of the ten secret names (`sa-signer` is left out on purpose); never secret values. `oidc.tf`, `irsa.tf` and `rancher.tf` add outputs beside their own resources | Cluster stack, Ansible, Helm and operator checks |
 
-### `cluster/` — 91 resources, with the default node count and host lists
+### `cluster/` — 86 resources, with the default node count and host lists
 
 | File | Creates | Notes |
 |---|---|---|
 | `network.tf` | VPC `10.10.0.0/16`, 3 private + 3 public subnets, internet gateway, 1 NAT gateway with its Elastic IP, route tables, S3 gateway endpoint | The community `terraform-aws-modules/vpc` module also adopts the VPC's default security group and route table (leaving both empty) and its default NACL (reset to allow-all): 3 of this step's 24 resources |
 | `security.tf` | 3 security groups (nodes, API NLB, ingress NLB) and 8 rules | Rules reference security groups where possible. Three use CIDRs: HTTP from the internet, the API from the VPC, node egress. `rancher.tf` and `wireguard.tf` add the rest (end state: 4 groups, 13 rules) |
-| `storage.tf` | Buckets `etcd-backups` (14 days) and `ssm-transfer` (1 day) | Cluster-scoped: useless once the cluster is gone, so `force_destroy` is on |
-| `iam.tf` | The node role, instance profile and its inline policy | Least privilege: ECR pull on both repositories, the 2 cluster buckets, 8 workload secrets, write on `wildcard-tls` and the ACME TXT record. The cosign key, the artifacts bucket, `sa-signer` and the WireGuard credentials are deliberately excluded |
+| `storage.tf` | Bucket `ssm-transfer` (1 day) | Cluster-scoped: useless once the cluster is gone, so `force_destroy` is on. `etcd-backups` moved to `shared/` |
+| `iam.tf` | The node role, instance profile and its inline policy | Least privilege: ECR pull on both repositories, `ssm-transfer` and the shared `etcd-backups` bucket, 8 workload secrets, write on `wildcard-tls` and the ACME TXT record. The cosign key, the artifacts bucket, `sa-signer` and the WireGuard credentials are deliberately excluded |
 | `compute.tf` | 3 × `m7i-flex.large` Ubuntu 24.04, one per AZ, no public IP, no key pair, IMDSv2 required | Tagged `k8s-cluster=medical-rag`, which is how Ansible finds them |
 | `loadbalancers.tf` | Internal NLB :6443 and public NLB :80, with their target groups, listeners and 3 attachments each | The internal one is kubeadm's `controlPlaneEndpoint` |
 | `rancher.tf` | Internal NLB :443 target group/listener, 3 attachments, 3 firewall rules and the `rancher.<domain>` alias | Nine resources. The target group disables client-IP preservation to support Rancher agent hairpin connections |

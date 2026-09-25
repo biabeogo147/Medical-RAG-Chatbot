@@ -234,8 +234,9 @@ immediately; `make apps` seconds later shows a near-empty table that reads like 
 read `Healthy` **while** its waves were still running — most likely because Argo CD leaves objects that do not
 exist yet out of an Application's health — so a wait on health alone can return in the first minute. On 2026-09-22 it
 returned after 1 m 18 s with 6 of 14 Applications created. `root` is `Synced` only once the last wave's
-Application exists, so waiting for `Synced` first and `Healthy` second marks the end. **Time the first
-wait**: that is the rebuild figure.
+Application exists, so waiting for `Synced` first and `Healthy` second marks the end. These waits are for
+using the cluster, not for the CV: the rebuild figure is M3's single wall-clock T, taken by
+`infra/scripts/timed-rebuild.sh` ([`guide-measurements.md`](../evidence/guide-measurements.md#m3--a-timed-rebuild)).
 
 **Record** both `time` figures and the `make apps` table.
 
@@ -356,6 +357,10 @@ missing S3 permission, an image without `etcdutl` — looks identical until the 
 **This step.** Wait for the next six-hour boundary. **Do not trigger it by hand**: a manual
 `create job --from=cronjob` skips exactly the scheduling path you are testing.
 
+**As run on 2026-09-22:** a temporary `*/15 * * * *` schedule was committed in Git (`a1e1382`) and reverted after
+one run (`517a143`). That job was still made by the scheduler (`manual=` empty), so it tests the same path
+without waiting hours ([`drills.md`](../evidence/drills.md) step 9).
+
 **Workstation, window 0.**
 ```bash
 kubectl -n etcd-backup get jobs
@@ -402,7 +407,10 @@ date -u +%FT%TZ            # t1: the restore begins
 one node while the others still serve is the split-brain concepts §2 warns about: a restored single member
 rejoining a live two-member quorum is either refused or silently loses data.
 
-`make kubectl` only reaches node 1, so this goes through Ansible, which addresses all three at once:
+`make kubectl` only reaches node 1, so this goes through Ansible, which addresses all three at once. **The
+exact commands that produced the RTO are
+[M2 in `guide-measurements.md`](../evidence/guide-measurements.md#m2--the-restore-drill)**; the phases below
+explain them.
 
 ```bash
 A="cd ~/Medical-RAG-Chatbot/infra/ansible && ansible nodes -b -e project=medical-rag -e aws_region=ap-southeast-1 -e aws_account_id=242834061265"
@@ -410,16 +418,18 @@ A="cd ~/Medical-RAG-Chatbot/infra/ansible && ansible nodes -b -e project=medical
 
 - **Phase 0 — put the snapshot on every node.** The nodes have no AWS CLI, so copy it from the workstation:
   `$A -m copy -a "src=/tmp/snap.db dest=/tmp/snap.db mode=0600"`
-- **Phase 1 — stop the API server and etcd everywhere:**
-  `$A -m shell -a 'mv /etc/kubernetes/manifests/kube-apiserver.yaml /etc/kubernetes/manifests/etcd.yaml /root/'`
-  then wait until `crictl ps` shows neither on any node.
+- **Phase 1 — stop all four control-plane static pods everywhere:** move `kube-apiserver.yaml`, `etcd.yaml`,
+  `kube-controller-manager.yaml` and `kube-scheduler.yaml` out of `/etc/kubernetes/manifests/`, then wait
+  until `crictl ps` shows none of them on any node. The controller manager and the scheduler hold caches from
+  after the snapshot; left running, they act on state the restore is about to erase.
 - **Phase 2 — move the old data aside everywhere:** `$A -m shell -a 'mv /var/lib/etcd /var/lib/etcd.old'`
 - **Phase 3 — restore, per node, with that node's own values.** `--name` and `--initial-advertise-peer-urls`
   differ per node; `--initial-cluster`, `--initial-cluster-token` and `--data-dir` are the **same on all
   three**. `--data-dir` is not optional: without it `etcdutl` writes `./<name>.etcd` and the kubelet then
-  starts etcd on an empty directory.
-- **Phase 4 — put the manifests back everywhere:**
-  `$A -m shell -a 'mv /root/kube-apiserver.yaml /root/etcd.yaml /etc/kubernetes/manifests/'`
+  starts etcd on an empty directory. Add `--bump-revision 1000000000 --mark-compacted`: the restored revision
+  is behind the resourceVersions every controller and kubelet already holds, and without the bump new writes
+  would reuse revisions they have seen, so watches could miss events.
+- **Phase 4 — put all four manifests back everywhere.**
 - **Phase 5 — re-open `make tunnel`** in window 1. The API server restarted underneath the old port-forward.
 
 **Check.**
@@ -427,11 +437,12 @@ A="cd ~/Medical-RAG-Chatbot/infra/ansible && ansible nodes -b -e project=medical
 cd ~/Medical-RAG-Chatbot && make kubectl CMD="get nodes"
 kubectl -n restore-drill get configmap canary -o yaml
 cd ~/Medical-RAG-Chatbot && make apps
-date -u +%FT%TZ            # t2: every Application Healthy
 ```
 
 Expected: three nodes `Ready`; the ConfigMap back with the timestamp it was written with; every Application
-`Healthy`.
+`Healthy`. **Do not take t2 from these reads**: the snapshot also restored every object's *status*, so
+Applications read Synced and Healthy the moment the API answers. t2 comes from M2's wait loop, which requires
+each Application's `reconciledAt` and every node's Lease to be later than t1.
 
 **RTO = t2 − t1**, measured to *every Application Healthy*, not to *etcd started*: a cluster whose etcd is up
 but whose workloads have not reconciled is not recovered.

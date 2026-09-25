@@ -132,7 +132,7 @@ their pods. This is listed as a later improvement, not done in this phase.
   their failed last sync as `Degraded` (step 15). The failure path is drawn in
   [section 5](#what-a-failed-build-does).
 - **Pods get the index from an init container that runs the app image** with `python -m app.index pull`.
-  The image is the same one Kyverno will verify later, and the pull is pinned. The init container is the only
+  The image is the same one Kyverno verifies at admission (drills phase), and the pull is pinned. The init container is the only
   one with the AWS token: the app container that answers users holds no AWS credentials at all.
 - **Only `/` and `/clear` are public.** The Ingress routes exactly those two paths, so `/metrics`, `/healthz`
   and `/readyz` answer `404` from outside. A per-client rate limit protects the model quota.
@@ -219,7 +219,7 @@ The numbers are in [docs/evidence/app.md](../evidence/app.md).
 | Platform pods still share the node role, which reads eight secrets and writes the certificate backup | They are not internet-facing, and each permission names its resources | Their own roles through the same issuer |
 | The signing key passes through the SSM transfer bucket while Ansible copies it to node 1, and the node role can read that bucket | It happens during `make cluster`, before Argo CD or any workload exists, so no pod is there to read it. Objects in that bucket expire after a day | Remove the transfer bucket from the node role (Ansible hands nodes presigned URLs and should not need it), proven by a `make cluster` run that still reports `changed=0` |
 | App traffic is plain HTTP | Out of scope in the design; the internal UIs use TLS | A certificate for `dev.` and `app.` and an HTTPS listener on the public NLB |
-| The image is built on the workstation | Jenkins is the next phase | Jenkins with rootless BuildKit |
+| The image is built on the workstation | Jenkins is the next phase | **Closed in the Jenkins phase:** Jenkins builds with rootless BuildKit and promotes by commit and pull request |
 | Both app secrets start with the same API keys | The Flask key is replaced for prod in step 20; the API keys are yours to split | `put-secret-value` per environment |
-| The image carries 4 CRITICAL and 14 HIGH findings (ECR scan) | Recorded as the "before" of criterion #9; the Jenkins phase hardens the base image | A smaller base image and a Trivy gate in the pipeline |
+| The image carries 4 CRITICAL and 14 HIGH findings (ECR scan) | Recorded as the "before" of criterion #9; the Jenkins phase hardens the base image | **Closed in the Jenkins phase:** Debian 13 base, CRITICAL 5 → 0 by Trivy's count, and a Trivy gate in the pipeline ([`jenkins.md`](../evidence/jenkins.md) step 13) |
 | The account ID is in Git (`deploy/envs/common.yaml`) | AWS treats account IDs as identifiers, not secrets; the image and role names need it | Template it in at deploy time, which Argo CD does not do on its own |

@@ -115,6 +115,7 @@ flowchart TB
     subgraph W2["wave -2: operators and their CRDs"]
         ESO["external-secrets"]
         CM["cert-manager"]
+        KYV["kyverno<br/>drills phase"]
     end
     subgraph W1["wave -1"]
         PS["platform-secrets<br/>secret store, ExternalSecrets,<br/>restored certificate"]
@@ -123,6 +124,8 @@ flowchart TB
         TLS["platform-tls<br/>issuers, certificate, backup"]
         MON["kube-prometheus-stack"]
         RAN["rancher"]
+        KP["kyverno-policies<br/>drills phase"]
+        EB["etcd-backup<br/>drills phase"]
     end
     subgraph WAPP1["wave 1"]
         DEVAPP["medical-rag-dev<br/>app guide, Part 3"]
@@ -399,10 +402,13 @@ deploy/argocd/
     aws-ebs-csi-driver.yaml          Volumes, and the default gp3 StorageClass    wave -3
     external-secrets.yaml            The operator and its CRDs                    wave -2
     cert-manager.yaml                The operator and its CRDs                    wave -2
+    kyverno.yaml                     Admission controller and its CRDs            wave -2
     platform-secrets.yaml            manifests/platform-secrets/                  wave -1
     platform-tls.yaml                manifests/platform-tls/                      wave 0
     kube-prometheus-stack.yaml       Prometheus, Alertmanager, Grafana            wave 0
     rancher.yaml                     Private management UI                        wave 0
+    kyverno-policies.yaml            manifests/kyverno-policies/                  wave 0
+    etcd-backup.yaml                 manifests/etcd-backup/                       wave 0
     medical-rag-dev.yaml             The app in dev, deploy/charts/medical-rag    wave 1
     medical-rag-prod.yaml            The app in prod, same chart                  wave 2
     jenkins-platform.yaml            manifests/jenkins/                           wave 3
@@ -416,6 +422,7 @@ deploy/argocd/
     kube-prometheus-stack.yaml
     rancher.yaml
     jenkins.yaml
+    kyverno.yaml
   manifests/
     platform-secrets/                Plain YAML, no chart
       namespaces.yaml                cattle-system and monitoring
@@ -434,6 +441,12 @@ deploy/argocd/
       secrets.yaml                   Generated admin password, and the GitHub token from Secrets Manager
       networkpolicies.yaml           Default deny, the two allowed paths, and no metadata service
       admission-policy.yaml          ValidatingAdmissionPolicy narrowing the privileged agents namespace
+    kyverno-policies/                Drills phase
+      verify-images.yaml             One ImageValidatingPolicy per environment: prod Deny, dev Audit
+      cosign.pub                     The public half of the KMS signing key (not applied: not YAML)
+    etcd-backup/                     Drills phase
+      namespace.yaml
+      cronjob.yaml                   A snapshot every 6 hours, checked with etcdutl, uploaded to S3
 ```
 
 Two details are easy to get wrong:
@@ -458,6 +471,7 @@ Checked on 2026-09-21 against each project's chart repository.
 | `cert-manager` | v1.21.2 | v1.21.2 | The current release |
 | `kube-prometheus-stack` | 91.4.1 | operator v0.94.0 | The current release |
 | `rancher` | 2.15.1 | Rancher 2.15.1 | Its `kubeVersion: < 1.37.0-0` accepts the cluster's 1.36.4 ([design §4.2.1](../selfmanaged-k8s-ops-design.md#421-rancher-gitops-contract-and-compatibility-gate)) |
+| `kyverno` | 3.8.2 | Kyverno v1.18.2 | Not 3.9.x: kyverno/kyverno#17363 breaks verification of signatures stored only as OCI referrers, this repository's case ([evidence](../evidence/drills.md#part-2--kyverno)) |
 | `jenkins` | 5.9.63 | Jenkins 2.568.3 | The values file sets no image tag, so the chart's own default runs; the controller image was read from the cluster ([evidence](../evidence/jenkins.md)) |
 
 Every version is written once, as `targetRevision` in `deploy/argocd/apps/<name>.yaml`. An upgrade is a
@@ -471,10 +485,10 @@ These are the platform's. The app's and the pipeline's are in
 | Limit | Why it is accepted here | What would fix it |
 |---|---|---|
 | **ingress-nginx is retired.** Maintenance ended in March 2026; there are no more security fixes, and Kubernetes 1.36 came after its last release | The design, the Terraform NodePorts and Rancher's `ingressClassName` are built around it, and the traffic reaching it is either the demo app or a VPN user | Move to a maintained controller or to Gateway API; the NodePorts stay the same |
-| **The platform components still share the node's IAM role** — External Secrets, cert-manager and the EBS CSI driver — which includes writing the certificate backup and the ACME TXT record | The app's pods and the build pods already have roles of their own through the cluster's OIDC issuer, and their four namespaces block `169.254.169.254`. The platform namespaces do not, so a pod there can still reach the node role; each remaining permission names its exact resource | Give those three components roles through the same issuer, as the app and the pipeline already have |
+| **The platform components still share the node's IAM role** — External Secrets, cert-manager, the EBS CSI driver, and since the drills phase Kyverno (it pulls signatures from ECR) and the etcd snapshot CronJob — which includes writing the certificate backup and the ACME TXT record | The app's pods and the build pods already have roles of their own through the cluster's OIDC issuer, and their four namespaces block `169.254.169.254`. The platform namespaces do not, so a pod there can still reach the node role; each remaining permission names its exact resource | Give those components roles through the same issuer, as the app and the pipeline already have |
 | **Prometheus and Alertmanager have no login** | Only the VPN reaches them, and the VPN has a single operator | Basic authentication on their Ingresses, or an OAuth proxy in front of all UIs |
 | **The wildcard certificate's private key is in Secrets Manager**, readable by the node role | Needed to survive rebuilds within Let's Encrypt's limits; the certificate only covers VPN-only names | Move External Secrets to its own role through the cluster's OIDC issuer, so only that role may write the backup |
 | **Alert email depends on one mailbox and an app password** | Enough for one operator | A team mail service or a chat receiver; a second receiver as fallback |
 | **One replica** of Rancher, Alertmanager, the Jenkins controller and each Argo CD component | Three 8 GB nodes also run Prometheus and one build pod at a time | Raise replicas when the nodes grow |
 | **etcd metrics use plain HTTP on port 2381** | They carry no data, and only other nodes (and pods) can reach the port | Scrape through TLS with etcd's client certificates |
-| **The etcd backup bucket is destroyed with the cluster** | It lives in the cluster stack | Move it to the shared stack before relying on backups (day-2 phase) |
+| **Resolved in the drills phase:** the etcd backup bucket was destroyed with the cluster | The bucket moved to the `shared` stack, without `force_destroy` (`f047a2a`) | — |

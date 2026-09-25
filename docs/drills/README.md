@@ -1,9 +1,15 @@
-# Drills: three claims this project cannot yet make
+# Drills: three claims this project could not yet make
 
 Start here. This page says what is wrong, what will be built, and how you will know it worked.
 [`concepts.md`](concepts.md) defines every idea the work uses — read the sections this page sends you to
 before you open the guide. [`guide.md`](guide.md) is the how: eighteen steps, each with its commands and its
 check.
+
+> **Status: done on 2026-09-22.** #12 etcd restore: **RTO 7 m 02 s**, the canary came back. #13 Kyverno: prod
+> refused an unsigned image, with the admission error captured, and still admits signed ones. #14 upgrade:
+> **not measured**, because 1.36.4 had no newer patch to move to; `upgrade.yml` exists and passed
+> `--syntax-check`, but has not run. Results: [`../evidence/drills.md`](../evidence/drills.md). The problem
+> statements below describe the state before the phase.
 
 ## Where the project stands
 
@@ -95,7 +101,8 @@ the budget is not doing what it claims.
 
 **One honest limit.** The design words criterion #14 as a *minor* upgrade. This phase exercises a **patch**
 inside 1.36, because a minor would fail the compatibility gate and require moving Rancher first — a second
-change with its own risk, nested inside a drill. #14 will close as *partially measured*.
+change with its own risk, nested inside a drill. #14 could close as *partially measured* at best. **It closed
+as not measured**: 1.36.4 had no newer patch, so the playbook passed `--syntax-check` and `--list-hosts` only.
 
 ---
 
@@ -176,8 +183,8 @@ Nothing in the app's chart changes, and no existing Application is touched.
 
 One consequence to accept knowingly: **Kyverno at sync-wave -2 becomes a new single point of failure for every
 rebuild.** If it never reports `Healthy` and `Synced`, nothing from wave -1 onward syncs — the certificate
-restore, monitoring, Rancher, the app, Jenkins. The guide says how to get out of that, and the evidence
-records the rebuild time it adds.
+restore, monitoring, Rancher, the app, Jenkins. The guide says how to get out of that. The rebuild time it adds
+was not isolated; M3's timed rebuild passed with it in place.
 
 ---
 

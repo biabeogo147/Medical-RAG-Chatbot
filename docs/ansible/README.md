@@ -128,6 +128,9 @@ infra/ansible/
   ansible.cfg                        Inventory path, roles path, three forks
   requirements.yml                   amazon.aws 10.3.2, pinned
   site.yml                           The six plays, in order
+  upgrade.yml                        Kubernetes patch upgrade, one control plane at a time (drills phase)
+  tasks/
+    upgrade-kubelet.yml              Drain, upgrade kubelet and kubectl, uncordon; used by upgrade.yml
   inventory/
     aws_ec2.yml                      Dynamic inventory: nodes found by tag
     group_vars/all.yml               Project, region, all pinned versions, the CIDRs
@@ -206,8 +209,11 @@ compatibility gate in [design §4.2.1](../selfmanaged-k8s-ops-design.md#421-ranc
 
 ## 9. Outside the Ansible boundary
 
-- **`upgrade.yml`** — a later day-2 playbook: one node at a time, drain, `kubeadm upgrade`, uncordon,
-  wait for Ready and GitOps health.
-- **etcd backups** — a CronJob that snapshots to the `etcd-backups` bucket. It arrives with the Helm
-  charts, because it runs inside the cluster.
-- **Kyverno and NetworkPolicies** — installed by Argo CD in the GitOps phase.
+- **`upgrade.yml`** — written in the drills phase and now in `infra/ansible/`: one node at a time, drain,
+  `kubeadm upgrade`, uncordon, wait for Ready and GitOps health. Syntax-checked, not run: 1.36.4 had no newer
+  patch ([`drills.md`](../evidence/drills.md) Part 3).
+- **etcd backups** — a CronJob that snapshots to the `etcd-backups` bucket every 6 hours. It came in the
+  drills phase as plain manifests under `deploy/argocd/manifests/etcd-backup/`, installed by Argo CD, because
+  it runs inside the cluster.
+- **NetworkPolicies** — installed by Argo CD with the app and Jenkins. **Kyverno** — installed by Argo CD in
+  the drills phase.
