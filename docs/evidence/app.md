@@ -160,7 +160,8 @@ CRITICAL findings in `medical-rag:1eaa43bf3512`:
 | CVE-2026-12087 | `perl` |
 | CVE-2026-13221 | `perl` |
 
-The Jenkins phase hardens the base image and measures again.
+The Jenkins phase hardens the base image and measures again. **Done:** Debian 13, CRITICAL 5 → 0, total
+269 → 158 ([`jenkins.md`](jenkins.md) step 13).
 
 ## Problems found and fixed during this phase
 

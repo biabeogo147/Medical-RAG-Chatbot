@@ -1079,6 +1079,14 @@ rebuild at 14 m 11 s on 2026-09-18, but that cluster had no Jenkins in it. Nothi
 cleanly, that the OIDC issuer survives so the build pods' tokens still resolve, or that a commit reaches dev on
 a cluster built an hour earlier. The phase README and guide must not claim otherwise.
 
+**Answered later, in the drills phase (2026-09-22).** The cluster was rebuilt twice with both Jenkins
+Applications in it, and every Application came back Synced and Healthy: 14 in Part 0, 17 in M3
+([`drills.md`](drills.md)). Both admin passwords could be read after the Part 0 rebuild (step 7; that they were new
+ones is inferred, since they are generated in the cluster), and `oidc-check` printed two `same` lines both times. The
+pipeline ran on each rebuilt cluster: the bot's dev commits `1255b50` (00:35:24Z, after the Part 0 rebuild) and
+`624a8e2` (05:37:56Z, 4 m 41 s after M3 ended). A dev pod reaching Ready on a rebuilt cluster was not
+recorded.
+
 **Three smaller things it also leaves open:**
 
 - The lifecycle preview still has nothing to prove: fewer than 30 tagged images exist, so the second rule
@@ -1254,7 +1262,9 @@ itself (an unset variable in the Ansible command, and one in step 2's gate), whi
   `spec.containers[1].volumeMounts[0].name: Not found`, after a push and a scan. **Closed since:** rule 6 in
   `guide.md`, with `docs/jenkins/check-blocks.py`, run on the workstation as step 2 of the push loop.
 - **A positive control for step 12's gate.** It has never returned anything but `0`. Lowering the severity to
-  `MEDIUM` for one build would exercise the failure path against `pip`'s five fixable findings.
+  `MEDIUM` for one build would exercise the failure path against `pip`'s five fixable findings. **Answered in
+  the drills phase:** branch build 2 ended `Finished: FAILURE` at the Scan gate on 6 fixable findings
+  ([`drills.md`](drills.md), M4).
 - **Whether `--import-cache` should be in the `Test` stage at all,** given that no login exists there. Either
   it moves after `Log in to ECR`, or it goes, or the step says the `401` is expected. Measured cost today: none,
   beyond a full rebuild every time and an `ERROR` line that reads like a failure.
@@ -1285,18 +1295,27 @@ itself (an unset variable in the Ansible command, and one in step 2's gate), whi
 - `jenkins-github` `Ready=True` and the Secret carrying the key `token` (step 6). No build so far has used a
   credential — step 9's checked an AWS role, not GitHub — so nothing says whether JCasC resolved the
   placeholder. If it did not, the credential is the literal string `${jenkins-github-token}` and step 16 will
-  fail. Note that the repository is public, so cloning proves nothing about the token either.
+  fail. Note that the repository is public, so cloning proves nothing about the token either. **Answered:** the
+  bot pushed `6fb3638` in step 16 and opened pull request #2 in step 17, both with that credential.
 - The `hostNetwork` and `privileged` refusals (step 7). Only the `hostPath` refusal and the accept were run, so
   **six** of the policy's seven rules are still unexercised.
 - The rest of step 8's post-sync checks: admin password length, the PVC on `gp3`, the StorageClass reclaim
   policy, and two Roles plus two RoleBindings in `jenkins-agents`.
 - Whether `main` carries a ruleset. The anonymous clone shows the repository is readable without a credential,
-  but nothing yet shows a direct push to `main` is allowed, which step 16 depends on.
+  but nothing yet shows a direct push to `main` is allowed, which step 16 depends on. **Answered:** the bot's
+  `6fb3638` was pushed straight to `main` (step 16).
 
-- The stage durations and the commit-to-Ready time of criterion #8 (step 16).
-- Trivy counts of the hardened image, as the "after" of criterion #9 (step 13).
+- The stage durations and the commit-to-Ready time of criterion #8 (step 16). **Answered:** commit to dev pod
+  Ready in 19 m 08 s (step 16); the per-stage durations were not all recorded.
+- Trivy counts of the hardened image, as the "after" of criterion #9 (step 13). **Answered** in step 13:
+  CRITICAL 5 → 0, total 269 → 158.
 - `cosign verify` on an image the pipeline signed, and the failure on the unsigned one (step 14).
-- The node role's `AccessDenied` on push and sign, and the green build after it (step 18).
+  **Answered** in step 14.
+- The node role's `AccessDenied` on push and sign, and the green build after it (step 18). **Answered** in
+  step 18.
 - **The whole of step 19** (not run, see above): the rebuild timings, a release on the rebuilt cluster, the
-  lifecycle preview once more than 30 images exist, and the repository's size and untagged count.
+  lifecycle preview once more than 30 images exist, and the repository's size and untagged count. **The rebuild
+  timings were answered in the drills phase** (see the note under step 19). A release on the rebuilt cluster is
+  still open: the pipeline reached the bot's dev commit (`624a8e2`), but nobody followed it to a Ready pod. The
+  lifecycle preview and the repository size are still open too.
 - The build pod's real CPU and memory, from Prometheus (Part 3).

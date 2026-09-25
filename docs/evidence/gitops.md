@@ -157,7 +157,8 @@ read with `openssl`, is what shows the certificate is a production one.
 ## Still to record
 
 - `make apps`: nine Applications plus `root`, all `Synced` and `Healthy`, and a screenshot of the
-  Argo CD Applications page (criterion #5).
+  Argo CD Applications page (criterion #5). **The table was recorded later**, fully green, on every rebuild of
+  the drills phase ([`drills.md`](drills.md) Part 0 step 5 and M3). Only the screenshot is still owed.
 - The Argo CD UI from the laptop: the timeout *without* the VPN and `200` with it (the operator reports
   the three UIs open over WireGuard, but nothing was captured), plus screenshots of Argo CD, Rancher
   and Grafana.

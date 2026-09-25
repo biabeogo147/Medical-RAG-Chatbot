@@ -23,7 +23,7 @@ a missing number is visible as a missing number rather than as an absence nobody
 | How much cluster state can be lost? | RPO is set by the CronJob schedule: **6 hours** by design. Confirm against the first two snapshots' timestamps |
 | How long does a restore take? | **7 m 02 s**, from deleting the namespace to every Application Synced and Healthy, operator typing included (step 10) |
 | Does prod refuse an unsigned image? | **Yes.** An unsigned image was refused by Kyverno at admission, and signed replacement pods were admitted under the same policy minutes later (step 14) |
-| Does a rolling upgrade drop requests? | *pending* |
+| Does a rolling upgrade drop requests? | **Not measured**: 1.36.4 is the newest 1.36 patch, so there was nothing to upgrade to (step 15) |
 
 ---
 
@@ -41,10 +41,10 @@ The cluster stack was destroyed on 2026-09-21. `shared` and `bootstrap` survived
 
 **Measured.**
 
-- **Step 3.** Plan summary: *pending*. Read back after the apply: the bucket
+- **Step 3.** Plan summary: not recorded. Read back after the apply: the bucket
   `medical-rag-etcd-backups-242834061265` exists (creation time `2026-09-21 23:54:10` as `aws s3 ls` prints it,
   in the workstation's local time), and `aws ecr describe-repositories` reports `medical-rag-ci` as `IMMUTABLE`.
-- **Step 4.** `time make infra`: **3 m 50 s**. `time make cluster`: **6 m 23 s**; `PLAY RECAP` line: *pending*.
+- **Step 4.** `time make infra`: **3 m 50 s**. `time make cluster`: **6 m 23 s**; `PLAY RECAP` line: not recorded.
   The node policy read back with `get-role-policy`, statement `S3ReadWriteObjects`, lists both
   `arn:aws:s3:::medical-rag-ssm-transfer-242834061265/*` and `arn:aws:s3:::medical-rag-etcd-backups-242834061265/*`.
   The first `make ping` failed on node 2 (`i-00f6ac0724e0966bb`) with `TargetNotConnected`; nodes 1 and 3
@@ -71,10 +71,10 @@ The cluster stack was destroyed on 2026-09-21. `shared` and `bootstrap` survived
 - **Step 7.** Certificate `wildcard-recruitai` `READY True`, `notAfter` **2026-12-17T13:08:54Z**, and
   `kubectl -n ingress-nginx get certificaterequests` printed `No resources found`: the wildcard was restored
   from the PushSecret backup, and no Let's Encrypt issuance was spent. Both admin passwords were read (32
-  characters each; not recorded). WireGuard handshake: *not reported*.
+  characters each; not recorded). WireGuard handshake: not recorded.
 
 **Comparison available.** The GitOps phase measured a full rebuild at **14 m 11 s** on 2026-09-18 — but that
-cluster had no Jenkins and no app in it. This rebuild carries 13 Applications across eight waves, so a larger
+cluster had no Jenkins and no app in it. This rebuild carries 13 child Applications (14 with `root`) across eight waves, so a larger
 number is expected and is not a regression.
 
 ---
@@ -276,19 +276,42 @@ holds the two that are not part of the drills guide.
 
 ## What these results decided
 
-*To be written after the run.*
+- **Kyverno chart 3.8.2, not 3.9.x** (kyverno/kyverno#17363), and **`ImageValidatingPolicy`, not
+  `verifyImages`**, because the signatures exist only as cosign v3 OCI referrers (step 13).
+- **`ctlog.url` is set even though the transparency log is ignored**: Kyverno 1.18.2 refuses to verify without
+  it (step 13b, `fb9c1f0`).
+- **prod `Deny`, dev `Audit`** (step 14, `6bc941e`).
+- **`compare-options: ServerSideDiff=true` on `kyverno`**, from its first commit in the guide (step 13a,
+  `f3e80e3`).
+- **Rebuild waits require `Synced`, then `Healthy`**, never health alone (Part 0 step 5).
+- **The CV's rebuild figure comes from `infra/scripts/timed-rebuild.sh`** (M3): unattended, one wall-clock T,
+  no sum of command times.
+- **The snapshot schedule is back to `0 */6 * * *`** once one scheduler-made run had passed (step 9,
+  `517a143`).
+- **Pods are deleted one at a time, by name**, in the guide (step 14).
 
 ## Problems found and fixed
 
-*To be written after the run.*
+- **The `root` health wait passed falsely** (Part 0 step 5): `root` reads `Healthy` while its sync is still
+  running. Fixed in the guide by waiting for `Synced` first.
+- **`kyverno` stayed `OutOfSync`** because the API server adds `conversion: {strategy: None}` to the CRDs.
+  Fixed with `ServerSideDiff=true` (`f3e80e3`).
+- **The fix could not arrive by Git**: `root`'s running operation waited on the very Application the commit
+  fixed. Broken by annotating the live Application with Git's value (step 13a).
+- **`rekor URL must be provided`**: every signed image failed in Audit. Fixed with `ctlog.url` (`fb9c1f0`).
+- **"Delete a prod pod" deleted both, twice**: a label selector deletes every match, and `kubectl delete pod`
+  ignores the PodDisruptionBudget. The guide now deletes one pod by name.
+- **The guide was wrong about the Kyverno chart's PDB default** (`enabled: false`); the values enable one.
+- **M4's first try tested nothing**: the Jenkinsfile edit was never made. The guide now checks
+  `git diff --stat` before committing (`bcb79d9`).
 
 ## Still to check
 
 - The etcd snapshot CronJob uses the **node's instance role** through IMDS rather than a role of its own. It
   therefore carries whatever else that role holds — eight Secrets Manager secrets and the ACME TXT record. A
   dedicated IRSA role through the existing issuer would be tighter; not done.
-- Restoring to a point *before* the test namespace existed and restoring to a point *after* it prove different
-  things. Whichever the drill does, the evidence must say which.
+- Restoring to a point *before* the test namespace existed or *after* it. Answered in step 10: the snapshot
+  (04:45:03Z) was taken after the canary (04:14:20Z), and the canary came back.
 - The upgrade drill measures one path: a patch inside 1.36. A minor upgrade also requires moving Rancher
   first, and that is untested.
 - etcd metrics are still plain HTTP on port 2381, a limit inherited from the GitOps phase and not addressed
@@ -300,7 +323,8 @@ holds the two that are not part of the drills guide.
   fetches them from `rekor.sigstore.dev` (or its TUF root) at admission, then with prod on `failurePolicy:
   Fail` an outage there, or a cut in NAT egress, blocks prod's pods. Not measured.
 - **A job created by the 6-hourly schedule itself.** The first proven run was under the temporary `*/15`
-  string. A job at 12:00 or 18:00 UTC would show `0 */6 * * *` firing too; read `kubectl -n etcd-backup get jobs`
-  before M3's `make down` removes the history.
+  string. No job from `0 */6 * * *` itself has been observed. M3's teardown removed the job history, so this
+  needs a cluster that stays up past a 00/06/12/18 UTC boundary.
 - Kyverno at wave -2 becomes a new single point of failure for every rebuild: if it never reports `Healthy`
-  and `Synced`, nothing from wave -1 onward syncs. Record the rebuild time it adds.
+  and `Synced`, nothing from wave -1 onward syncs. M3 passed with Kyverno at wave -2; its share of the
+  10 m 40 s of waves was not separated.

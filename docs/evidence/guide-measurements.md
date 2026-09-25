@@ -5,6 +5,8 @@ says what it proves, how it can pass falsely, and where its result is written. T
 etcd drill is in the [drills guide](../drills/guide.md) steps 9–11; this file only makes it runnable.
 Results go in [`drills.md`](drills.md).
 
+**Status: M0–M4 were all run on 2026-09-22.**
+
 **Order is fixed.** M0 must happen before 06:00 UTC. M4 must happen before M3, because `make down` deletes
 Jenkins's volume and with it every build record M4 reads.
 
@@ -93,6 +95,10 @@ wording: "a Trivy gate verified by a positive-control build that fails it".
 
 ## M1 — The first scheduled snapshot
 
+**As run on 2026-09-22:** under a temporary `*/15 * * * *` schedule committed in Git (`a1e1382`) and reverted
+after one run (`517a143`), so the first job came at 04:45 UTC instead of 06:00. The CronJob controller still
+created it (`manual=` empty). See [`drills.md`](drills.md) step 9.
+
 **Workstation, window 0**, after 06:00 UTC:
 ```bash
 kubectl -n etcd-backup get cronjob etcd-snapshot
@@ -157,7 +163,7 @@ state at t1, minus the deleted namespace.
 **Phase 5.** Window 1: Ctrl-C the old tunnel, then `cd ~/Medical-RAG-Chatbot && make tunnel`.
 
 **Wait for the end, and do not trust restored status.** The snapshot also restored every object's *status*
-as it was at 06:00: Applications Synced and Healthy, nodes Ready, pods Running. A wait on those fields
+as it was when the snapshot was taken: Applications Synced and Healthy, nodes Ready, pods Running. A wait on those fields
 passes the moment the API answers. So the first loop requires each Application's `reconciledAt` to be later
 than t1. The second requires every node's Lease — renewed by its kubelet about every 10 s — to be later than
 t1 as well, and no pod outside `Running` or `Completed`. Only then is t2 taken.
@@ -187,6 +193,11 @@ Do not delete `/var/lib/etcd.old` until the next rebuild. M3 removes the machine
 ## M3 — A timed rebuild
 
 Only after M2 and M4. `make down` deletes the cluster; the etcd bucket, ECR and secrets survive in `shared`.
+
+**As run on 2026-09-22:** with `bash infra/scripts/timed-rebuild.sh` after `make down`. The script checks the
+plan instead of prompting, so no human `yes` is inside T; it logs to `/tmp/timed-rebuild-<UTC>.log` and ends in
+`VERDICT PASS` or `FAIL`. Result: **T = 21 m 47 s** ([`drills.md`](drills.md), M3). The manual block below is
+the fallback.
 
 **Workstation, window 0.**
 ```bash
@@ -225,7 +236,7 @@ A rebuild moves the VPN's public address; re-activate the WireGuard client befor
 
 ## What each result changes in the CV
 
-| Result | Edit in `cv_projects.tex` |
+| Result | Edit in `latex-CV/sections/projects/medical-rag-chatbot.tex` (outside this repository) |
 |---|---|
 | M1 fails | Remove the snapshot-check clause until a run passes |
 | M1 passes | Keep "checked with `etcdutl snapshot status` before upload". The automatic check refuses a file it cannot read; revision and key count are read by you, in M1 |
