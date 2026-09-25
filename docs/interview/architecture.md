@@ -104,13 +104,14 @@ cert-manager đi xin bản mới và **tiêu một trong năm quota Let's Encryp
 rebuild.
 
 **Và Kyverno ở wave −2 là một điểm lỗi đơn mới của mọi lần rebuild.** Evidence ghi thẳng: nó không lên
-`Healthy`+`Synced` thì từ wave −1 trở đi **không sync gì cả** (`drills.md:299`). Đó là cái giá của việc đặt admission
+`Healthy`+`Synced` thì từ wave −1 trở đi **không sync gì cả** (`drills.md:328`). Đó là cái giá của việc đặt admission
 control trước mọi thứ nó phải canh.
 
 Còn một tầng wave nữa **bên trong** chart của từng app (0, 1, 2) — bộ số khác, đừng trộn hai bộ.
 
 *Vẽ lại cho điện thoại từ `gitops/README.md` §4 (bản gốc: 14 node trong 8 subgraph) — và sửa theo
-`deploy/argocd/apps/*.yaml`, vì bản trong README thiếu `kyverno`, `etcd-backup` và `kyverno-policies`.*
+`deploy/argocd/apps/*.yaml`. Bản trong README lúc vẽ thiếu `kyverno`, `etcd-backup` và `kyverno-policies`; nay đã
+bổ sung.*
 
 ---
 

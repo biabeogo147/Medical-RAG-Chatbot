@@ -13,9 +13,9 @@ tục M0–M4), `evidence/drills.md:265–273` (kết quả).
 
 ## Dòng 1 — HA control plane
 
-> **HA control plane.** Terraform provisions AWS and Ansible bootstraps kubeadm over SSM: 3 control planes across
-> 3 AZs, no SSH keys or public node IPs. Empty to Ready in 9 min 57 s, reruns make no changes, API stays
-> available after losing one node.
+> **HA control plane.** Terraform provisions AWS; Ansible bootstraps kubeadm over SSM: 3 control planes across 3
+> AZs, no SSH keys or public node IPs. Empty to Ready in 9 min 57 s, reruns make no changes, API stays available
+> after losing one node.
 
 **Nói bằng lời thường.** Terraform dựng phần AWS, Ansible biến ba máy EC2 trần thành một cụm kubeadm ba
 control plane, mỗi máy một Availability Zone. Ansible đi vào máy **qua SSM**, không qua SSH — nên không có key
@@ -52,8 +52,8 @@ trả lời, vì 2 trong 3 thành viên etcd vẫn là quorum.
 
 Nó là **tổng hai thời gian lệnh** — 3 m 47 s `make infra` cộng 6 m 10 s `make cluster` — không phải một số treo
 tường. Khoảng chờ để SSM agent đăng ký, nằm giữa hai lệnh, **không được tính**. Và chính thủ tục đo của repo
-cấm cách đó: `guide-measurements.md:218` viết *"T = end − t0, as one wall-clock figure. Do not sum the commands'
-own times."* Hai lần chạy sau ra ~10 m 10 s.
+cấm cách đó: `guide-measurements.md:229` viết *"T = end − t0, as one wall-clock figure. Do not sum the commands'
+own times."* Hai lần chạy sau ra 10 m 13 s và 10 m 03 s, do tôi tự cộng thời gian lệnh.
 
 > "It is the sum of two command times, not wall clock — the wait for the SSM agents to register sits between
 > them and was not timed. My own procedure forbids that method for the rebuild figure, and I did not go back and
@@ -110,9 +110,9 @@ có chỗ để bắt tay VPN. Cổng vào internet của cả hệ là: TCP 80 
 
 ## Dòng 2 — Backup and restore
 
-> **Backup and restore.** etcd snapshots run every 6 hours and are uploaded to S3 after passing `etcdutl snapshot
-> status`. Tested recovery by deleting a namespace and restoring all 3 etcd members: RTO 7 min until every Argo CD
-> application was Synced and Healthy, with RPO ≤ 6 h from the backup schedule.
+> **Backup and restore.** etcd snapshots run every 6 hours and go to S3 after passing `etcdutl snapshot status`.
+> Tested recovery by deleting a namespace and restoring all 3 etcd members: RTO 7 min until every Argo CD
+> application was Synced and Healthy, RPO ≤ 6 h from the schedule.
 
 **Nói bằng lời thường.** Một CronJob chụp snapshot etcd, và **thứ tự** là điều đáng nói: ba container, snapshot
 → kiểm toàn vẹn → upload, hai cái đầu là initContainer nên **upload chỉ chạy nếu cả hai thành công**. Không bao
@@ -153,7 +153,7 @@ node đã gia hạn, và không pod nào ngoài `Running`/`Completed`.
 
 Snapshot duy nhất từng quan sát được đến từ một cron **tạm** `*/15 * * * *`, commit lúc 04:38:40 UTC để thấy lần
 chạy đầu trong vài phút thay vì chờ 06:00. Chuỗi `0 */6 * * *` có trong Git và tôi đã đọc lại trên cụm hai lần,
-nhưng chưa lần nào thấy nó nổ. Repo còn ghi việc đó là **chưa giải quyết** ở `drills.md:302`.
+nhưng chưa lần nào thấy nó nổ. Repo còn ghi việc đó là **chưa giải quyết** ở `drills.md:325`.
 
 Nên "mỗi 6 giờ" mô tả **cấu hình**. Phép đo là: một snapshot theo lịch, do scheduler tạo — `manual=` rỗng chứng
 minh điều đó — kiểm toàn vẹn, upload, rồi restore được.
@@ -169,7 +169,7 @@ minh điều đó — kiểm toàn vẹn, upload, rồi restore được.
 <details>
 <summary>7 phút gồm những gì? Vì sao không đo tới lúc etcd lên?</summary>
 
-Vì "etcd lên" là một pass sai. `guide-measurements.md:158–163` nói rõ: một vòng chờ trên các field trạng thái
+Vì "etcd lên" là một pass sai. `guide-measurements.md:165–169` nói rõ: một vòng chờ trên các field trạng thái
 sẽ pass **ngay khi API trả lời**, trong khi cụm còn chưa hội tụ.
 
 Nên t2 là: mọi Application `Synced` **và** `Healthy` với `reconciledAt > t1`, Lease của node đã gia hạn, và
@@ -177,7 +177,7 @@ không pod nào ngoài `Running`/`Completed`. Vòng chờ trả lời lần đ�
 reconcile; tất cả xong ở 04:57:51Z; t2 = 04:58:06Z.
 
 Hai điều kiện phải nói kèm: **có thời gian tôi gõ ở trong đó**, và **tới khoảng 3 phút của 7 phút có thể là một
-chu kỳ reconcile của Argo CD** (`guide-measurements.md:175`). Và nó là **một** lần chạy.
+chu kỳ reconcile của Argo CD** (`guide-measurements.md:181`). Và nó là **một** lần chạy.
 
 > "Measuring to 'etcd is up' is a false pass — a wait on status fields returns the moment the API answers. So my
 > t2 is every Application Synced and Healthy with a reconcile timestamp after t1, node Leases renewed, and no pod
@@ -221,9 +221,9 @@ RPO **của lần chạy đó** thì đo được: **6 phút 01 giây**, vì tô
 
 ## Dòng 3 — GitOps rebuild
 
-> **GitOps rebuild.** Rebuilt the platform from an empty cluster in 22 minutes without manual intervention: 17
-> Argo CD applications, 11 from Helm charts, 8 sync waves. Fixed unnecessary TLS certificate re-issuance during
-> rebuilds by requiring Argo CD applications to be both Healthy and Synced.
+> **GitOps rebuild.** Rebuilt the platform from empty in 22 min, unattended: 17 Argo CD applications, 11 from Helm
+> charts, 8 sync waves. Stopped needless TLS re-issuance on rebuilds by requiring Argo CD applications to be Healthy
+> and Synced.
 
 **Nói bằng lời thường.** Một script bấm giờ dựng lại cả nền tảng từ cụm trống: Terraform, rồi kubeadm, rồi
 Argo CD, rồi Argo CD tự kéo 16 Application còn lại về theo 8 sync wave. **Không có prompt nào cho người** ở
@@ -283,7 +283,7 @@ dev và prod. 5 cái còn lại là manifest thường. Cộng `root` = 17.
 Tất cả đều đúng, ở những thời điểm và cách đếm khác nhau, nên phải nói rõ **root có được tính không**.
 
 17 = 16 file trong `deploy/argocd/apps/` **cộng `root`**. Trong repo còn: `gitops.md:21` "nine Applications"
-(chỉ con, cụm cũ), `drills.md:77` "13 Applications" (lần Part 0, chưa có Kyverno), `drills.md:62` "14
+(chỉ con, cụm cũ), `drills.md:77` "13 child Applications (14 with `root`)" (lần Part 0, chưa có Kyverno), `drills.md:62` "14
 Applications" (cùng lần đó, tính cả root), `drills.md:189` "16 Applications".
 
 > "Seventeen including the root app-of-apps — sixteen files in the apps directory plus root. You will see nine,
@@ -331,11 +331,12 @@ Giới hạn tôi tự ghi: *"That was one run; the `Degraded` and no-resources 
 
 ## Dòng 4 — Supply chain
 
-> **Supply chain.** In-cluster Jenkins with rootless BuildKit, a Trivy gate tested with a build that is expected
-> to fail, KMS-backed cosign signing with SBOM, and production updates through a bot-created pull request.
+> **Supply chain.** Jenkins with rootless BuildKit, a Trivy gate tested with a build made to fail, Cosign signing
+> with AWS KMS and SBOM, and production updates via bot-opened pull requests with human review.
 
-**Con số Debian 13 không có trong CV, và đó là chủ ý.** −41 % và CRITICAL 5 → 0 bị bỏ khỏi dòng, vì *"editing two
-`FROM` lines is not a design decision"* (`medical-rag-chatbot.tex:17–19`). Nó để dành cho phần **nói**, và để dành
+**Con số Debian 13 không có trong CV, và đó là chủ ý.** −41 % và CRITICAL 5 → 0 bị bỏ khỏi dòng, vì đổi hai dòng
+`FROM` không phải một quyết định thiết kế; dòng `%%` trên bullet trong `medical-rag-chatbot.tex` vẫn ghi hai số đó làm
+nguồn (`jenkins.md` step 13). Nó để dành cho phần **nói**, và để dành
 đúng một việc: làm **lý do** vì sao gate và việc dọn base là hai control khác nhau — chứ không làm thành tích của
 gate.
 
@@ -436,9 +437,9 @@ người bấm nút, nên phép kiểm "tác giả có phải bot" **không bao 
 
 ## Dòng 5 — Admission and IAM
 
-> **Admission and IAM.** A Kyverno policy rejects unsigned images in prod and allows signed ones. IRSA gives pods
-> their own IAM roles, removing ECR push and KMS sign from the node role — verified with IAM simulation and by a
-> pod whose KMS request was denied as expected.
+> **Admission and IAM.** A Kyverno policy rejects unsigned images in prod and admits signed ones. IRSA gives pods
+> their own IAM roles, removing ECR push and KMS sign from the node role — verified by IAM simulation and a pod
+> whose KMS request was denied as expected.
 
 **Nói bằng lời thường.** Hai lớp, và chúng bù cho nhau. Kyverno ngồi ở **admission**: prod ở chế độ `Deny`, nên
 một image chưa ký không vào được cụm, còn dev ở `Audit` để thấy trước mà không chặn. Và IRSA cho mỗi pod **vai
@@ -543,9 +544,11 @@ Security".
 
 ## Dòng 6 — Startup and sizing
 
-> **Startup and sizing.** The FAISS index (759 pages, 7,079 chunks) is stored as a versioned S3 artifact and built
-> only once, so pods are Ready in 10 s instead of rebuilding the index for 149 s. Prometheus data set the memory
-> request: 960 Mi instead of 2,304 Mi.
+> **Startup and sizing.** The FAISS index is built once and stored as a versioned S3 artifact, so pods are Ready in
+> 10 s instead of 149 s rebuilding it. Set requests from peak memory measured in Prometheus, with headroom, and
+> limits at twice that, not from guesses.
+
+CV bản hiện tại không ghi 960 Mi / 2 304 Mi; hai số đó để dành cho phần nói, khi được hỏi "request đặt từ đâu".
 
 **Nói bằng lời thường.** Trước đó **mỗi pod tự build index khi khởi động** — 149 giây, và mỗi pod làm lại đúng
 việc đó. Giờ index là một **artifact có version** trên S3: một Job build nó một lần, tên version là hash của
@@ -649,7 +652,7 @@ bị hỏi.
 <details>
 <summary>Project này tốn bao nhiêu, và anh cắt gì trước?</summary>
 
-Khoảng **0.53 USD mỗi giờ** khi cụm đang chạy, cộng khoảng **7 USD mỗi tháng** cho phần luôn giữ — KMS key, 5
+Khoảng **0.53 USD mỗi giờ** khi cụm đang chạy, cộng khoảng **9 USD mỗi tháng** cho phần luôn giữ — KMS key, 10
 secret, Route 53, bucket, image, ổ đĩa workstation. Budget 100 USD/tháng gửi email ở 50% và 100%, lọc theo tag
 `project` vì account dùng chung.
 
@@ -657,7 +660,7 @@ Cắt đầu tiên là `make down` — và đó **chính là lý do** Terraform 
 định gọn gàng. Rồi một NAT gateway thay vì ba (đổi lại: mất AZ đầu tiên là mất egress của cả ba node). Rồi S3
 gateway endpoint, vốn miễn phí.
 
-> "About fifty-three cents an hour running, about seven dollars a month retained, with budget alarms at fifty and
+> "About fifty-three cents an hour running, about nine dollars a month retained, with budget alarms at fifty and
 > a hundred per cent. The first cut is tearing the cluster down, and that is why Terraform is split into three
 > stacks by lifetime rather than by function — the split exists to make the teardown safe."
 
@@ -669,33 +672,38 @@ gateway endpoint, vốn miễn phí.
 Xếp theo mức tôi thấy nghiêm trọng, và cái đầu là cái tôi sửa trước:
 
 1. **Các pod nền tảng vẫn mượn vai IAM của node** qua metadata service — External Secrets, cert-manager, EBS CSI,
-   CronJob snapshot, Kyverno. Vai đó đọc được tám secret và ghi, xoá được bucket `etcd-backups`. Chỉ hai namespace
-   Jenkins có NetworkPolicy chặn metadata, nên **mọi pod khác trong cụm khai thác được hôm nay**. Sửa: một role
-   IRSA cho từng addon.
+   CronJob snapshot, Kyverno. Vai đó đọc được tám secret và ghi, xoá được bucket `etcd-backups`. Bốn namespace có
+   NetworkPolicy chặn metadata — dev, prod và hai namespace Jenkins — nên **pod ở các namespace nền tảng còn lại vẫn
+   khai thác được hôm nay**. Sửa: một role IRSA cho từng addon.
 2. **Secret trong etcd không mã hoá at-rest**, và snapshot etcd nằm trên S3 mà vai node giải mã được.
 3. **`index.pkl` nạp với `allow_dangerous_deserialization=True`** — xem câu dưới.
 4. **Token của bot push thẳng được `main`**, nên "prod chỉ đổi qua PR" là quy ước.
 5. **Một NAT gateway**, và **app không có HTTPS**.
 
-> "The node role, because it is exploitable today from any pod outside the two Jenkins namespaces — those are the
-> only ones with a metadata NetworkPolicy. Per-addon IRSA roles are the fix, and it is the first thing I would do."
+> "The node role, because the platform pods still borrow it. The app and the Jenkins namespaces block the metadata
+> service, and the app and build pods have roles of their own, but a pod in any platform namespace can still reach
+> it. Per-addon IRSA roles
+> are the fix, and it is the first thing I would do."
 
 </details>
 
 <details>
 <summary>App nạp <code>index.pkl</code> từ S3 với <code>allow_dangerous_deserialization=True</code>. Ai ghi được bucket đó?</summary>
 
-Vai của node ghi được — nên bất cứ ai tới được IMDS từ bất cứ pod nào đều **chạy được code trong pod app**. Câu
-này biến chính điểm mạnh nhất của tôi, "index là artifact có version", thành một đường thực thi mã từ xa, nên tôi
-nói ra trước.
+Trong cụm, **chỉ** role IRSA `medical-rag-index-builder` ghi được `faiss/*`, và chỉ ServiceAccount
+`medical-rag-index-builder` ở dev và ở prod assume được nó; role của app chỉ đọc, và vai của node không có bucket này (`infra/terraform/shared/irsa.tf`,
+`infra/terraform/cluster/iam.tf`). Rủi ro còn lại là Job đó hoặc token của nó bị chiếm: khi đó ghi một `index.pkl`
+độc là **chạy được code trong pod app**. Câu này biến chính điểm mạnh nhất của tôi, "index là artifact có version",
+thành một đường thực thi mã, nên tôi nói ra trước.
 
-Sửa hai lớp: bucket policy để **chỉ** role IRSA của Job build được ghi và role của app **chỉ đọc**; cộng một phép
-kiểm hash đối chiếu manifest trước khi nạp. Cách sạch hơn nữa là bỏ pickle: lưu index ở định dạng không thực thi.
+Sửa còn thiếu: một phép kiểm hash đối chiếu manifest trước khi nạp. Cách sạch hơn nữa là bỏ pickle: lưu index ở định
+dạng không thực thi.
 
-> "The node role can write it, so anyone who reaches the metadata service from any pod gets code execution inside
-> the app pod. That turns my cleanest win — the index as a versioned artifact — into a remote-code-execution path,
-> so I say it before being asked. The fix is a bucket policy where only the build Job's role writes and the app
-> role only reads, plus a hash check against the manifest before load."
+> "Only the index-builder role can write it, and only the index-builder service account in each environment can
+> assume that role; the app's role
+> only reads, and the node role has no access to the bucket. The remaining risk is that Job or its token being
+> compromised, which would mean code execution inside the app pod — so I say it before being asked. What is
+> missing is a hash check against the manifest before load, or dropping pickle altogether."
 
 </details>
 
@@ -703,16 +711,17 @@ kiểm hash đối chiếu manifest trước khi nạp. Cách sạch hơn nữa 
 <summary>etcd giữ Secret của anh. Nó có mã hoá at-rest không, và ai đọc được snapshot?</summary>
 
 **Không.** Cấu hình kubeadm không có `EncryptionConfiguration`, nên Secret nằm dạng rõ trong etcd **và** trong
-snapshot trên S3 — mà khoá của bucket backup thì vai node giải mã được. Cộng hai chuyện lại: một pod tới được IMDS
-đọc được mọi Kubernetes Secret của cụm, qua đường snapshot.
+snapshot trên S3 — mà bucket backup mã hoá bằng SSE-S3, nên ai có `s3:GetObject` là đọc được bản rõ, và vai node có
+quyền đó. Cộng hai chuyện lại: một pod tới được IMDS đọc được mọi Kubernetes Secret của cụm, qua đường snapshot.
 
-Sửa: `--encryption-provider-config` với provider KMS v2 qua `apiServer.extraArgs`, và một customer-managed key mà
-vai node **không** giải mã được.
+Sửa: `--encryption-provider-config` với provider KMS v2 qua `apiServer.extraArgs`, và mã hoá bucket bằng một
+customer-managed key chỉ cấp cho một role riêng của CronJob, để vai node **không** giải mã được.
 
-> "It is not. There is no EncryptionConfiguration, so Secrets sit in plaintext in etcd and in the S3 snapshot,
-> and the backup bucket's key is decryptable by the node role — which means a pod that reaches the metadata
-> service can read every Secret in the cluster by way of the backup. The fix is a KMS v2 encryption provider and a
-> customer-managed key the node role cannot decrypt."
+> "It is not. There is no EncryptionConfiguration, so Secrets sit in plaintext in etcd and in the S3 snapshot.
+> The bucket uses S3-managed encryption, so anything with GetObject reads it in the clear, and the node role has
+> GetObject — which means a pod that reaches the metadata service can read every Secret in the cluster by way of
+> the backup. The fix is a KMS v2 encryption provider, and a customer-managed key on the bucket that only the
+> snapshot job's own role can use."
 
 </details>
 

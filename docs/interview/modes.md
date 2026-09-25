@@ -32,15 +32,15 @@ Ba phần còn lại của trang là **điều kiện** của những con số n
 ## 1. Trạng thái phép đo — năm giá trị
 
 Đây là thứ gần nhất với một bộ nhãn có kiểm soát trong repo. Ba giá trị đầu nằm ở bảng đầu
-[`evidence/drills.md`](../evidence/drills.md); `Pending` ở `drills.md:11` và `:26`; còn `Inferred` **không có trong
-`drills.md`** — nó là chữ tôi dùng ở `jenkins.md:57`, `:197`, `:1109` và `gitops.md:72`.
+[`evidence/drills.md`](../evidence/drills.md); `Pending` được định nghĩa ở `drills.md:11`; còn `Inferred` **không có trong
+`drills.md`** — nó là chữ tôi dùng ở `jenkins.md:57`, `:197`, `:1116` và `gitops.md:72`.
 
 | Trạng thái | Nghĩa | Ví dụ thật |
 |---|---|---|
 | **Measured** | Có số, đo được, điều kiện ghi rõ | RTO khôi phục etcd **7 m 02 s** |
-| **Partially measured** | Đo được một nửa của điều tiêu chí đòi | Tiêu chí **#14** nâng cấp — repo tự ghi *"the best outcome here is partially measured"*: chỉ chạy đường patch, không chạy minor |
-| **Not measured** | Chạy tới nơi rồi mà không có số, và biết vì sao | Cùng tiêu chí #14: `1.36.4` đã là patch mới nhất, *"there is no patch to move to"* — nên nó vừa *Not measured* vừa được ghi là *partially measured* cho nửa đã chạy. (Tiêu chí #13 Kyverno thì là **Measured**, nửa chữ ký.) |
-| **Pending** | Chưa lấy, còn để trống có tên | `PLAY RECAP` của lần rebuild 22/09; "rolling upgrade có làm mất request không" |
+| **Partially measured** | Đo được một nửa của điều tiêu chí đòi | Mức **tốt nhất** tiêu chí **#14** có thể đạt — repo tự ghi *"the best outcome here is partially measured"*, vì drill chỉ có đường patch, không có minor. Thực tế nó không đạt tới mức đó (dòng dưới) |
+| **Not measured** | Chạy tới nơi rồi mà không có số, và biết vì sao | Tiêu chí #14: `1.36.4` đã là patch mới nhất, *"there is no patch to move to"*, nên playbook không chạy và #14 là **Not measured**. (Tiêu chí #13 Kyverno thì là **Measured**, nửa chữ ký.) |
+| **Pending** | Chưa lấy, còn để trống có tên | Sau phase drills không còn ô nào: ô nào lấy được thì đã lấp, ô nào thuộc về cụm đã xoá (`PLAY RECAP` của lần rebuild 22/09) thì đổi thành *not recorded*, vì không lấy lại được nữa |
 | **Inferred** | Suy ra, không đọc từ đâu cả — **phải nói là suy ra** | Memory allocatable ~7.8 GiB *"is **inferred** from the requests and their percentages"*; khoảng 48 s giải thích lần cấp lại chứng chỉ 18/09 là *"a derived figure, not one read off a clock"* |
 
 **Câu nên nói:** *"Trong repo tôi tách năm trạng thái, và một con số suy ra thì tôi gọi nó là suy ra."* Đó là
@@ -56,13 +56,13 @@ Mỗi trục là một câu hỏi mà nếu không trả lời thì con số b�
 *"unattended … no human prompt inside T"*. (`drills.md:24`, `:272`)
 
 **2 · Thời gian chạy lệnh, hay treo tường?** 9 m 57 s là **cộng** hai giá trị `real`, và khoảng chờ SSM agent
-*"was not timed"*. T = 21 m 47 s là **một** số treo tường. (`ansible.md:93–95` so với `guide-measurements.md:218`)
+*"was not timed"*. T = 21 m 47 s là **một** số treo tường. (`ansible.md:93–95` so với `guide-measurements.md:229`)
 
 **3 · Cấu hình thật, hay cấu hình tạm?** Snapshot duy nhất từng chạy dưới cron **tạm** `*/15 * * * *`, không phải
-`0 */6`. (`drills.md:103–105`, còn mở ở `:302–304`)
+`0 */6`. (`drills.md:103–105`, còn mở ở `:325–327`)
 
 **4 · Positive control, hay pass thường?** Gate Trivy xanh **mọi lần từ đầu đến giờ** cũng không chứng minh nó biết
-đỏ. Một lần **cố ý** làm nó đỏ thì mới chứng minh. (`guide-measurements.md:89–90`)
+đỏ. Một lần **cố ý** làm nó đỏ thì mới chứng minh. (`guide-measurements.md:91–92`)
 
 **5 · Request, hay mức dùng thật?** *"requests not yet promised, not idle capacity: there is no metrics-server"*.
 (`jenkins.md:13`, `app.md:31`)
@@ -120,7 +120,7 @@ Jenkins, và vòng chờ trả về sớm. Số so được là 21 m 47 s treo t
 ### 3.3 "Gate Trivy đã bắt được một CRITICAL" — chưa bao giờ
 
 > **Trap:** this proves the gate's **mechanism** fails a build. It does not show a CRITICAL was ever caught.
-> — `guide-measurements.md:89–90`
+> — `guide-measurements.md:91–92`
 
 Để tạo ra lần fail, gate bị **nới** từ chỉ-CRITICAL sang mọi severity, trên một nhánh bỏ đi. Và cái làm CRITICAL
 từ 5 về 0 là **đổi base image sang Debian 13**, thứ mà gate về cấu trúc *không thể* làm được:
@@ -139,7 +139,7 @@ Snapshot duy nhất từng được quan sát đến từ cron **tạm** `*/15`.
 trên cụm, nhưng **chưa lần nào thấy nó nổ**:
 
 > **A job created by the 6-hourly schedule itself.** The first proven run was under the temporary `*/15` string.
-> — `drills.md:302–304`
+> — `drills.md:325–327`
 
 **Nói:** *"'Mỗi 6 giờ' là cấu hình. Phép đo là: một snapshot theo lịch, kiểm toàn vẹn, upload, rồi restore
 được."* Và RPO ≤ 6 h là **bound thiết kế** — chưa đối chiếu hai snapshot liên tiếp, vì chỉ có một.
@@ -150,7 +150,7 @@ trên cụm, nhưng **chưa lần nào thấy nó nổ**:
 
 | Con số | Điều kiện phải nói kèm |
 |---|---|
-| **9 m 57 s** "empty → Ready" | Là **tổng hai thời gian lệnh**, không phải treo tường; khoảng chờ SSM agent bị loại ra. Và `guide-measurements.md:218` viết *"Do not sum the commands' own times"*. Hai lần sau **không có số "empty → Ready" nào được ghi**; cộng tay từ evidence ra **10 m 13 s** (`drills.md:47`) và **10 m 03 s** (`drills.md:272`) — cả hai là **số suy ra**, và phải nói là suy ra. Nói: *"chín năm mươi bảy là số đo; hai lần sau tôi cộng tay ra khoảng mười phút."* |
+| **9 m 57 s** "empty → Ready" | Là **tổng hai thời gian lệnh**, không phải treo tường; khoảng chờ SSM agent bị loại ra. Và `guide-measurements.md:229` viết *"Do not sum the commands' own times"*. Hai lần sau **không có số "empty → Ready" nào được ghi**; cộng tay từ evidence ra **10 m 13 s** (`drills.md:47`) và **10 m 03 s** (`drills.md:272`) — cả hai là **số suy ra**, và phải nói là suy ra. Nói: *"chín năm mươi bảy là số đo; hai lần sau tôi cộng tay ra khoảng mười phút."* |
 | **7 m 02 s** RTO | Đo tới **mọi Application `Synced`+`Healthy` với `reconciledAt > t1`, Lease của node đã gia hạn, và không pod nào ngoài Running/Completed** — cố ý không đo tới "etcd đã lên". Bao gồm thời gian gõ, và **tới ~3 phút trong đó có thể là một chu kỳ reconcile của Argo CD**. Một lần. |
 | **960 Mi / 2 304 Mi** | Là **request**, không phải mức dùng. Và mốc 2 304 Mi là một **phỏng đoán** trước đó (*"Before, the guesses were 768Mi to 1,536Mi"*), không phải một phép đo. |
 
